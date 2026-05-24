@@ -1,0 +1,699 @@
+{
+  "updated_at": "2026-05-24T12:38:15.842214",
+  "model_center": {
+    "large_models": [
+      {
+        "model_name": "qwen3-next",
+        "model_type": "本地",
+        "model_url": "http://10.50.56.243/v1",
+        "is_default": true,
+        "api_type": "http"
+      },
+      {
+        "model_name": "deepseek-v4-flash",
+        "model_type": "本地",
+        "model_url": "http://10.50.56.243/v1",
+        "is_default": false,
+        "api_type": "http"
+      },
+      {
+        "model_name": "deepseek-v4-flash-nvidia",
+        "model_type": "本地",
+        "model_url": "http://10.50.56.243/v1",
+        "is_default": false,
+        "api_type": "http"
+      }
+    ],
+    "asr_models": [
+      {
+        "model_name": "paraformer-zh",
+        "model_type": "远程",
+        "model_url": "https://asr.map.local/v1",
+        "is_default": false,
+        "api_type": "http"
+      }
+    ],
+    "tts_models": [
+      {
+        "model_name": "cosyvoice-v2",
+        "model_type": "远程",
+        "model_url": "https://tts.map.local/v1",
+        "is_default": false,
+        "api_type": "http"
+      }
+    ],
+    "embedding_models": [
+      {
+        "model_name": "bge-m3",
+        "model_type": "远程",
+        "model_url": "https://embedding.map.local/v1",
+        "is_default": true,
+        "api_type": "http"
+      }
+    ],
+    "rerank_models": [
+      {
+        "model_name": "bge-reranker-v2",
+        "model_type": "远程",
+        "model_url": "https://rerank.map.local/v1",
+        "is_default": true,
+        "api_type": "http"
+      }
+    ]
+  },
+  "basic_settings": [
+    {
+      "setting_code": "max_concurrency",
+      "setting_name": "系统并发上限",
+      "setting_value": "200",
+      "category": "运行时",
+      "description": "控制全局请求并发上限",
+      "editable": true
+    },
+    {
+      "setting_code": "default_stream_version",
+      "setting_name": "默认流式版本",
+      "setting_value": "v2",
+      "category": "流式协议",
+      "description": "前后台默认使用的 SSE 协议版本",
+      "editable": true
+    },
+    {
+      "setting_code": "session_retention_days",
+      "setting_name": "会话保留天数",
+      "setting_value": "90",
+      "category": "存储",
+      "description": "会话与运行日志保留时长",
+      "editable": true
+    }
+  ],
+  "address_configs": [
+    {
+      "address_code": "map_core",
+      "address_name": "MAP Core API",
+      "base_url": "http://map_core:10000",
+      "timeout_s": 60,
+      "enabled": true,
+      "remarks": "算法服务入口"
+    },
+    {
+      "address_code": "knowledge",
+      "address_name": "知识库服务",
+      "base_url": "http://knowledge:8080",
+      "timeout_s": 30,
+      "enabled": true,
+      "remarks": "知识检索入口"
+    }
+  ],
+  "data_access_items": [
+    {
+      "source_name": "map_db_dev",
+      "source_type": "PostgreSQL",
+      "auth_mode": "密码",
+      "endpoint": "10.50.56.243:5432",
+      "database_name": "map_db_dev",
+      "enabled": true,
+      "owner": "数据平台组",
+      "last_sync": "2026-05-24T12:38:15.842214"
+    },
+    {
+      "source_name": "map_logs",
+      "source_type": "MongoDB",
+      "auth_mode": "用户名密码",
+      "endpoint": "10.50.56.243:27017",
+      "database_name": "map_logs",
+      "enabled": true,
+      "owner": "可观测性组",
+      "last_sync": "2026-05-24T12:38:15.842214"
+    }
+  ],
+  "data_assets": [
+    {
+      "asset_code": "asset_contract",
+      "asset_name": "合同台账",
+      "asset_type": "table",
+      "source_name": "map_db_dev",
+      "row_count": 580000,
+      "refresh_cycle": "daily",
+      "enabled": true,
+      "last_updated": "2026-05-24T12:38:15.842214"
+    },
+    {
+      "asset_code": "asset_inventory",
+      "asset_name": "库存成本",
+      "asset_type": "table",
+      "source_name": "map_db_dev",
+      "row_count": 920000,
+      "refresh_cycle": "hourly",
+      "enabled": true,
+      "last_updated": "2026-05-24T12:38:15.842214"
+    }
+  ],
+  "master_agent": {
+    "agent_code": "Master",
+    "display_name": "Master 智能体",
+    "model": "qwen3-next-80b",
+    "temperature": 0.2,
+    "max_tokens": 4096,
+    "summarize_style": "结构化总结 + 关键结论优先",
+    "enabled": true,
+    "scene_selector_model": "qwen3-next-80b",
+    "route_strategy": "scene_first",
+    "stream_version": "v2",
+    "timeout_s": 180,
+    "fallback_enabled": true,
+    "query_rewrite_enabled": false,
+    "content_review_enabled": false,
+    "policies": [
+      "先进行场景识别，再触发业务智能体并行调用",
+      "优先使用结构化数据源返回业务结论",
+      "置信度不足时给出补充提问建议"
+    ]
+  },
+  "business_agents": [
+    {
+      "agent_code": "Operations",
+      "display_name": "经营分析助手",
+      "scene_name": "经营分析",
+      "owner_team": "数字经营部",
+      "agent_type": "business",
+      "model": "qwen3-next-80b",
+      "enabled": true,
+      "weight": 100,
+      "timeout_s": 120,
+      "retry_limit": 1,
+      "parallel_limit": 3,
+      "data_scope": "enterprise",
+      "prompt_template": "你是经营分析助手，优先返回关键指标与同比环比。",
+      "description": "负责经营分析、KPI 拆解与月度总结。",
+      "tools": [
+        "ask_database_agent",
+        "wenshu_agent"
+      ],
+      "allowed_roles": [
+        "admin",
+        "ops",
+        "finance"
+      ],
+      "mounted_resources": [
+        {
+          "resource_name": "商机数量",
+          "resource_type": "指标数据模型",
+          "source_name": "ESSENDATA",
+          "permission_scope": "跟随智能体",
+          "dimension_status": "同步成功",
+          "created_at": "2026-05-24T12:38:15.842214",
+          "enabled": true
+        },
+        {
+          "resource_name": "商机金额_定存",
+          "resource_type": "指标数据模型",
+          "source_name": "ESSENDATA",
+          "permission_scope": "跟随智能体",
+          "dimension_status": "同步成功",
+          "created_at": "2026-05-24T12:38:15.842214",
+          "enabled": true
+        },
+        {
+          "resource_name": "商机实际中标金额",
+          "resource_type": "指标数据模型",
+          "source_name": "ESSENDATA",
+          "permission_scope": "跟随智能体",
+          "dimension_status": "同步成功",
+          "created_at": "2026-05-24T12:38:15.842214",
+          "enabled": true
+        }
+      ],
+      "glossary_terms": [],
+      "prompt_config": {
+        "base_model": "deepseek-v4-flash-ep",
+        "system_prompt": "你是市场分析助手，聚焦高置信度数据结论。",
+        "user_prompt": "{query}",
+        "summary_prompt": "请输出 TL;DR 与关键数据点。",
+        "tool_prompts": [
+          {
+            "tool_name": "团队知识库",
+            "system_prompt": "优先引用团队知识条目",
+            "user_prompt": "{query}"
+          },
+          {
+            "tool_name": "指标数据模型",
+            "system_prompt": "优先使用指标口径返回",
+            "user_prompt": "{query}"
+          },
+          {
+            "tool_name": "数据库数据模型",
+            "system_prompt": "SQL 结果需附口径",
+            "user_prompt": "{query}"
+          },
+          {
+            "tool_name": "效率派",
+            "system_prompt": "仅用于动作建议",
+            "user_prompt": "{query}"
+          },
+          {
+            "tool_name": "互联网搜索",
+            "system_prompt": "必须标注来源",
+            "user_prompt": "{query}"
+          }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "current_version": "v3",
+        "version_note": "删除冗余 prompt，强化来源标注。",
+        "history_versions": [
+          {
+            "version": "v3",
+            "updated_at": "2026-05-24T12:38:15.842214",
+            "operator": "admin",
+            "model": "deepseek-v4-flash-ep",
+            "temperature": 0.1,
+            "max_tokens": 4096,
+            "version_note": "删除冗余 prompt，强化来源标注。"
+          },
+          {
+            "version": "v2",
+            "updated_at": "2026-05-24T12:38:15.842214",
+            "operator": "admin",
+            "model": "deepseek-v4-flash-ep",
+            "temperature": 0.1,
+            "max_tokens": 4096,
+            "version_note": "统一工具提示词模板。"
+          }
+        ]
+      },
+      "test_config": {
+        "publish_status": "已发布",
+        "last_saved_at": "2026-05-24T12:38:15.842214",
+        "draft_messages": []
+      },
+      "last_updated": "2026-05-24T12:38:15.842214"
+    },
+    {
+      "agent_code": "Marketing",
+      "display_name": "市场洞察助手",
+      "scene_name": "市场洞察",
+      "owner_team": "市场部",
+      "agent_type": "business",
+      "model": "qwen3-next-80b",
+      "enabled": true,
+      "weight": 100,
+      "timeout_s": 120,
+      "retry_limit": 1,
+      "parallel_limit": 3,
+      "data_scope": "market",
+      "prompt_template": "你是市场洞察助手，需标注信息来源可信度。",
+      "description": "负责竞品与市场趋势信息采集分析。",
+      "tools": [
+        "web_search_agent",
+        "search_mounted_kb_agent"
+      ],
+      "allowed_roles": [
+        "admin",
+        "marketing"
+      ],
+      "mounted_resources": [],
+      "glossary_terms": [],
+      "prompt_config": {
+        "base_model": "qwen3-next-80b",
+        "system_prompt": "你是市场洞察助手，优先输出可信来源。",
+        "user_prompt": "{query}",
+        "summary_prompt": "输出 3 条关键洞察。",
+        "tool_prompts": [
+          {
+            "tool_name": "互联网搜索",
+            "system_prompt": "保留来源与时间",
+            "user_prompt": "{query}"
+          },
+          {
+            "tool_name": "团队知识库",
+            "system_prompt": "优先内部资料",
+            "user_prompt": "{query}"
+          }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "current_version": "v1",
+        "version_note": "",
+        "history_versions": []
+      },
+      "test_config": {
+        "publish_status": "已发布",
+        "last_saved_at": "2026-05-24T12:38:15.842214",
+        "draft_messages": []
+      },
+      "last_updated": "2026-05-24T12:38:15.842214"
+    },
+    {
+      "agent_code": "CustomerSuccess",
+      "display_name": "客户成功助手",
+      "scene_name": "客户经营",
+      "owner_team": "客户成功部",
+      "agent_type": "business",
+      "model": "qwen3-next-80b",
+      "enabled": true,
+      "weight": 100,
+      "timeout_s": 120,
+      "retry_limit": 1,
+      "parallel_limit": 3,
+      "data_scope": "customer",
+      "prompt_template": "你是客户成功助手，优先输出客户风险分级与建议动作。",
+      "description": "负责客户健康度与续约风险分析。",
+      "tools": [
+        "ask_database_agent",
+        "industry_chat_agent"
+      ],
+      "allowed_roles": [
+        "admin",
+        "cs",
+        "sales"
+      ],
+      "mounted_resources": [],
+      "glossary_terms": [],
+      "prompt_config": {
+        "base_model": "qwen3-next-80b",
+        "system_prompt": "你是客户成功助手，输出风险等级与动作建议。",
+        "user_prompt": "{query}",
+        "summary_prompt": "先给风险等级，再给证据。",
+        "tool_prompts": [
+          {
+            "tool_name": "数据库数据模型",
+            "system_prompt": "输出结构化表格摘要",
+            "user_prompt": "{query}"
+          }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "current_version": "v1",
+        "version_note": "",
+        "history_versions": []
+      },
+      "test_config": {
+        "publish_status": "已发布",
+        "last_saved_at": "2026-05-24T12:38:15.842214",
+        "draft_messages": []
+      },
+      "last_updated": "2026-05-24T12:38:15.842214"
+    }
+  ],
+  "session_policies": [
+    {
+      "policy_code": "session_retention",
+      "policy_name": "会话留存策略",
+      "status": "enabled",
+      "retention_days": 90,
+      "rate_limit_qpm": 120,
+      "updated_by": "admin",
+      "updated_at": "2026-05-24T12:38:15.842214"
+    },
+    {
+      "policy_code": "sse_stream_limit",
+      "policy_name": "流式连接策略",
+      "status": "enabled",
+      "retention_days": 30,
+      "rate_limit_qpm": 300,
+      "updated_by": "admin",
+      "updated_at": "2026-05-24T12:38:15.842214"
+    }
+  ],
+  "dashboard_cards": [
+    {
+      "card_code": "request_qps",
+      "card_name": "请求 QPS",
+      "metric_expr": "sum(rate(request_total[1m]))",
+      "refresh_interval_s": 30,
+      "enabled": true
+    },
+    {
+      "card_code": "latency_p95",
+      "card_name": "P95 耗时",
+      "metric_expr": "histogram_quantile(0.95, request_duration_bucket)",
+      "refresh_interval_s": 30,
+      "enabled": true
+    }
+  ],
+  "security_policies": [
+    {
+      "rule_code": "content_review",
+      "rule_name": "内容审查",
+      "severity": "high",
+      "strategy": "block",
+      "enabled": true,
+      "last_updated": "2026-05-24T12:38:15.842214"
+    },
+    {
+      "rule_code": "prompt_injection",
+      "rule_name": "Prompt 注入检测",
+      "severity": "medium",
+      "strategy": "alert",
+      "enabled": true,
+      "last_updated": "2026-05-24T12:38:15.842214"
+    }
+  ],
+  "glossary_terms": [
+    {
+      "term": "订单毛利率",
+      "category": "经营",
+      "definition": "订单收入减去订单成本后除以订单收入",
+      "synonyms": [
+        "毛利率",
+        "订单利润率"
+      ],
+      "status": "enabled",
+      "updated_at": "2026-05-24T12:38:15.842214"
+    },
+    {
+      "term": "续约风险",
+      "category": "客户",
+      "definition": "客户在未来一个续约周期内流失的概率评估",
+      "synonyms": [
+        "流失风险"
+      ],
+      "status": "enabled",
+      "updated_at": "2026-05-24T12:38:15.842214"
+    }
+  ],
+  "homepage_recommendations": [
+    {
+      "recommendation_id": "rec_001",
+      "title": "近三月出库量最高的 5 个物料",
+      "target_scene": "经营分析",
+      "priority": 100,
+      "enabled": true,
+      "operator": "admin",
+      "updated_at": "2026-05-24T12:38:15.842214"
+    },
+    {
+      "recommendation_id": "rec_002",
+      "title": "本月新增合同额与回款率概览",
+      "target_scene": "销售运营",
+      "priority": 90,
+      "enabled": true,
+      "operator": "admin",
+      "updated_at": "2026-05-24T12:38:15.842214"
+    }
+  ],
+  "permission_rules": [
+    {
+      "role": "admin",
+      "allowed_agents": [
+        "Master",
+        "Operations",
+        "Marketing",
+        "CustomerSuccess"
+      ],
+      "allowed_operations": [
+        "chat",
+        "config.read",
+        "config.write",
+        "release"
+      ],
+      "staff_codes": [],
+      "department_codes": [
+        "ALL"
+      ],
+      "active": true
+    },
+    {
+      "role": "ops",
+      "allowed_agents": [
+        "Master",
+        "Operations"
+      ],
+      "allowed_operations": [
+        "chat",
+        "config.read"
+      ],
+      "staff_codes": [],
+      "department_codes": [
+        "OPS"
+      ],
+      "active": true
+    },
+    {
+      "role": "marketing",
+      "allowed_agents": [
+        "Master",
+        "Marketing"
+      ],
+      "allowed_operations": [
+        "chat",
+        "config.read"
+      ],
+      "staff_codes": [],
+      "department_codes": [
+        "MKT"
+      ],
+      "active": true
+    }
+  ],
+  "role_policies": [
+    {
+      "role_code": "admin",
+      "role_name": "管理员",
+      "permissions": [
+        "chat",
+        "config.read",
+        "config.write",
+        "release"
+      ],
+      "data_scope": "all",
+      "enabled": true
+    },
+    {
+      "role_code": "ops",
+      "role_name": "运营分析",
+      "permissions": [
+        "chat",
+        "config.read"
+      ],
+      "data_scope": "ops_domain",
+      "enabled": true
+    },
+    {
+      "role_code": "marketing",
+      "role_name": "市场分析",
+      "permissions": [
+        "chat",
+        "config.read"
+      ],
+      "data_scope": "marketing_domain",
+      "enabled": true
+    }
+  ],
+  "user_accounts": [
+    {
+      "staff_code": "A0001",
+      "user_name": "张涛",
+      "department": "数字经营部",
+      "roles": [
+        "admin"
+      ],
+      "status": "enabled",
+      "last_login": "2026-05-24T12:38:15.842214"
+    },
+    {
+      "staff_code": "A0321",
+      "user_name": "李楠",
+      "department": "市场部",
+      "roles": [
+        "marketing"
+      ],
+      "status": "enabled",
+      "last_login": "2026-05-24T12:38:15.842214"
+    },
+    {
+      "staff_code": "A0412",
+      "user_name": "王琳",
+      "department": "客户成功部",
+      "roles": [
+        "ops"
+      ],
+      "status": "disabled",
+      "last_login": "2026-05-24T12:38:15.842214"
+    }
+  ],
+  "knowledge_bindings": [
+    {
+      "team": "数字经营部",
+      "kb_code": "kb_ops_001",
+      "kb_name": "经营分析知识库",
+      "kb_type": "team",
+      "embedding_model": "bge-m3",
+      "update_mode": "hourly_sync",
+      "enabled": true,
+      "readable_roles": [
+        "admin",
+        "ops",
+        "finance"
+      ]
+    },
+    {
+      "team": "市场部",
+      "kb_code": "kb_mkt_001",
+      "kb_name": "市场情报知识库",
+      "kb_type": "team",
+      "embedding_model": "bge-m3",
+      "update_mode": "daily_sync",
+      "enabled": true,
+      "readable_roles": [
+        "admin",
+        "marketing"
+      ]
+    }
+  ],
+  "skill_policies": [
+    {
+      "skill_code": "sql_explain",
+      "skill_name": "SQL 解释与生成",
+      "skill_type": "data",
+      "source": "builtin",
+      "max_calls": 5,
+      "timeout_s": 90,
+      "enabled": true,
+      "visible_roles": [
+        "all"
+      ]
+    },
+    {
+      "skill_code": "trend_detect",
+      "skill_name": "趋势检测",
+      "skill_type": "analysis",
+      "source": "builtin",
+      "max_calls": 5,
+      "timeout_s": 90,
+      "enabled": true,
+      "visible_roles": [
+        "all"
+      ]
+    },
+    {
+      "skill_code": "risk_alert",
+      "skill_name": "风险告警",
+      "skill_type": "governance",
+      "source": "builtin",
+      "max_calls": 5,
+      "timeout_s": 90,
+      "enabled": true,
+      "visible_roles": [
+        "all"
+      ]
+    }
+  ],
+  "release_history": [
+    {
+      "id": "rel-20260524-001",
+      "version": "v1",
+      "operator": "system",
+      "note": "初始化 MAP 管理配置",
+      "affected_agents": [
+        "Master",
+        "Operations",
+        "Marketing",
+        "CustomerSuccess"
+      ],
+      "risk_level": "low",
+      "created_at": "2026-05-24T12:38:15.842214"
+    }
+  ]
+}

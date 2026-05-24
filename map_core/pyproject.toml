@@ -1,0 +1,41 @@
+[project]
+name = "map-core"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "asyncpg>=0.31.0",
+    "fastapi[all]>=0.128.0",
+    "loguru>=0.7.3",
+    "motor>=3.7.1",
+    "openai>=2.15.0",
+    "openpyxl>=3.1.5",
+    "python-docx>=1.1.2",
+    "pymilvus>=2.6.6",
+    "tenacity>=9.1.2",
+    "psutil>=7.2.2",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle
+    "F",  # Pyflakes
+    "I",  # isort
+]
+ignore = [
+    "E501",  # line-too-long
+    "E402",  # module-import-not-at-top-of-file
+    "F841",  # unused-variable, only for dev
+    "F401",  # unused-import, only for dev
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.15.12",
+]

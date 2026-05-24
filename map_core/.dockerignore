@@ -1,0 +1,51 @@
+# Git
+.git/
+.gitignore
+
+# zyh
+workspace/
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Documentation
+docs/
+README.md
+
+# Development
+debugs/
+tests/
+test_api.http
+
+# Lock files (we copy them explicitly in Dockerfile)
+# uv.lock is copied explicitly, so we don't ignore it
+
+# Other
+.python-version

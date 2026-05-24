@@ -1,0 +1,24 @@
+[project]
+name = "map-observability-backend"
+version = "0.1.0"
+description = "MAP log analytics backend service"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "pymongo>=4.8.0",
+  "pydantic>=2.8.0",
+  "python-dateutil>=2.9.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "httpx>=0.27.0",
+  "mongomock>=4.1.2"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

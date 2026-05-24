@@ -1,0 +1,175 @@
+name: map-platform
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: map-postgres
+    environment:
+      POSTGRES_USER: map
+      POSTGRES_PASSWORD: map
+      POSTGRES_DB: map
+    volumes:
+      - map_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${MAP_POSTGRES_PORT:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U map -d map"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    container_name: map-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: map
+      MONGO_INITDB_ROOT_PASSWORD: map
+    command: ["--bind_ip_all"]
+    volumes:
+      - map_mongo_data:/data/db
+    ports:
+      - "${MAP_MONGO_PORT:-27017}:27017"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet -u map -p map --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1",
+        ]
+      interval: 10s
+      timeout: 8s
+      retries: 12
+
+  algorithm-service:
+    platform: ${MAP_ALGO_PLATFORM:-linux/amd64}
+    build:
+      context: ./map_core
+      dockerfile: Dockerfile
+    container_name: map-algorithm-service
+    environment:
+      ENV: dev
+      POSTGRES_DSN: postgresql://map:map@postgres:5432/map
+      MONGODB_URI: mongodb://map:map@mongo:27017/?authSource=admin
+      MONGODB_DATABASE: map_db_dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    ports:
+      - "${MAP_ALGO_PORT:-10000}:10000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:10000/health', timeout=5).read()\"",
+        ]
+      interval: 15s
+      timeout: 8s
+      retries: 10
+
+  backend-service:
+    build:
+      context: ./map-business-backend
+      dockerfile: Dockerfile
+    container_name: map-backend-service
+    environment:
+      MAP_CORE_API_ORIGIN: http://algorithm-service:10000
+      MAP_BFF_STATE_FILE: /app/data/admin_state.json
+    depends_on:
+      algorithm-service:
+        condition: service_healthy
+    volumes:
+      - ./map-business-backend/app/data:/app/data
+    ports:
+      - "${MAP_BFF_PORT:-18080}:18080"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=5).read()\"",
+        ]
+      interval: 15s
+      timeout: 8s
+      retries: 10
+
+  frontend-service:
+    image: node:22-bookworm-slim
+    container_name: map-frontend-service
+    working_dir: /workspace/map-business-frontend
+    environment:
+      VITE_MAP_BFF_API_ORIGIN: http://backend-service:18080
+    command: >
+      sh -lc "
+      npm config set registry https://registry.npmmirror.com &&
+      npm config set install-links true &&
+      if [ ! -x node_modules/.bin/vite ] || [ ! -x node_modules/.bin/tsc ]; then npm ci --no-fund --no-audit; fi &&
+      npm run dev -- --host 0.0.0.0 --port 5174
+      "
+    depends_on:
+      backend-service:
+        condition: service_healthy
+    volumes:
+      - ./:/workspace
+      - map_business_frontend_node_modules:/workspace/map-business-frontend/node_modules
+    ports:
+      - "${MAP_FRONTEND_PORT:-5174}:5174"
+
+  observability-backend-service:
+    build:
+      context: ./map-observability/map-observability-backend
+      dockerfile: Dockerfile
+    container_name: map-observability-backend-service
+    environment:
+      MONGO_URI: mongodb://map:map@mongo:27017/?authSource=admin
+      MONGO_DB: map_db_dev
+      API_PREFIX: /api/v1
+      TIMEZONE: Asia/Shanghai
+      DEFAULT_TZ: Asia/Shanghai
+      CORS_ORIGINS: "*"
+      INDEX_ENSURE_MODE: auto
+      MAX_QUERY_DAYS: 31
+      DEFAULT_TIME_RANGE_HOURS: 24
+      SLOW_CALL_THRESHOLD_S: 10
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "${MAP_OBS_BACKEND_PORT:-15151}:8000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5).read()\"",
+        ]
+      interval: 15s
+      timeout: 8s
+      retries: 10
+
+  observability-frontend-service:
+    image: node:22-bookworm-slim
+    container_name: map-observability-frontend-service
+    working_dir: /workspace/map-observability/map-observability-frontend
+    environment:
+      VITE_API_BASE_URL: /api/v1
+      VITE_DEV_PROXY_TARGET: http://observability-backend-service:8000
+    command: >
+      sh -lc "
+      npm config set registry https://registry.npmmirror.com &&
+      npm config set install-links true &&
+      if [ ! -x node_modules/.bin/vite ] || [ ! -x node_modules/.bin/tsc ]; then npm ci --no-fund --no-audit; fi &&
+      npm run dev -- --host 0.0.0.0 --port 5173
+      "
+    depends_on:
+      observability-backend-service:
+        condition: service_healthy
+    volumes:
+      - ./:/workspace
+      - map_observability_frontend_node_modules:/workspace/map-observability/map-observability-frontend/node_modules
+    ports:
+      - "${MAP_OBS_FRONTEND_PORT:-15152}:5173"
+
+volumes:
+  map_postgres_data:
+  map_mongo_data:
+  map_business_frontend_node_modules:
+  map_observability_frontend_node_modules:
