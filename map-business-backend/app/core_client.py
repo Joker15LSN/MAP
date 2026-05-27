@@ -15,18 +15,24 @@ class MapCoreClient:
             return f"{self.api_origin}{path}"
         return f"{self.api_origin}/{path}"
 
-    async def chat(self, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+    async def chat_by_path(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=180.0) as client:
             response = await client.post(
-                self._url("/global_domain/chat"),
+                self._url(path),
                 json=payload,
                 headers=headers,
             )
             response.raise_for_status()
             return response.json()
 
-    async def stream_chat(
+    async def stream_chat_by_path(
         self,
+        path: str,
         payload: dict[str, Any],
         headers: dict[str, str],
     ) -> AsyncGenerator[bytes, None]:
@@ -34,7 +40,7 @@ class MapCoreClient:
         client = httpx.AsyncClient(timeout=timeout)
         request = client.build_request(
             "POST",
-            self._url("/global_domain/chat/stream/v2"),
+            self._url(path),
             json=payload,
             headers=headers,
         )
@@ -46,3 +52,18 @@ class MapCoreClient:
         finally:
             await response.aclose()
             await client.aclose()
+
+    async def chat(self, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+        return await self.chat_by_path("/global_domain/chat", payload, headers)
+
+    async def stream_chat(
+        self,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> AsyncGenerator[bytes, None]:
+        async for chunk in self.stream_chat_by_path(
+            "/global_domain/chat/stream/v2",
+            payload,
+            headers,
+        ):
+            yield chunk

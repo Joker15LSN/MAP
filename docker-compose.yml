@@ -50,6 +50,9 @@ services:
       POSTGRES_DSN: postgresql://map:map@postgres:5432/map
       MONGODB_URI: mongodb://map:map@mongo:27017/?authSource=admin
       MONGODB_DATABASE: map_db_dev
+      MAP_LLM_BASE_URL: ${MAP_LLM_BASE_URL:-https://api.deepseek.com}
+      MAP_LLM_MODEL: ${MAP_LLM_MODEL:-deepseek-v4-flash}
+      MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,6 +78,7 @@ services:
     environment:
       MAP_CORE_API_ORIGIN: http://algorithm-service:10000
       MAP_BFF_STATE_FILE: /app/data/admin_state.json
+      MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
     depends_on:
       algorithm-service:
         condition: service_healthy

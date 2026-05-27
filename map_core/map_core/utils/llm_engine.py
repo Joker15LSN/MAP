@@ -640,6 +640,9 @@ class LLMEngine:
 
         # support for qwen3 thinking mode
         extra_body = {}
+        thinking = kwargs.get("thinking", self.config.thinking)
+        if thinking is not None:
+            extra_body["thinking"] = thinking
         if self.config.chat_template_kwargs:
             extra_body["chat_template_kwargs"] = self.config.chat_template_kwargs
 

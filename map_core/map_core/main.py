@@ -21,6 +21,19 @@ _PACKAGE_DIR = str(Path(__file__).parent.absolute())
 _PROJECT_ROOT = str(Path(__file__).parents[1].absolute())
 MAX_LOGGED_REQUEST_BODY_CHARS = 13000
 MAX_LOGGED_JSON_FIELD_CHARS = 5000
+LOG_REDACTED_VALUE = "***REDACTED***"
+SENSITIVE_KEYWORDS: tuple[str, ...] = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "access_key",
+    "private_key",
+    "credential",
+)
 
 for _path in (_PACKAGE_DIR, _PROJECT_ROOT):
     if _path not in sys.path:
@@ -42,31 +55,81 @@ def _ensure_env() -> str:
 
 
 def _truncate_top_level_json_fields(body_json: object) -> object:
-    if not isinstance(body_json, dict):
-        return body_json
+    def _is_sensitive_key(raw_key: str) -> bool:
+        key = raw_key.strip().lower().replace("-", "_")
+        if key.endswith("_tokens"):
+            return False
+        if key in {
+            "token_usage",
+            "token_total",
+            "max_tokens",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "top_logprobs",
+            "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens",
+        }:
+            return False
+        return any(keyword in key for keyword in SENSITIVE_KEYWORDS)
 
-    truncated_body: dict[str, object] = {}
-    for key, value in body_json.items():
+    def _sanitize_value(value: object, current_key: str | None = None) -> object:
+        if current_key is not None and _is_sensitive_key(current_key):
+            return LOG_REDACTED_VALUE
+
         if isinstance(value, str):
-            truncated_body[key] = value[:MAX_LOGGED_JSON_FIELD_CHARS]
-            continue
+            return value[:MAX_LOGGED_JSON_FIELD_CHARS]
 
-        if isinstance(value, (dict, list)):
-            value_text = json.dumps(value, ensure_ascii=False)
+        if isinstance(value, list):
+            sanitized_list = [
+                _sanitize_value(item, current_key=current_key) for item in value
+            ]
+            value_text = json.dumps(sanitized_list, ensure_ascii=False)
             if len(value_text) > MAX_LOGGED_JSON_FIELD_CHARS:
-                truncated_body[key] = {
+                return {
                     "_truncated": True,
-                    "_type": type(value).__name__,
+                    "_type": "list",
                     "_original_chars": len(value_text),
                     "_preview": value_text[:MAX_LOGGED_JSON_FIELD_CHARS],
                 }
-            else:
-                truncated_body[key] = value
-            continue
+            return sanitized_list
 
-        truncated_body[key] = value
+        if isinstance(value, dict):
+            sanitized_dict = {
+                str(k): _sanitize_value(v, current_key=str(k))
+                for k, v in value.items()
+            }
+            value_text = json.dumps(sanitized_dict, ensure_ascii=False)
+            if len(value_text) > MAX_LOGGED_JSON_FIELD_CHARS:
+                return {
+                    "_truncated": True,
+                    "_type": "dict",
+                    "_original_chars": len(value_text),
+                    "_preview": value_text[:MAX_LOGGED_JSON_FIELD_CHARS],
+                }
+            return sanitized_dict
+
+        return value
+
+    if not isinstance(body_json, dict):
+        return _sanitize_value(body_json)
+
+    truncated_body: dict[str, object] = {}
+    for key, value in body_json.items():
+        truncated_body[str(key)] = _sanitize_value(value, current_key=str(key))
 
     return truncated_body
+
+
+def _sanitize_headers_for_logging(headers: dict[str, str]) -> dict[str, str]:
+    sanitized: dict[str, str] = {}
+    for key, value in headers.items():
+        lowered = key.lower()
+        if lowered in {"authorization", "cookie", "x-api-key"}:
+            sanitized[key] = LOG_REDACTED_VALUE
+            continue
+        sanitized[key] = value
+    return sanitized
 
 
 def load_config():
@@ -112,6 +175,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"[PID: {os.getpid()}] application start. ENV='{env}'")
 
     from .routers.global_domain_router import global_domain_router
+    from .routers.flow_domain_router import flow_domain_router
     from .routers.master_pipeline_router import master_pipeline_router
     from .routers.openapi_router import openapi_router
     from .routers.system_router import system_router
@@ -119,6 +183,7 @@ async def lifespan(app: FastAPI):
 
     app.include_router(system_router)
     app.include_router(global_domain_router)
+    app.include_router(flow_domain_router)
     app.include_router(master_pipeline_router)
     app.include_router(openapi_router)
 
@@ -222,7 +287,7 @@ class RequestContextMiddleware:
                 scope.get("method", ""),
                 path,
                 scope.get("query_string", b"").decode("latin-1"),
-                dict(headers),
+                _sanitize_headers_for_logging(dict(headers)),
                 request_body_text,
             )
 

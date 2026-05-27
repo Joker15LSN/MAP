@@ -15,6 +15,7 @@ from ..config.common import (
     DS_V4_FLASH_LLM_CONFIG,
     QWEN3_NEXT_80B_CONFIG,
     SCENE_SELECTION_LLM_CONFIG,
+    SUMMARIZATION_LLM_CONFIG,
 )
 from ..schema.attachment_schema import AttachmentSchema
 from ..schema.global_domain_schema import (
@@ -174,7 +175,7 @@ class GlobalDomain:
             # llm=LLMEngine(config=QWEN3_NEXT_80B_CONFIG)
         )
         self.summarize_agent = SummarizeAgent(
-            llm=LLMEngine(config=DS_V4_FLASH_LLM_CONFIG)
+            llm=LLMEngine(config=SUMMARIZATION_LLM_CONFIG)
         )
         self.scene_agent_config_provider = SceneAgentConfigProvider()
         self.agent_dispatcher = AgentDispatcher(
@@ -1238,23 +1239,6 @@ class GlobalDomain:
                 )
 
             final_content = "".join(summary_parts)
-            yield GlobalDomainStreamEvent(
-                event="done",
-                data={
-                    "content": final_content,
-                    "attachment_results": serialize_attachment_results(
-                        stream_context.attachment_results
-                    ),
-                    "tool_extra_results": serialize_tool_extra_results(
-                        stream_context.tool_extra_results
-                    ),
-                    "meta": stream_context.meta,
-                    "request_id": self.request_id,
-                    "state_id": self.state_id,
-                    "finished": True,
-                },
-            )
-
             end_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
             agents_called = [r.name for r in dispatch_results if hasattr(r, "name")]
             fire_and_forget(
@@ -1272,6 +1256,23 @@ class GlobalDomain:
                         "error": None,
                     },
                 )
+            )
+
+            yield GlobalDomainStreamEvent(
+                event="done",
+                data={
+                    "content": final_content,
+                    "attachment_results": serialize_attachment_results(
+                        stream_context.attachment_results
+                    ),
+                    "tool_extra_results": serialize_tool_extra_results(
+                        stream_context.tool_extra_results
+                    ),
+                    "meta": stream_context.meta,
+                    "request_id": self.request_id,
+                    "state_id": self.state_id,
+                    "finished": True,
+                },
             )
         except Exception as exc:
             if chart_task is not None:

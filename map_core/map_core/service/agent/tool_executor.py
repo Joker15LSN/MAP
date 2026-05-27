@@ -9,10 +9,12 @@ from loguru import logger
 from ...schema.tool_extra_result_schema import ToolExtraResultSchema
 from ..tool_extra_result_collector import ToolExtraResultCollector
 from .base import AgentRequest, BaseAgent, ExecutionResult
+from .skill_policy_checker import SkillPolicyChecker
 from .tool_runtime import AgentTool, ToolSet
 from .traceable_agent import TraceableAgent
 
 TOOL_DISPLAY_NAME_MAP: dict[str, str] = {
+    "general_qa_agent": "通用问答",
     "efficiency_pi_agent": "效率派",
     "web_search_agent": "互联网检索",
     "zhiwen_agent": "智问",
@@ -107,6 +109,40 @@ class ToolExecutor:
                 f"{log_tag} Tool '{tool_name}' not found at step {step_index}"
             )
             return {"error": f"{log_tag} Tool '{tool_name}' not found"}
+
+        policy_verdict = SkillPolicyChecker.evaluate(
+            request=request,
+            agent_code=self.owner.name,
+            tool_name=tool_name,
+            action="execute",
+        )
+        if not bool(policy_verdict.get("allowed", True)):
+            denied_result = SkillPolicyChecker.denied_result(
+                tool_name=tool_name,
+                agent_code=self.owner.name,
+                reason=str(policy_verdict.get("reason") or "tool_forbidden"),
+                auth_context=policy_verdict,
+            )
+            logger.warning(
+                f"{log_tag}[Step {step_index}] Tool '{tool_name}' denied by skill policy"
+            )
+            await self._emit_action(
+                action="tool_result",
+                step_index=step_index,
+                message=f"工具“{tool_name}”无权限执行",
+                payload={
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "result": denied_result,
+                    "policy": policy_verdict,
+                },
+            )
+            self.owner.record_tool_result(
+                tool_name=tool_name,
+                result=denied_result,
+                step_index=step_index,
+            )
+            return denied_result
 
         logger.debug(
             f"{log_tag}[Step {step_index}] Calling tool: {tool_name} with args: {args}"

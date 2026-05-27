@@ -20,6 +20,7 @@ import { RequestCallTree, type RequestDetail } from 'map-tree-core';
 
 type ViewMode = 'chat' | 'backend';
 type ChatRole = 'user' | 'assistant';
+type ChatMode = 'global' | 'flow';
 
 type ModelTabKey = 'large_models' | 'asr_models' | 'tts_models' | 'embedding_models' | 'rerank_models';
 
@@ -31,6 +32,9 @@ type AdminPageKey =
   | 'data-assets'
   | 'master-agent'
   | 'business-agent'
+  | 'flow-policy'
+  | 'scenario-hub'
+  | 'skill-hub'
   | 'session-management'
   | 'dashboard'
   | 'security'
@@ -39,7 +43,7 @@ type AdminPageKey =
   | 'permission'
   | 'user-role';
 
-type TracePanelMode = 'trace' | 'source';
+type TracePanelMode = 'trace' | 'source' | 'flow';
 type AgentConfigTabKey = 'basic' | 'resource' | 'glossary' | 'prompt' | 'test';
 
 interface ChatMessage {
@@ -63,6 +67,14 @@ interface ChatHistoryItem {
   created_at: string;
   detail?: RequestDetail;
   sources: SourceReferenceItem[];
+}
+
+interface ChatModeState {
+  chatHistory: ChatHistoryItem[];
+  activeHistoryId: string | null;
+  messages: ChatMessage[];
+  inputValue: string;
+  detail?: RequestDetail;
 }
 
 interface SseEvent {
@@ -321,6 +333,72 @@ interface SkillPolicy {
   visible_roles: string[];
 }
 
+interface FlowScenarioPolicy {
+  enabled: boolean;
+  mode: string;
+  allowed_scenarios: string[];
+  allow_graph_repair: boolean;
+  max_graph_cycles: number;
+}
+
+interface FlowSkillPolicy {
+  enabled: boolean;
+  mount_mode: string;
+  runtime_auth_check: boolean;
+}
+
+interface FlowPolicyConfig {
+  scenario_policy: FlowScenarioPolicy;
+  skill_policy: FlowSkillPolicy;
+  max_node_budget: number;
+  fallback_to_global: boolean;
+  notes: string;
+}
+
+interface ScenarioPackConfig {
+  scenario_id: string;
+  display_name: string;
+  version: string;
+  domain: string;
+  description: string;
+  trigger_intents: string[];
+  required_agents: string[];
+  optional_agents: string[];
+  auth_scopes: string[];
+  status: string;
+}
+
+interface FlowSkillDescriptor {
+  skill_id: string;
+  name: string;
+  display_name: string;
+  version: string;
+  description: string;
+  tool_name: string;
+  mount_agents: string[];
+  required_scopes: string[];
+  allowed_users: string[];
+  allowed_tenants: string[];
+  allowed_scenarios: string[];
+  allowed_actions: string[];
+  audit_tags: string[];
+  status: string;
+}
+
+interface FlowRuntimeSnapshot {
+  updated_at?: string;
+  flow_policy: FlowPolicyConfig;
+  scenario_packs: ScenarioPackConfig[];
+  flow_skill_descriptors: FlowSkillDescriptor[];
+}
+
+interface FlowRequestConfig {
+  scenario_policy: FlowScenarioPolicy;
+  skill_policy: FlowSkillPolicy;
+  max_node_budget: number;
+  fallback_to_global: boolean;
+}
+
 interface ReleaseRecord {
   id: string;
   version: string;
@@ -350,22 +428,25 @@ interface AdminFullConfig {
   user_accounts: UserAccount[];
   knowledge_bindings: KnowledgeBinding[];
   skill_policies: SkillPolicy[];
+  flow_policy: FlowPolicyConfig;
+  scenario_packs: ScenarioPackConfig[];
+  flow_skill_descriptors: FlowSkillDescriptor[];
   release_history: ReleaseRecord[];
 }
 
 const QUICK_QUESTIONS = [
-  '今天杭州天气怎么样',
-  'MAP创新部的HRBP是谁？',
-  '本月回款率是否达到目标？',
-  '华东大区本周新增合同额是多少？',
-  '近三个月毛利率变化趋势如何？',
-  '给我一份经营分析摘要。',
+  '介绍一下中国杭州',
+  '杭州有哪些代表性产业？',
+  '杭州有哪些值得去的景点？',
+  '杭州的历史文化特点是什么？',
+  '杭州适合几月份旅游？',
+  '请用 5 点总结杭州这座城市。',
 ];
 
 const MODEL_OPTIONS = [
-  { label: 'qwen3-next-80b', value: 'qwen3-next-80b' },
-  { label: 'deepseek-v3', value: 'deepseek-v3' },
-  { label: 'gpt-4.1', value: 'gpt-4.1' },
+  { label: 'deepseek-v4-flash', value: 'deepseek-v4-flash' },
+  { label: 'deepseek-v4-flash', value: 'deepseek-v4-flash' },
+  { label: 'deepseek-chat', value: 'deepseek-chat' },
 ];
 
 const ROUTE_STRATEGY_OPTIONS = [
@@ -395,6 +476,9 @@ const ADMIN_PAGE_LABEL: Record<AdminPageKey, string> = {
   'data-assets': '数据管理',
   'master-agent': 'Master智能体',
   'business-agent': '业务智能体',
+  'flow-policy': '心流策略',
+  'scenario-hub': 'ScenarioHub',
+  'skill-hub': 'SkillHub',
   'session-management': '会话管理',
   dashboard: '数据看板',
   security: '安全管理',
@@ -402,6 +486,28 @@ const ADMIN_PAGE_LABEL: Record<AdminPageKey, string> = {
   'home-recommendation': '首页推荐',
   permission: '权限策略',
   'user-role': '角色与用户',
+};
+
+const CHAT_MODE_LABEL: Record<ChatMode, string> = {
+  global: '全域模式',
+  flow: '心流模式',
+};
+
+const FLOW_MODE_DEFAULT_CONFIG = {
+  scenario_policy: {
+    enabled: true,
+    mode: 'auto',
+    allowed_scenarios: [],
+    allow_graph_repair: true,
+    max_graph_cycles: 2,
+  },
+  skill_policy: {
+    enabled: true,
+    mount_mode: 'agent_scoped',
+    runtime_auth_check: true,
+  },
+  max_node_budget: 12,
+  fallback_to_global: true,
 };
 
 const toHistoryPayload = (messages: ChatMessage[]) =>
@@ -425,6 +531,62 @@ const sanitizeText = (value: unknown): string => {
   } catch {
     return String(value);
   }
+};
+
+const toPrettyJson = (value: unknown): string => {
+  if (value === undefined || value === null) {
+    return '-';
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+};
+
+const parseListInput = (value: string): string[] =>
+  value
+    .split(/[\n,，]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const stringifyListInput = (items: string[]): string => items.join(', ');
+
+const toFlowRequestConfig = (flowPolicy: FlowPolicyConfig | null | undefined): FlowRequestConfig => {
+  if (!flowPolicy) {
+    return {
+      scenario_policy: {
+        enabled: FLOW_MODE_DEFAULT_CONFIG.scenario_policy.enabled,
+        mode: FLOW_MODE_DEFAULT_CONFIG.scenario_policy.mode,
+        allowed_scenarios: [...FLOW_MODE_DEFAULT_CONFIG.scenario_policy.allowed_scenarios],
+        allow_graph_repair: FLOW_MODE_DEFAULT_CONFIG.scenario_policy.allow_graph_repair,
+        max_graph_cycles: FLOW_MODE_DEFAULT_CONFIG.scenario_policy.max_graph_cycles,
+      },
+      skill_policy: {
+        enabled: FLOW_MODE_DEFAULT_CONFIG.skill_policy.enabled,
+        mount_mode: FLOW_MODE_DEFAULT_CONFIG.skill_policy.mount_mode,
+        runtime_auth_check: FLOW_MODE_DEFAULT_CONFIG.skill_policy.runtime_auth_check,
+      },
+      max_node_budget: FLOW_MODE_DEFAULT_CONFIG.max_node_budget,
+      fallback_to_global: FLOW_MODE_DEFAULT_CONFIG.fallback_to_global,
+    };
+  }
+  return {
+    scenario_policy: {
+      enabled: flowPolicy.scenario_policy.enabled,
+      mode: flowPolicy.scenario_policy.mode,
+      allowed_scenarios: flowPolicy.scenario_policy.allowed_scenarios || [],
+      allow_graph_repair: flowPolicy.scenario_policy.allow_graph_repair,
+      max_graph_cycles: flowPolicy.scenario_policy.max_graph_cycles,
+    },
+    skill_policy: {
+      enabled: flowPolicy.skill_policy.enabled,
+      mount_mode: flowPolicy.skill_policy.mount_mode,
+      runtime_auth_check: flowPolicy.skill_policy.runtime_auth_check,
+    },
+    max_node_budget: flowPolicy.max_node_budget,
+    fallback_to_global: flowPolicy.fallback_to_global,
+  };
 };
 
 const parseSseFrames = (buffer: string): { events: SseEvent[]; remaining: string } => {
@@ -468,6 +630,32 @@ const createBaseDetail = (query: string): RequestDetail => ({
     tool_call_count: 0,
   },
 });
+
+const createEmptyChatModeState = (): ChatModeState => ({
+  chatHistory: [],
+  activeHistoryId: null,
+  messages: [],
+  inputValue: '',
+  detail: undefined,
+});
+
+const createEmptyModelRecord = (tab: ModelTabKey): ModelRecord => {
+  const suffix = Date.now();
+  const defaultNameByTab: Record<ModelTabKey, string> = {
+    large_models: `new-llm-${suffix}`,
+    asr_models: `new-asr-${suffix}`,
+    tts_models: `new-tts-${suffix}`,
+    embedding_models: `new-embedding-${suffix}`,
+    rerank_models: `new-rerank-${suffix}`,
+  };
+  return {
+    model_name: defaultNameByTab[tab],
+    model_type: '远程',
+    model_url: 'https://api.deepseek.com',
+    is_default: false,
+    api_type: 'openai_compatible',
+  };
+};
 
 const deriveSourcesFromDetail = (requestDetail: RequestDetail | undefined, answer: string): SourceReferenceItem[] => {
   if (!requestDetail) {
@@ -520,7 +708,7 @@ const createEmptyBusinessAgent = (): BusinessAgentConfig => ({
   data_scope: 'team',
   prompt_template: '你是业务智能体，请基于配置的工具与数据资源回答问题。',
   description: '',
-  tools: ['团队知识库', '企业知识库', '指标数据模型', '数据库数据模型', '效率派', '互联网搜索'],
+  tools: ['general_qa_agent'],
   allowed_roles: ['all'],
   mounted_resources: [],
   glossary_terms: [],
@@ -529,14 +717,7 @@ const createEmptyBusinessAgent = (): BusinessAgentConfig => ({
     system_prompt: '你是业务智能体，请先给结论，再给证据。',
     user_prompt: '{query}',
     summary_prompt: '请输出 TL;DR 与关键指标。',
-    tool_prompts: [
-      { tool_name: '团队知识库', system_prompt: '优先使用团队知识库内容。', user_prompt: '{query}' },
-      { tool_name: '企业知识库', system_prompt: '输出必须标注口径。', user_prompt: '{query}' },
-      { tool_name: '指标数据模型', system_prompt: '优先返回结构化指标。', user_prompt: '{query}' },
-      { tool_name: '数据库数据模型', system_prompt: 'SQL 结果需附字段说明。', user_prompt: '{query}' },
-      { tool_name: '效率派', system_prompt: '仅生成执行建议。', user_prompt: '{query}' },
-      { tool_name: '互联网搜索', system_prompt: '必须附来源与时间。', user_prompt: '{query}' },
-    ],
+    tool_prompts: [{ tool_name: 'general_qa_agent', system_prompt: '直接回答问题。', user_prompt: '{query}' }],
     temperature: 0.1,
     max_tokens: 4096,
     current_version: 'v1',
@@ -583,6 +764,34 @@ const normalizeBusinessAgent = (agent: BusinessAgentConfig): BusinessAgentConfig
   };
 };
 
+const normalizeFlowSkillDescriptor = (item: FlowSkillDescriptor): FlowSkillDescriptor => ({
+  ...item,
+  mount_agents: item.mount_agents || [],
+  required_scopes: item.required_scopes || [],
+  allowed_users: item.allowed_users || ['*'],
+  allowed_tenants: item.allowed_tenants || ['*'],
+  allowed_scenarios: item.allowed_scenarios || [],
+  allowed_actions: item.allowed_actions || ['execute'],
+  audit_tags: item.audit_tags || [],
+});
+
+const cloneFlowRequestConfig = (config: FlowRequestConfig): FlowRequestConfig => ({
+  scenario_policy: {
+    enabled: config.scenario_policy.enabled,
+    mode: config.scenario_policy.mode,
+    allowed_scenarios: [...(config.scenario_policy.allowed_scenarios || [])],
+    allow_graph_repair: config.scenario_policy.allow_graph_repair,
+    max_graph_cycles: config.scenario_policy.max_graph_cycles,
+  },
+  skill_policy: {
+    enabled: config.skill_policy.enabled,
+    mount_mode: config.skill_policy.mount_mode,
+    runtime_auth_check: config.skill_policy.runtime_auth_check,
+  },
+  max_node_budget: config.max_node_budget,
+  fallback_to_global: config.fallback_to_global,
+});
+
 const App = () => {
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
   const [adminPage, setAdminPage] = useState<AdminPageKey>('model-center');
@@ -604,13 +813,89 @@ const App = () => {
   });
   const [tracePanelOpen, setTracePanelOpen] = useState(false);
   const [tracePanelMode, setTracePanelMode] = useState<TracePanelMode>('trace');
-  const [chatHistory, setChatHistory] = useState<ChatHistoryItem[]>([]);
-  const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
-
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [inputValue, setInputValue] = useState('');
+  const [chatMode, setChatMode] = useState<ChatMode>('global');
+  const [chatModeState, setChatModeState] = useState<Record<ChatMode, ChatModeState>>({
+    global: createEmptyChatModeState(),
+    flow: createEmptyChatModeState(),
+  });
   const [isStreaming, setIsStreaming] = useState(false);
-  const [detail, setDetail] = useState<RequestDetail | undefined>(undefined);
+  const detail = chatModeState[chatMode].detail;
+  const messages = chatModeState[chatMode].messages;
+  const inputValue = chatModeState[chatMode].inputValue;
+  const chatHistory = chatModeState[chatMode].chatHistory;
+  const activeHistoryId = chatModeState[chatMode].activeHistoryId;
+
+  const setChatHistory = (updater: ChatHistoryItem[] | ((current: ChatHistoryItem[]) => ChatHistoryItem[])) => {
+    setChatModeState((current) => {
+      const modeState = current[chatMode];
+      const nextChatHistory = typeof updater === 'function' ? updater(modeState.chatHistory) : updater;
+      return {
+        ...current,
+        [chatMode]: {
+          ...modeState,
+          chatHistory: nextChatHistory,
+        },
+      };
+    });
+  };
+
+  const setActiveHistoryId = (updater: string | null | ((current: string | null) => string | null)) => {
+    setChatModeState((current) => {
+      const modeState = current[chatMode];
+      const nextActiveHistoryId = typeof updater === 'function' ? updater(modeState.activeHistoryId) : updater;
+      return {
+        ...current,
+        [chatMode]: {
+          ...modeState,
+          activeHistoryId: nextActiveHistoryId,
+        },
+      };
+    });
+  };
+
+  const setMessages = (updater: ChatMessage[] | ((current: ChatMessage[]) => ChatMessage[])) => {
+    setChatModeState((current) => {
+      const modeState = current[chatMode];
+      const nextMessages = typeof updater === 'function' ? updater(modeState.messages) : updater;
+      return {
+        ...current,
+        [chatMode]: {
+          ...modeState,
+          messages: nextMessages,
+        },
+      };
+    });
+  };
+
+  const setInputValue = (updater: string | ((current: string) => string)) => {
+    setChatModeState((current) => {
+      const modeState = current[chatMode];
+      const nextInputValue = typeof updater === 'function' ? updater(modeState.inputValue) : updater;
+      return {
+        ...current,
+        [chatMode]: {
+          ...modeState,
+          inputValue: nextInputValue,
+        },
+      };
+    });
+  };
+
+  const setDetail = (
+    updater: RequestDetail | undefined | ((current: RequestDetail | undefined) => RequestDetail | undefined),
+  ) => {
+    setChatModeState((current) => {
+      const modeState = current[chatMode];
+      const nextDetail = typeof updater === 'function' ? updater(modeState.detail) : updater;
+      return {
+        ...current,
+        [chatMode]: {
+          ...modeState,
+          detail: nextDetail,
+        },
+      };
+    });
+  };
 
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminError, setAdminError] = useState('');
@@ -632,6 +917,13 @@ const App = () => {
   const [userAccounts, setUserAccounts] = useState<UserAccount[]>([]);
   const [knowledgeBindings, setKnowledgeBindings] = useState<KnowledgeBinding[]>([]);
   const [skillPolicies, setSkillPolicies] = useState<SkillPolicy[]>([]);
+  const [flowPolicy, setFlowPolicy] = useState<FlowPolicyConfig | null>(null);
+  const [flowRuntimeSnapshot, setFlowRuntimeSnapshot] = useState<FlowRuntimeSnapshot | null>(null);
+  const [flowUseRuntimePolicy, setFlowUseRuntimePolicy] = useState(true);
+  const [flowOverrideOpen, setFlowOverrideOpen] = useState(false);
+  const [flowSessionOverride, setFlowSessionOverride] = useState<FlowRequestConfig>(FLOW_MODE_DEFAULT_CONFIG);
+  const [scenarioPacks, setScenarioPacks] = useState<ScenarioPackConfig[]>([]);
+  const [flowSkillDescriptors, setFlowSkillDescriptors] = useState<FlowSkillDescriptor[]>([]);
   const [releaseHistory, setReleaseHistory] = useState<ReleaseRecord[]>([]);
 
   const [releaseNote, setReleaseNote] = useState('');
@@ -665,6 +957,62 @@ const App = () => {
     return deriveSourcesFromDetail(detail, latestAssistantContent);
   }, [activeHistoryItem, detail, latestAssistantContent]);
 
+  const flowHitData = useMemo(() => {
+    const requestRecord = (detail?.request || {}) as unknown as Record<string, unknown>;
+    const flowConfig = requestRecord.flow_config;
+    const flowSnapshot = requestRecord.flow_snapshot;
+    const flowPolicyHit = requestRecord.flow_policy_hit;
+    const matchedScenarios = Array.isArray(requestRecord.matched_scenarios)
+      ? (requestRecord.matched_scenarios as Record<string, unknown>[])
+      : [];
+    const fallbackReason = sanitizeText(requestRecord.fallback_reason);
+    const flowGraph = requestRecord.flow_graph;
+    const skillAuthorization = Array.isArray(requestRecord.flow_skill_authorization)
+      ? (requestRecord.flow_skill_authorization as Record<string, unknown>[])
+      : [];
+    const nodeResults = Array.isArray(requestRecord.flow_node_results)
+      ? (requestRecord.flow_node_results as Record<string, unknown>[])
+      : [];
+    const stepVerdicts = Array.isArray(requestRecord.flow_step_verdicts)
+      ? (requestRecord.flow_step_verdicts as Record<string, unknown>[])
+      : [];
+    const repairEvents = Array.isArray(requestRecord.flow_repair_events)
+      ? (requestRecord.flow_repair_events as Record<string, unknown>[])
+      : [];
+    const flowDoneMeta = requestRecord.flow_done_meta;
+
+    const hasData =
+      Boolean(flowConfig) ||
+      Boolean(flowSnapshot) ||
+      Boolean(flowPolicyHit) ||
+      Boolean(flowGraph) ||
+      Boolean(flowDoneMeta) ||
+      matchedScenarios.length > 0 ||
+      Boolean(fallbackReason) ||
+      skillAuthorization.length > 0 ||
+      nodeResults.length > 0 ||
+      stepVerdicts.length > 0 ||
+      repairEvents.length > 0;
+
+    if (!hasData) {
+      return null;
+    }
+
+    return {
+      flowConfig,
+      flowSnapshot,
+      flowPolicyHit,
+      matchedScenarios,
+      fallbackReason,
+      flowGraph,
+      skillAuthorization,
+      nodeResults,
+      stepVerdicts,
+      repairEvents,
+      flowDoneMeta,
+    };
+  }, [detail]);
+
   const filteredModels = useMemo(() => {
     if (!modelCenter) {
       return [];
@@ -678,6 +1026,23 @@ const App = () => {
       [row.model_name, row.model_type, row.model_url, row.api_type].some((item) => item.toLowerCase().includes(keyword)),
     );
   }, [modelCenter, modelTab, modelSearch]);
+
+  const runtimeFlowRequestConfig = useMemo(
+    () => toFlowRequestConfig(flowRuntimeSnapshot?.flow_policy || flowPolicy),
+    [flowRuntimeSnapshot, flowPolicy],
+  );
+
+  const effectiveFlowRequestConfig = useMemo(
+    () => (flowUseRuntimePolicy ? runtimeFlowRequestConfig : flowSessionOverride),
+    [flowUseRuntimePolicy, runtimeFlowRequestConfig, flowSessionOverride],
+  );
+
+  useEffect(() => {
+    if (!flowUseRuntimePolicy) {
+      return;
+    }
+    setFlowSessionOverride(cloneFlowRequestConfig(runtimeFlowRequestConfig));
+  }, [flowUseRuntimePolicy, runtimeFlowRequestConfig]);
 
   const applyActionToDetail = (current: RequestDetail, actionRow: Record<string, unknown>): RequestDetail => {
     const next: RequestDetail = {
@@ -751,6 +1116,84 @@ const App = () => {
         };
       }
 
+      if (phase === 'flow_mode_initialized') {
+        next.request = {
+          ...next.request,
+          flow_config: meta.flow_config,
+          flow_snapshot: meta.config_snapshot,
+        } as unknown as RequestDetail['request'];
+      }
+
+      if (phase === 'flow_policy_hit') {
+        next.request = {
+          ...next.request,
+          flow_policy_hit: meta,
+        } as unknown as RequestDetail['request'];
+      }
+
+      if (phase === 'scenario_resolved') {
+        next.request = {
+          ...next.request,
+          matched_scenarios: meta.matched_scenarios,
+        } as unknown as RequestDetail['request'];
+      }
+
+      if (phase === 'flow_graph_built') {
+        next.request = {
+          ...next.request,
+          flow_graph: meta.graph,
+        } as unknown as RequestDetail['request'];
+      }
+
+      if (phase === 'flow_fallback') {
+        next.request = {
+          ...next.request,
+          fallback_reason: meta.reason,
+        } as unknown as RequestDetail['request'];
+      }
+
+      if (phase === 'skill_authorization') {
+        const existed = ((next.request as unknown as Record<string, unknown>).flow_skill_authorization as unknown[]) || [];
+        next.request = {
+          ...next.request,
+          flow_skill_authorization: [
+            ...existed,
+            {
+              node_id: meta.node_id,
+              agent_code: meta.agent_code,
+              authorized_skills: meta.authorized_skills,
+              denied_skills: meta.denied_skills,
+            },
+          ],
+        } as unknown as RequestDetail['request'];
+      }
+
+      if (phase === 'flow_node_result') {
+        const existed = ((next.request as unknown as Record<string, unknown>).flow_node_results as unknown[]) || [];
+        next.request = {
+          ...next.request,
+          flow_node_results: [...existed, meta.node_result],
+          flow_step_verdicts: [
+            ...((((next.request as unknown as Record<string, unknown>).flow_step_verdicts as unknown[]) || [])),
+            meta.step_verdict,
+          ],
+        } as unknown as RequestDetail['request'];
+      }
+
+      if (phase === 'flow_repair_applied') {
+        const existed = ((next.request as unknown as Record<string, unknown>).flow_repair_events as unknown[]) || [];
+        next.request = {
+          ...next.request,
+          flow_repair_events: [
+            ...existed,
+            {
+              candidate: meta.candidate,
+              repair_node: meta.repair_node,
+            },
+          ],
+        } as unknown as RequestDetail['request'];
+      }
+
       if (phase === 'agent_action') {
         const rows = Array.isArray(meta.agents) ? (meta.agents as Record<string, unknown>[]) : [];
         let rolling = next;
@@ -812,6 +1255,72 @@ const App = () => {
       setUserAccounts(full.user_accounts || []);
       setKnowledgeBindings(full.knowledge_bindings || []);
       setSkillPolicies(full.skill_policies || []);
+      setFlowPolicy(
+        full.flow_policy || {
+          scenario_policy: {
+            enabled: true,
+            mode: 'auto',
+            allowed_scenarios: [],
+            allow_graph_repair: true,
+            max_graph_cycles: 2,
+          },
+          skill_policy: {
+            enabled: true,
+            mount_mode: 'agent_scoped',
+            runtime_auth_check: true,
+          },
+          max_node_budget: 12,
+          fallback_to_global: true,
+          notes: '',
+        },
+      );
+      setFlowRuntimeSnapshot({
+        updated_at: full.updated_at,
+        flow_policy: full.flow_policy || {
+          scenario_policy: {
+            enabled: true,
+            mode: 'auto',
+            allowed_scenarios: [],
+            allow_graph_repair: true,
+            max_graph_cycles: 2,
+          },
+          skill_policy: {
+            enabled: true,
+            mount_mode: 'agent_scoped',
+            runtime_auth_check: true,
+          },
+          max_node_budget: 12,
+          fallback_to_global: true,
+          notes: '',
+        },
+        scenario_packs: full.scenario_packs || [],
+        flow_skill_descriptors: full.flow_skill_descriptors || [],
+      });
+      setFlowSessionOverride(
+        cloneFlowRequestConfig(
+          toFlowRequestConfig(
+            full.flow_policy || {
+              scenario_policy: {
+                enabled: true,
+                mode: 'auto',
+                allowed_scenarios: [],
+                allow_graph_repair: true,
+                max_graph_cycles: 2,
+              },
+              skill_policy: {
+                enabled: true,
+                mount_mode: 'agent_scoped',
+                runtime_auth_check: true,
+              },
+              max_node_budget: 12,
+              fallback_to_global: true,
+              notes: '',
+            },
+          ),
+        ),
+      );
+      setScenarioPacks(full.scenario_packs || []);
+      setFlowSkillDescriptors((full.flow_skill_descriptors || []).map((item) => normalizeFlowSkillDescriptor(item)));
       setReleaseHistory(full.release_history || []);
     } catch (error) {
       setAdminError(error instanceof Error ? error.message : '管理端数据加载失败');
@@ -820,11 +1329,37 @@ const App = () => {
     }
   };
 
+  const loadFlowRuntimeSnapshot = async () => {
+    try {
+      const response = await fetch('/api/admin/flow-runtime-snapshot');
+      if (!response.ok) {
+        return;
+      }
+      const snapshot = (await response.json()) as FlowRuntimeSnapshot;
+      setFlowRuntimeSnapshot(snapshot);
+      if (!flowPolicy) {
+        setFlowPolicy(snapshot.flow_policy || null);
+      }
+      if (!scenarioPacks.length) {
+        setScenarioPacks(snapshot.scenario_packs || []);
+      }
+      if (!flowSkillDescriptors.length) {
+        setFlowSkillDescriptors((snapshot.flow_skill_descriptors || []).map((item) => normalizeFlowSkillDescriptor(item)));
+      }
+    } catch {
+      // keep local default config when snapshot is unavailable
+    }
+  };
+
   useEffect(() => {
     if (viewMode === 'backend') {
       void loadAdminData();
     }
   }, [viewMode]);
+
+  useEffect(() => {
+    void loadFlowRuntimeSnapshot();
+  }, []);
 
   useEffect(() => {
     document.body.classList.toggle('theme-dark', isDark);
@@ -857,6 +1392,18 @@ const App = () => {
     if (!trimmed || isStreaming) {
       return;
     }
+    const requestMode = chatMode;
+    const streamEndpoint = requestMode === 'flow' ? '/api/chat/stream/flow/v1' : '/api/chat/stream/v2';
+    const syncEndpoint = requestMode === 'flow' ? '/api/chat/flow/v1' : '/api/chat';
+    const flowConfigForRequest =
+      requestMode === 'flow'
+        ? cloneFlowRequestConfig(flowUseRuntimePolicy ? runtimeFlowRequestConfig : effectiveFlowRequestConfig)
+        : undefined;
+    const requestPayload = {
+      query: trimmed,
+      history: toHistoryPayload(messages),
+      ...(requestMode === 'flow' ? { flow_config: flowConfigForRequest } : {}),
+    };
 
     const historyId = `h-${Date.now()}`;
 
@@ -892,16 +1439,13 @@ const App = () => {
     streamAbortRef.current = controller;
 
     try {
-      const response = await fetch('/api/chat/stream/v2', {
+      const response = await fetch(streamEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         signal: controller.signal,
-        body: JSON.stringify({
-          query: trimmed,
-          history: toHistoryPayload(messages),
-        }),
+        body: JSON.stringify(requestPayload),
       });
 
       if (!response.ok || !response.body) {
@@ -990,13 +1534,23 @@ const App = () => {
               if (!current) {
                 return current;
               }
-              const next = {
+              let next: RequestDetail = {
                 ...current,
                 request: {
                   ...current.request,
                   status: 'success',
                 },
               };
+              if (requestMode === 'flow' && frame.data.meta && typeof frame.data.meta === 'object') {
+                const doneMeta = frame.data.meta as Record<string, unknown>;
+                next = {
+                  ...next,
+                  request: {
+                    ...next.request,
+                    flow_done_meta: doneMeta.flow,
+                  } as unknown as RequestDetail['request'],
+                };
+              }
               setChatHistory((historyRows) =>
                 historyRows.map((item) =>
                   item.id === historyId
@@ -1043,15 +1597,12 @@ const App = () => {
         );
         return;
       }
-      const syncResponse = await fetch('/api/chat', {
+      const syncResponse = await fetch(syncEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          query: trimmed,
-          history: toHistoryPayload(messages),
-        }),
+        body: JSON.stringify(requestPayload),
       });
       const syncPayload = (await syncResponse.json()) as { content?: string };
       const content = sanitizeText(syncPayload.content);
@@ -1098,6 +1649,103 @@ const App = () => {
       streamAbortRef.current = null;
       setIsStreaming(false);
     }
+  };
+
+  const updateModelRecord = (target: ModelRecord, patch: Partial<ModelRecord>) => {
+    if (!modelCenter) {
+      return;
+    }
+    setModelCenter((current) => {
+      if (!current) {
+        return current;
+      }
+      const rows = current[modelTab] || [];
+      const index = rows.findIndex(
+        (row) =>
+          row.model_name === target.model_name &&
+          row.model_url === target.model_url &&
+          row.api_type === target.api_type,
+      );
+      if (index < 0) {
+        return current;
+      }
+      const nextRows = [...rows];
+      nextRows[index] = {
+        ...nextRows[index],
+        ...patch,
+      };
+      return {
+        ...current,
+        [modelTab]: nextRows,
+      };
+    });
+  };
+
+  const addModelRecord = () => {
+    setModelCenter((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        [modelTab]: [...(current[modelTab] || []), createEmptyModelRecord(modelTab)],
+      };
+    });
+  };
+
+  const removeModelRecord = (target: ModelRecord) => {
+    setModelCenter((current) => {
+      if (!current) {
+        return current;
+      }
+      const rows = current[modelTab] || [];
+      const index = rows.findIndex(
+        (row) =>
+          row.model_name === target.model_name &&
+          row.model_url === target.model_url &&
+          row.api_type === target.api_type,
+      );
+      if (index < 0) {
+        return current;
+      }
+      const nextRows = rows.filter((_, rowIndex) => rowIndex !== index);
+      return {
+        ...current,
+        [modelTab]: nextRows,
+      };
+    });
+  };
+
+  const setDefaultModel = (target: ModelRecord, checked: boolean) => {
+    setModelCenter((current) => {
+      if (!current) {
+        return current;
+      }
+      const nextRows = (current[modelTab] || []).map((row) => {
+        const isCurrent =
+          row.model_name === target.model_name &&
+          row.model_url === target.model_url &&
+          row.api_type === target.api_type;
+        if (checked) {
+          return { ...row, is_default: isCurrent };
+        }
+        if (!isCurrent) {
+          return row;
+        }
+        return { ...row, is_default: false };
+      });
+      return {
+        ...current,
+        [modelTab]: nextRows,
+      };
+    });
+  };
+
+  const saveModelCenter = async () => {
+    if (!modelCenter) {
+      return;
+    }
+    await saveSection('/api/admin/model-center', modelCenter, '模型配置已保存', '模型配置保存失败');
   };
 
   const saveSection = async (url: string, body: unknown, successText: string, failText: string) => {
@@ -1158,6 +1806,26 @@ const App = () => {
 
   const saveSkillPolicies = async () => {
     await saveSection('/api/admin/skill-policies', skillPolicies, 'Skill 策略已保存', 'Skill 策略保存失败');
+  };
+
+  const saveFlowPolicy = async () => {
+    if (!flowPolicy) {
+      return;
+    }
+    await saveSection('/api/admin/flow-policy', flowPolicy, '心流策略已保存', '心流策略保存失败');
+  };
+
+  const saveScenarioPacks = async () => {
+    await saveSection('/api/admin/scenario-packs', scenarioPacks, 'ScenarioHub 配置已保存', 'ScenarioHub 配置保存失败');
+  };
+
+  const saveFlowSkillDescriptors = async () => {
+    await saveSection(
+      '/api/admin/flow-skill-descriptors',
+      flowSkillDescriptors,
+      'SkillHub 配置已保存',
+      'SkillHub 配置保存失败',
+    );
   };
 
   const publishConfigSnapshot = async () => {
@@ -1231,14 +1899,229 @@ const App = () => {
     const hasTraceData = Boolean(
       detail && (detail.agent_events.length > 0 || detail.agent_timeline.length > 0 || detail.tool_calls.length > 0),
     );
+    const hasFlowHitData = Boolean(flowHitData);
+    const tracePanelTitle =
+      tracePanelMode === 'trace' ? '问答溯源' : tracePanelMode === 'source' ? '回答来源' : 'Flow 策略命中';
 
     return (
       <div className={`map-chat-layout ${tracePanelOpen ? 'trace-open' : ''}`}>
-        <Card className="map-chat-main" title="全域智能协作">
+        <Card className="map-chat-main" title={chatMode === 'flow' ? '心流智能协作' : '全域智能协作'}>
           <div className="chat-main-header">
-            <Tag className="mode-tag">全域模式</Tag>
+            <div className="mode-switch-group">
+              <Button
+                size="small"
+                type={chatMode === 'global' ? 'primary' : 'default'}
+                disabled={isStreaming}
+                onClick={() => setChatMode('global')}
+              >
+                全域模式
+              </Button>
+              <Button
+                size="small"
+                type={chatMode === 'flow' ? 'primary' : 'default'}
+                disabled={isStreaming}
+                onClick={() => setChatMode('flow')}
+              >
+                心流模式
+              </Button>
+            </div>
+            <Tag className="mode-tag">{CHAT_MODE_LABEL[chatMode]}</Tag>
             <Tag className={`stream-state-tag ${isStreaming ? 'running' : 'ready'}`}>{isStreaming ? '思考中...' : '就绪'}</Tag>
+            {chatMode === 'flow' ? (
+              <div className="flow-mode-runtime-bar">
+                <Tag>{flowUseRuntimePolicy ? '策略来源：管理端默认' : '策略来源：会话覆写'}</Tag>
+                <Tag>
+                  策略快照：
+                  {flowRuntimeSnapshot?.updated_at ? flowRuntimeSnapshot.updated_at : '本地默认'}
+                </Tag>
+                <span className="flow-mode-runtime-switch-label">使用管理端默认</span>
+                <Switch
+                  size="small"
+                  checked={flowUseRuntimePolicy}
+                  disabled={isStreaming}
+                  onChange={(checked) => {
+                    setFlowUseRuntimePolicy(checked);
+                    if (checked) {
+                      setFlowSessionOverride(cloneFlowRequestConfig(runtimeFlowRequestConfig));
+                    }
+                  }}
+                />
+                <Button
+                  size="small"
+                  disabled={isStreaming}
+                  onClick={() => setFlowOverrideOpen((value) => !value)}
+                >
+                  {flowOverrideOpen ? '收起覆写' : '会话覆写'}
+                </Button>
+              </div>
+            ) : null}
           </div>
+          {chatMode === 'flow' && flowOverrideOpen ? (
+            <div className="flow-override-panel">
+              <div className="flow-override-grid">
+                <label className="switch-row">
+                  <span>Scenario Policy 启用</span>
+                  <Switch
+                    checked={flowSessionOverride.scenario_policy.enabled}
+                    disabled={flowUseRuntimePolicy || isStreaming}
+                    onChange={(checked) =>
+                      setFlowSessionOverride((current) => ({
+                        ...current,
+                        scenario_policy: { ...current.scenario_policy, enabled: checked },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Scenario 模式</span>
+                  <Select
+                    value={flowSessionOverride.scenario_policy.mode}
+                    disabled={flowUseRuntimePolicy || isStreaming}
+                    options={[
+                      { label: 'auto', value: 'auto' },
+                      { label: 'manual', value: 'manual' },
+                    ]}
+                    onChange={(value) =>
+                      setFlowSessionOverride((current) => ({
+                        ...current,
+                        scenario_policy: {
+                          ...current.scenario_policy,
+                          mode: value,
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label className="switch-row">
+                  <span>允许图修复</span>
+                  <Switch
+                    checked={flowSessionOverride.scenario_policy.allow_graph_repair}
+                    disabled={flowUseRuntimePolicy || isStreaming}
+                    onChange={(checked) =>
+                      setFlowSessionOverride((current) => ({
+                        ...current,
+                        scenario_policy: {
+                          ...current.scenario_policy,
+                          allow_graph_repair: checked,
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>最大修复轮次</span>
+                  <Input
+                    value={String(flowSessionOverride.scenario_policy.max_graph_cycles)}
+                    disabled={flowUseRuntimePolicy || isStreaming}
+                    onChange={(event) =>
+                      setFlowSessionOverride((current) => ({
+                        ...current,
+                        scenario_policy: {
+                          ...current.scenario_policy,
+                          max_graph_cycles: Number(event.target.value || 0),
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label className="full-span">
+                  <span>允许场景（逗号或换行分隔，留空表示自动匹配）</span>
+                  <Input.TextArea
+                    autoSize={{ minRows: 2, maxRows: 4 }}
+                    value={stringifyListInput(flowSessionOverride.scenario_policy.allowed_scenarios || [])}
+                    disabled={flowUseRuntimePolicy || isStreaming}
+                    onChange={(event) =>
+                      setFlowSessionOverride((current) => ({
+                        ...current,
+                        scenario_policy: {
+                          ...current.scenario_policy,
+                          allowed_scenarios: parseListInput(event.target.value),
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label className="switch-row">
+                  <span>Skill Policy 启用</span>
+                  <Switch
+                    checked={flowSessionOverride.skill_policy.enabled}
+                    disabled={flowUseRuntimePolicy || isStreaming}
+                    onChange={(checked) =>
+                      setFlowSessionOverride((current) => ({
+                        ...current,
+                        skill_policy: { ...current.skill_policy, enabled: checked },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>挂载模式</span>
+                  <Select
+                    value={flowSessionOverride.skill_policy.mount_mode}
+                    disabled={flowUseRuntimePolicy || isStreaming}
+                    options={[{ label: 'agent_scoped', value: 'agent_scoped' }]}
+                    onChange={(value) =>
+                      setFlowSessionOverride((current) => ({
+                        ...current,
+                        skill_policy: { ...current.skill_policy, mount_mode: value },
+                      }))
+                    }
+                  />
+                </label>
+                <label className="switch-row">
+                  <span>执行时二次鉴权</span>
+                  <Switch
+                    checked={flowSessionOverride.skill_policy.runtime_auth_check}
+                    disabled={flowUseRuntimePolicy || isStreaming}
+                    onChange={(checked) =>
+                      setFlowSessionOverride((current) => ({
+                        ...current,
+                        skill_policy: { ...current.skill_policy, runtime_auth_check: checked },
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>最大节点预算</span>
+                  <Input
+                    value={String(flowSessionOverride.max_node_budget)}
+                    disabled={flowUseRuntimePolicy || isStreaming}
+                    onChange={(event) =>
+                      setFlowSessionOverride((current) => ({
+                        ...current,
+                        max_node_budget: Number(event.target.value || 0),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="switch-row">
+                  <span>编排失败回退全域链路</span>
+                  <Switch
+                    checked={flowSessionOverride.fallback_to_global}
+                    disabled={flowUseRuntimePolicy || isStreaming}
+                    onChange={(checked) =>
+                      setFlowSessionOverride((current) => ({
+                        ...current,
+                        fallback_to_global: checked,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+              <div className="flow-override-actions">
+                <Button
+                  size="small"
+                  disabled={isStreaming}
+                  onClick={() => setFlowSessionOverride(cloneFlowRequestConfig(runtimeFlowRequestConfig))}
+                >
+                  重置为管理端默认
+                </Button>
+                <Button size="small" type="primary" disabled={isStreaming} onClick={() => setFlowUseRuntimePolicy(false)}>
+                  使用会话覆写
+                </Button>
+              </div>
+            </div>
+          ) : null}
           <div className="chat-message-list">
             {messages.length === 0 ? (
               <div className="empty-hint">
@@ -1278,6 +2161,18 @@ const App = () => {
                     >
                       查看来源
                     </Button>
+                    {chatMode === 'flow' ? (
+                      <Button
+                        size="small"
+                        onClick={() => {
+                          setTracePanelMode('flow');
+                          setTracePanelOpen(true);
+                        }}
+                        disabled={!hasFlowHitData}
+                      >
+                        策略命中
+                      </Button>
+                    ) : null}
                     <Tag>
                       {detail?.agent_timeline?.length
                         ? `${sanitizeText(detail.agent_timeline[detail.agent_timeline.length - 1]?.agent_name || '通用助手')}`
@@ -1319,7 +2214,7 @@ const App = () => {
           <aside className="map-trace-sidebar">
             <Card
               className="map-chat-tree"
-              title={tracePanelMode === 'trace' ? '问答溯源' : '回答来源'}
+              title={tracePanelTitle}
               extra={<Button type="text" onClick={() => setTracePanelOpen(false)}>收起</Button>}
             >
               {tracePanelMode === 'trace' ? (
@@ -1329,7 +2224,7 @@ const App = () => {
                   </div>
                   <div className="tree-footer">输出摘要：{latestAssistantContent ? latestAssistantContent.slice(0, 120) : '-'}</div>
                 </>
-              ) : (
+              ) : tracePanelMode === 'source' ? (
                 <div className="source-list">
                   {traceSourceItems.length === 0 ? <div className="empty-hint">暂无可展示来源。</div> : null}
                   {traceSourceItems.map((item) => (
@@ -1342,6 +2237,67 @@ const App = () => {
                       <div className="source-card-summary">{item.summary}</div>
                     </Card>
                   ))}
+                </div>
+              ) : (
+                <div className="flow-hit-panel">
+                  {!flowHitData ? <div className="empty-hint">暂无策略命中信息。</div> : null}
+                  {flowHitData ? (
+                    <>
+                      <div className="flow-hit-kpis">
+                        <Tag>命中场景: {flowHitData.matchedScenarios.length}</Tag>
+                        <Tag>节点结果: {flowHitData.nodeResults.length}</Tag>
+                        <Tag>鉴权记录: {flowHitData.skillAuthorization.length}</Tag>
+                        <Tag>修复事件: {flowHitData.repairEvents.length}</Tag>
+                      </div>
+                      {flowHitData.fallbackReason ? (
+                        <Alert
+                          type="warning"
+                          message={`回退原因：${flowHitData.fallbackReason}`}
+                          className="flow-hit-alert"
+                        />
+                      ) : null}
+                      <div className="flow-hit-block">
+                        <div className="flow-hit-title">运行时配置快照</div>
+                        <pre className="flow-hit-json">{toPrettyJson(flowHitData.flowSnapshot)}</pre>
+                      </div>
+                      <div className="flow-hit-block">
+                        <div className="flow-hit-title">本次生效策略</div>
+                        <pre className="flow-hit-json">{toPrettyJson(flowHitData.flowConfig)}</pre>
+                      </div>
+                      <div className="flow-hit-block">
+                        <div className="flow-hit-title">策略命中信息</div>
+                        <pre className="flow-hit-json">{toPrettyJson(flowHitData.flowPolicyHit)}</pre>
+                      </div>
+                      <div className="flow-hit-block">
+                        <div className="flow-hit-title">命中场景</div>
+                        <pre className="flow-hit-json">{toPrettyJson(flowHitData.matchedScenarios)}</pre>
+                      </div>
+                      <div className="flow-hit-block">
+                        <div className="flow-hit-title">Skill 鉴权结果</div>
+                        <pre className="flow-hit-json">{toPrettyJson(flowHitData.skillAuthorization)}</pre>
+                      </div>
+                      <div className="flow-hit-block">
+                        <div className="flow-hit-title">执行节点结果</div>
+                        <pre className="flow-hit-json">{toPrettyJson(flowHitData.nodeResults)}</pre>
+                      </div>
+                      <div className="flow-hit-block">
+                        <div className="flow-hit-title">步骤判定</div>
+                        <pre className="flow-hit-json">{toPrettyJson(flowHitData.stepVerdicts)}</pre>
+                      </div>
+                      <div className="flow-hit-block">
+                        <div className="flow-hit-title">修复轨迹</div>
+                        <pre className="flow-hit-json">{toPrettyJson(flowHitData.repairEvents)}</pre>
+                      </div>
+                      <div className="flow-hit-block">
+                        <div className="flow-hit-title">构建执行图</div>
+                        <pre className="flow-hit-json">{toPrettyJson(flowHitData.flowGraph)}</pre>
+                      </div>
+                      <div className="flow-hit-block">
+                        <div className="flow-hit-title">Done 流程元数据</div>
+                        <pre className="flow-hit-json">{toPrettyJson(flowHitData.flowDoneMeta)}</pre>
+                      </div>
+                    </>
+                  ) : null}
                 </div>
               )}
             </Card>
@@ -1357,7 +2313,10 @@ const App = () => {
       title="模型管理"
       extra={
         <div className="backend-toolbar">
-          <Button onClick={() => setSaveStatus('当前为镜像模式，请在后端对接后开启新增动作')}>添加模型</Button>
+          <Button onClick={addModelRecord}>添加模型</Button>
+          <Button type="primary" onClick={() => void saveModelCenter()}>
+            保存模型配置
+          </Button>
           <Input
             value={modelSearch}
             placeholder="搜索模型名称..."
@@ -1379,22 +2338,65 @@ const App = () => {
               rowKey={(row) => `${key}_${row.model_name}`}
               dataSource={filteredModels}
               columns={[
-                { title: '模型名称', dataIndex: 'model_name', key: 'model_name' },
-                { title: '模型类型', dataIndex: 'model_type', key: 'model_type' },
-                { title: '模型地址', dataIndex: 'model_url', key: 'model_url' },
+                {
+                  title: '模型名称',
+                  dataIndex: 'model_name',
+                  key: 'model_name',
+                  render: (_, row) => (
+                    <Input
+                      value={row.model_name}
+                      onChange={(event) => updateModelRecord(row, { model_name: event.target.value })}
+                    />
+                  ),
+                },
+                {
+                  title: '模型类型',
+                  dataIndex: 'model_type',
+                  key: 'model_type',
+                  render: (_, row) => (
+                    <Select
+                      value={row.model_type}
+                      options={[
+                        { label: '远程', value: '远程' },
+                        { label: '本地', value: '本地' },
+                      ]}
+                      onChange={(value) => updateModelRecord(row, { model_type: value })}
+                    />
+                  ),
+                },
+                {
+                  title: '模型地址',
+                  dataIndex: 'model_url',
+                  key: 'model_url',
+                  render: (_, row) => (
+                    <Input
+                      value={row.model_url}
+                      onChange={(event) => updateModelRecord(row, { model_url: event.target.value })}
+                    />
+                  ),
+                },
                 {
                   title: '默认模型',
                   key: 'is_default',
-                  render: (_, row) => (row.is_default ? <Tag color="green">默认</Tag> : <Tag>否</Tag>),
+                  render: (_, row) => <Switch checked={row.is_default} onChange={(checked) => setDefaultModel(row, checked)} />,
                 },
-                { title: '接口类型', dataIndex: 'api_type', key: 'api_type' },
+                {
+                  title: '接口类型',
+                  dataIndex: 'api_type',
+                  key: 'api_type',
+                  render: (_, row) => (
+                    <Input
+                      value={row.api_type}
+                      onChange={(event) => updateModelRecord(row, { api_type: event.target.value })}
+                    />
+                  ),
+                },
                 {
                   title: '操作',
                   key: 'action',
-                  render: () => (
+                  render: (_, row) => (
                     <div className="table-actions-inline">
-                      <Button type="link">编辑</Button>
-                      <Button type="link" danger>
+                      <Button type="link" danger onClick={() => removeModelRecord(row)}>
                         删除
                       </Button>
                     </div>
@@ -1729,6 +2731,412 @@ const App = () => {
       }
     >
       <Table rowKey="agent_code" dataSource={businessAgents} columns={businessColumns} pagination={false} />
+    </Card>
+  );
+
+  const renderFlowPolicyPage = () => (
+    <Card
+      loading={adminLoading}
+      title="心流策略"
+      extra={
+        <Button type="primary" onClick={() => void saveFlowPolicy()}>
+          保存策略
+        </Button>
+      }
+    >
+      {flowPolicy ? (
+        <div className="form-grid">
+          <label className="switch-row">
+            <span>Scenario Policy 启用</span>
+            <Switch
+              checked={flowPolicy.scenario_policy.enabled}
+              onChange={(checked) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  scenario_policy: { ...flowPolicy.scenario_policy, enabled: checked },
+                })
+              }
+            />
+          </label>
+          <label>
+            <span>Scenario 模式</span>
+            <Select
+              value={flowPolicy.scenario_policy.mode}
+              options={[
+                { label: 'auto', value: 'auto' },
+                { label: 'manual', value: 'manual' },
+              ]}
+              onChange={(value) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  scenario_policy: { ...flowPolicy.scenario_policy, mode: value },
+                })
+              }
+            />
+          </label>
+          <label className="switch-row">
+            <span>允许图修复</span>
+            <Switch
+              checked={flowPolicy.scenario_policy.allow_graph_repair}
+              onChange={(checked) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  scenario_policy: { ...flowPolicy.scenario_policy, allow_graph_repair: checked },
+                })
+              }
+            />
+          </label>
+          <label>
+            <span>最大修复轮次</span>
+            <Input
+              value={String(flowPolicy.scenario_policy.max_graph_cycles)}
+              onChange={(event) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  scenario_policy: {
+                    ...flowPolicy.scenario_policy,
+                    max_graph_cycles: Number(event.target.value || 0),
+                  },
+                })
+              }
+            />
+          </label>
+          <label className="full-span">
+            <span>允许场景（逗号或换行分隔，留空表示自动匹配）</span>
+            <Input.TextArea
+              autoSize={{ minRows: 2, maxRows: 6 }}
+              value={stringifyListInput(flowPolicy.scenario_policy.allowed_scenarios || [])}
+              onChange={(event) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  scenario_policy: {
+                    ...flowPolicy.scenario_policy,
+                    allowed_scenarios: parseListInput(event.target.value),
+                  },
+                })
+              }
+            />
+          </label>
+          <label className="switch-row">
+            <span>Skill Policy 启用</span>
+            <Switch
+              checked={flowPolicy.skill_policy.enabled}
+              onChange={(checked) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  skill_policy: { ...flowPolicy.skill_policy, enabled: checked },
+                })
+              }
+            />
+          </label>
+          <label>
+            <span>挂载模式</span>
+            <Select
+              value={flowPolicy.skill_policy.mount_mode}
+              options={[{ label: 'agent_scoped', value: 'agent_scoped' }]}
+              onChange={(value) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  skill_policy: { ...flowPolicy.skill_policy, mount_mode: value },
+                })
+              }
+            />
+          </label>
+          <label className="switch-row">
+            <span>执行时二次鉴权</span>
+            <Switch
+              checked={flowPolicy.skill_policy.runtime_auth_check}
+              onChange={(checked) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  skill_policy: { ...flowPolicy.skill_policy, runtime_auth_check: checked },
+                })
+              }
+            />
+          </label>
+          <label>
+            <span>最大节点预算</span>
+            <Input
+              value={String(flowPolicy.max_node_budget)}
+              onChange={(event) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  max_node_budget: Number(event.target.value || 0),
+                })
+              }
+            />
+          </label>
+          <label className="switch-row">
+            <span>编排失败回退全域链路</span>
+            <Switch
+              checked={flowPolicy.fallback_to_global}
+              onChange={(checked) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  fallback_to_global: checked,
+                })
+              }
+            />
+          </label>
+          <label className="full-span">
+            <span>备注</span>
+            <Input.TextArea
+              autoSize={{ minRows: 2, maxRows: 6 }}
+              value={flowPolicy.notes}
+              onChange={(event) =>
+                setFlowPolicy({
+                  ...flowPolicy,
+                  notes: event.target.value,
+                })
+              }
+            />
+          </label>
+        </div>
+      ) : null}
+    </Card>
+  );
+
+  const renderScenarioHubPage = () => (
+    <Card
+      loading={adminLoading}
+      title="ScenarioHub 场景包"
+      extra={
+        <Button type="primary" onClick={() => void saveScenarioPacks()}>
+          保存场景包
+        </Button>
+      }
+    >
+      <Table
+        rowKey="scenario_id"
+        pagination={false}
+        dataSource={scenarioPacks}
+        columns={[
+          { title: 'Scenario ID', dataIndex: 'scenario_id', key: 'scenario_id', width: 220 },
+          {
+            title: '场景名称',
+            key: 'display_name',
+            width: 150,
+            render: (_, row, index) => (
+              <Input
+                value={row.display_name}
+                onChange={(event) => {
+                  const next = [...scenarioPacks];
+                  next[index] = { ...next[index], display_name: event.target.value };
+                  setScenarioPacks(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '业务域',
+            key: 'domain',
+            width: 180,
+            render: (_, row, index) => (
+              <Input
+                value={row.domain}
+                onChange={(event) => {
+                  const next = [...scenarioPacks];
+                  next[index] = { ...next[index], domain: event.target.value };
+                  setScenarioPacks(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '触发意图',
+            key: 'trigger_intents',
+            render: (_, row, index) => (
+              <Input
+                value={stringifyListInput(row.trigger_intents)}
+                onChange={(event) => {
+                  const next = [...scenarioPacks];
+                  next[index] = { ...next[index], trigger_intents: parseListInput(event.target.value) };
+                  setScenarioPacks(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: 'Required Agents',
+            key: 'required_agents',
+            render: (_, row, index) => (
+              <Input
+                value={stringifyListInput(row.required_agents)}
+                onChange={(event) => {
+                  const next = [...scenarioPacks];
+                  next[index] = { ...next[index], required_agents: parseListInput(event.target.value) };
+                  setScenarioPacks(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: 'Auth Scopes',
+            key: 'auth_scopes',
+            render: (_, row, index) => (
+              <Input
+                value={stringifyListInput(row.auth_scopes)}
+                onChange={(event) => {
+                  const next = [...scenarioPacks];
+                  next[index] = { ...next[index], auth_scopes: parseListInput(event.target.value) };
+                  setScenarioPacks(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '状态',
+            key: 'status',
+            width: 80,
+            render: (_, row, index) => (
+              <Switch
+                checked={row.status === 'active'}
+                onChange={(checked) => {
+                  const next = [...scenarioPacks];
+                  next[index] = { ...next[index], status: checked ? 'active' : 'inactive' };
+                  setScenarioPacks(next);
+                }}
+              />
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+
+  const renderSkillHubPage = () => (
+    <Card
+      loading={adminLoading}
+      title="SkillHub 能力挂载"
+      extra={
+        <Button type="primary" onClick={() => void saveFlowSkillDescriptors()}>
+          保存能力
+        </Button>
+      }
+    >
+      <Table
+        rowKey="skill_id"
+        pagination={false}
+        dataSource={flowSkillDescriptors}
+        columns={[
+          { title: 'Skill ID', dataIndex: 'skill_id', key: 'skill_id', width: 190 },
+          {
+            title: '展示名称',
+            key: 'display_name',
+            width: 150,
+            render: (_, row, index) => (
+              <Input
+                value={row.display_name}
+                onChange={(event) => {
+                  const next = [...flowSkillDescriptors];
+                  next[index] = { ...next[index], display_name: event.target.value };
+                  setFlowSkillDescriptors(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: 'Tool Name',
+            key: 'tool_name',
+            width: 180,
+            render: (_, row, index) => (
+              <Input
+                value={row.tool_name}
+                onChange={(event) => {
+                  const next = [...flowSkillDescriptors];
+                  next[index] = { ...next[index], tool_name: event.target.value };
+                  setFlowSkillDescriptors(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '挂载 Agent',
+            key: 'mount_agents',
+            render: (_, row, index) => (
+              <Input
+                value={stringifyListInput(row.mount_agents)}
+                onChange={(event) => {
+                  const next = [...flowSkillDescriptors];
+                  next[index] = { ...next[index], mount_agents: parseListInput(event.target.value) };
+                  setFlowSkillDescriptors(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '所需 Scope',
+            key: 'required_scopes',
+            render: (_, row, index) => (
+              <Input
+                value={stringifyListInput(row.required_scopes)}
+                onChange={(event) => {
+                  const next = [...flowSkillDescriptors];
+                  next[index] = { ...next[index], required_scopes: parseListInput(event.target.value) };
+                  setFlowSkillDescriptors(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '允许用户',
+            key: 'allowed_users',
+            render: (_, row, index) => (
+              <Input
+                value={stringifyListInput(row.allowed_users || ['*'])}
+                onChange={(event) => {
+                  const next = [...flowSkillDescriptors];
+                  next[index] = { ...next[index], allowed_users: parseListInput(event.target.value) };
+                  setFlowSkillDescriptors(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '允许租户',
+            key: 'allowed_tenants',
+            render: (_, row, index) => (
+              <Input
+                value={stringifyListInput(row.allowed_tenants || ['*'])}
+                onChange={(event) => {
+                  const next = [...flowSkillDescriptors];
+                  next[index] = { ...next[index], allowed_tenants: parseListInput(event.target.value) };
+                  setFlowSkillDescriptors(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '允许场景',
+            key: 'allowed_scenarios',
+            render: (_, row, index) => (
+              <Input
+                value={stringifyListInput(row.allowed_scenarios || [])}
+                onChange={(event) => {
+                  const next = [...flowSkillDescriptors];
+                  next[index] = { ...next[index], allowed_scenarios: parseListInput(event.target.value) };
+                  setFlowSkillDescriptors(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '状态',
+            key: 'status',
+            width: 80,
+            render: (_, row, index) => (
+              <Switch
+                checked={row.status === 'active'}
+                onChange={(checked) => {
+                  const next = [...flowSkillDescriptors];
+                  next[index] = { ...next[index], status: checked ? 'active' : 'inactive' };
+                  setFlowSkillDescriptors(next);
+                }}
+              />
+            ),
+          },
+        ]}
+      />
     </Card>
   );
 
@@ -2152,6 +3560,12 @@ const App = () => {
         return renderMasterAgentPage();
       case 'business-agent':
         return renderBusinessAgentPage();
+      case 'flow-policy':
+        return renderFlowPolicyPage();
+      case 'scenario-hub':
+        return renderScenarioHubPage();
+      case 'skill-hub':
+        return renderSkillHubPage();
       case 'session-management':
         return renderSessionPage();
       case 'dashboard':
@@ -2200,6 +3614,9 @@ const App = () => {
         items: [
           { key: 'master-agent', label: 'Master智能体' },
           { key: 'business-agent', label: '业务智能体' },
+          { key: 'flow-policy', label: '心流策略' },
+          { key: 'scenario-hub', label: 'ScenarioHub' },
+          { key: 'skill-hub', label: 'SkillHub' },
         ],
       },
       {

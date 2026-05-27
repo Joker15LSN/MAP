@@ -12,6 +12,7 @@ from .bash_tool import create_bash_tool
 from .efficiency_pi_agent import EfficiencyPiAgent
 from .file_read_tool import create_attachment_file_read_tool
 from .file_write_tool import create_attachment_file_write_tool
+from .general_qa_agent import GeneralQAAgent
 from .industry_chat_agent import IndustryChatAgent
 from .kb_tools import (
     MountedKBSearchAgent,
@@ -72,6 +73,10 @@ def _tool_registrations() -> list[ToolRegistration]:
         ToolRegistration(
             spec_provider=IndustryChatAgent.get_tool_spec,
             agent_factory=lambda runtime_llm: IndustryChatAgent(llm=runtime_llm),
+        ),
+        ToolRegistration(
+            spec_provider=GeneralQAAgent.get_tool_spec,
+            agent_factory=lambda runtime_llm: GeneralQAAgent(llm=runtime_llm),
         ),
         ToolRegistration(
             spec_provider=MountedKBSearchAgent.get_tool_spec,

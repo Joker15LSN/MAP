@@ -2,6 +2,37 @@ import os
 
 from .config_schema import LLMConfig
 
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+MAP_LLM_BASE_URL = os.getenv("MAP_LLM_BASE_URL", "https://api.deepseek.com")
+MAP_LLM_API_KEY = os.getenv("MAP_LLM_API_KEY", "")
+MAP_LLM_MODEL = os.getenv("MAP_LLM_MODEL", "deepseek-v4-flash")
+MAP_LLM_TEMPERATURE = _env_float("MAP_LLM_TEMPERATURE", 0.3)
+MAP_AGENT_LLM_TEMPERATURE = _env_float("MAP_AGENT_LLM_TEMPERATURE", 0.1)
+MAP_SCENE_SELECTOR_LLM_TEMPERATURE = _env_float(
+    "MAP_SCENE_SELECTOR_LLM_TEMPERATURE",
+    0.0,
+)
+MAP_SUMMARIZATION_LLM_TEMPERATURE = _env_float(
+    "MAP_SUMMARIZATION_LLM_TEMPERATURE",
+    0.2,
+)
+MAP_REVIEWER_BASE_URL = os.getenv(
+    "MAP_REVIEWER_BASE_URL",
+    MAP_LLM_BASE_URL,
+)
+MAP_REVIEWER_API_KEY = os.getenv("MAP_REVIEWER_API_KEY", MAP_LLM_API_KEY)
+MAP_REVIEWER_MODEL = os.getenv("MAP_REVIEWER_MODEL", MAP_LLM_MODEL)
+
 # 40 qwen2.5 72B
 # QWEN2_5_72B_40_CONFIG = LLMConfig(
 #     base_url="http://10.16.11.40:11112/v1/", model="local", temperature=0.4
@@ -35,39 +66,40 @@ DEEPSEEKV3_LOCAL_CONFIG = LLMConfig(
 
 # apiyi deepseek v3
 DEEPSEEKV3_APIYI_CONFIG = LLMConfig(
-    base_url="https://api.apiyi.com/v1/",
-    api_key="sk-hYLhAcNzdx1SYBO9A1Eb37470f324fD3Bc7698AdEdB3E4Db",
-    model="deepseek-v3-0324",
+    base_url=os.getenv("MAP_DEEPSEEKV3_APIYI_BASE_URL", MAP_LLM_BASE_URL),
+    api_key=os.getenv("MAP_DEEPSEEKV3_APIYI_API_KEY", MAP_LLM_API_KEY),
+    model=os.getenv("MAP_DEEPSEEKV3_APIYI_MODEL", MAP_LLM_MODEL),
     temperature=0.0,
 )
 
 LITE_APIYI_CONFIG = LLMConfig(
-    base_url="https://api.apiyi.com/v1/",
-    api_key="sk-mjNwAHtPYWxrnBuVB1293c4260De43E7A36bB10fE138Ec44",
-    model="gemini-3.1-flash-lite-preview",
+    base_url=os.getenv("MAP_LITE_APIYI_BASE_URL", MAP_LLM_BASE_URL),
+    api_key=os.getenv("MAP_LITE_APIYI_API_KEY", MAP_LLM_API_KEY),
+    model=os.getenv("MAP_LITE_APIYI_MODEL", MAP_LLM_MODEL),
     temperature=0.0,
 )
 
 REVIEWER_LLM_CONFIG = LLMConfig(
-    base_url="http://10.16.12.25:11113/v1/",
-    model="xguard",
+    base_url=MAP_REVIEWER_BASE_URL,
+    api_key=MAP_REVIEWER_API_KEY,
+    model=MAP_REVIEWER_MODEL,
     temperature=0.0,
     max_tokens=2048,
 )
 
 THINKING_LLM_CONFIG = LLMConfig(
-    base_url="http://api.apiyi.com/v1/",
-    api_key="sk-mjNwAHtPYWxrnBuVB1293c4260De43E7A36bB10fE138Ec44",
-    model="claude-sonnet-4-5-20250929-thinking",
+    base_url=os.getenv("MAP_THINKING_BASE_URL", MAP_LLM_BASE_URL),
+    api_key=os.getenv("MAP_THINKING_API_KEY", MAP_LLM_API_KEY),
+    model=os.getenv("MAP_THINKING_MODEL", MAP_LLM_MODEL),
     temperature=0.0,
 )
 
 
 QWEN3_NEXT_80B_CONFIG = LLMConfig(
-    base_url="http://10.50.56.243/v1/",
-    model="Qwen3-Next",
+    base_url=os.getenv("MAP_QWEN3_NEXT_BASE_URL", MAP_LLM_BASE_URL),
+    model=os.getenv("MAP_QWEN3_NEXT_MODEL", MAP_LLM_MODEL),
     temperature=0.1,
-    api_key="gpustack_de6adf356d53ae9f_c803a9395068e4879708f267852629cb",
+    api_key=os.getenv("MAP_QWEN3_NEXT_API_KEY", MAP_LLM_API_KEY),
 )
 
 QWEN3_5_27B = LLMConfig(
@@ -78,28 +110,36 @@ QWEN3_5_27B = LLMConfig(
 )
 
 DS_V4_FLASH_LLM_CONFIG = LLMConfig(
-    base_url="http://10.50.56.243/v1/",
-    model="deepseek-v4-flash",
-    temperature=0.3,
-    chat_template_kwargs={"enable_thinking": False},
-    api_key = 'gpustack_de6adf356d53ae9f_c803a9395068e4879708f267852629cb',
+    base_url=MAP_LLM_BASE_URL,
+    model=MAP_LLM_MODEL,
+    temperature=MAP_LLM_TEMPERATURE,
+    api_key=MAP_LLM_API_KEY,
 )
 
 DS_V4_FLASH_AGENT_CONFIG = LLMConfig(
-    base_url="http://10.50.56.243/v1/",
-    model="deepseek-v4-flash",
-    temperature=0.1,
-    chat_template_kwargs={"enable_thinking": False},
-    api_key = 'gpustack_de6adf356d53ae9f_c803a9395068e4879708f267852629cb',
+    base_url=MAP_LLM_BASE_URL,
+    model=MAP_LLM_MODEL,
+    temperature=MAP_AGENT_LLM_TEMPERATURE,
+    api_key=MAP_LLM_API_KEY,
 )
 
 # 意图分类llm
 # SCENE_SELECTION_LLM_CONFIG = QWEN3_NEXT_80B_CONFIG
-SCENE_SELECTION_LLM_CONFIG = DS_V4_FLASH_LLM_CONFIG
+SCENE_SELECTION_LLM_CONFIG = LLMConfig(
+    base_url=MAP_LLM_BASE_URL,
+    model=MAP_LLM_MODEL,
+    temperature=MAP_SCENE_SELECTOR_LLM_TEMPERATURE,
+    api_key=MAP_LLM_API_KEY,
+)
 
 
 # 总结 LLM
-SUMMARIZATION_LLM_CONFIG = DS_V4_FLASH_LLM_CONFIG
+SUMMARIZATION_LLM_CONFIG = LLMConfig(
+    base_url=MAP_LLM_BASE_URL,
+    model=MAP_LLM_MODEL,
+    temperature=MAP_SUMMARIZATION_LLM_TEMPERATURE,
+    api_key=MAP_LLM_API_KEY,
+)
 
 
 # Nebula Graph 配置
@@ -128,16 +168,13 @@ SUMMARIZATION_LLM_CONFIG = DS_V4_FLASH_LLM_CONFIG
 # }
 
 # PostgreSQL 配置（可通过环境变量覆盖，便于容器化部署）
-DEFAULT_POSTGRES_DSN = "postgresql://postgres:supcon!2025@10.16.11.38:5432/postgres"
+DEFAULT_POSTGRES_DSN = "postgresql://map:map@127.0.0.1:15432/map"
 POSTGRES_CONFIG = {
     "dsn": os.getenv("POSTGRES_DSN", DEFAULT_POSTGRES_DSN),
 }
 
 # MongoDB 配置（可通过环境变量覆盖，便于容器化部署）
-DEFAULT_MONGODB_URI = (
-    "mongodb://root:Admin123!!!@10.50.60.21:27017,10.50.60.21:27018/"
-    "?authSource=admin&replicaSet=rs0"
-)
+DEFAULT_MONGODB_URI = "mongodb://map:map@127.0.0.1:27017/?authSource=admin"
 DEFAULT_MONGODB_DATABASE = "map_db_dev"
 MONGODB_CONFIG = {
     "uri": os.getenv("MONGODB_URI", DEFAULT_MONGODB_URI),

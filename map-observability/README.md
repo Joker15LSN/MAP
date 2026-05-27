@@ -1,19 +1,38 @@
-# Observability Service
+# MAP Observability (`map-observability`)
 
-MAP 观测服务，负责日志分析、请求追踪、链路关联与诊断。
+MAP 观测系统用于分析多智能体请求链路，覆盖请求、智能体、工具三个层级。
 
-## 子模块
+## Components
 
 - `map-observability-backend`：FastAPI 分析后端
 - `map-observability-frontend`：React 可视化前端
 
-## 职责边界
+## What It Solves
 
-- 聚合请求/智能体/工具维度指标
-- 提供请求详情、错误聚类、关联检索
-- 与业务链路解耦，独立部署与演进
+- 请求级分析：成功率、耗时、Token 消耗、错误分布
+- 执行级分析：智能体调用链、工具调用频次与失败原因
+- 关联定位：请求 RID 与日志窗口对齐、错误聚类、工具调用追踪
 
-## 本地开发
+## Data Sources
+
+观测后端主要消费算法服务写入 Mongo 的三类集合：
+
+- `request_records`
+- `agent_executions`
+- `tool_call_records`
+
+## Quick Start
+
+### Docker
+
+```bash
+docker compose up -d observability-backend-service observability-frontend-service
+```
+
+- 前端：`http://localhost:15152`
+- 后端：`http://localhost:15151/api/v1`
+
+### Local Development
 
 后端：
 
@@ -31,18 +50,21 @@ npm ci
 npm run dev
 ```
 
-## 容器化运行
+## Key APIs
 
-```bash
-docker compose up -d observability-backend-service observability-frontend-service
-```
+- 分析看板：`/api/v1/overview`、`/api/v1/trends`
+- 实体分析：`/api/v1/users`、`/api/v1/agents`、`/api/v1/tools`
+- 请求检索：`/api/v1/requests`、`/api/v1/requests/{request_id}`
+- 关联定位：`/api/v1/correlation/*`
 
-## 关键环境变量
+## Time Semantics
 
-- `MONGO_URI` / `MONGO_DB`
-- `API_PREFIX`（默认 `/api/v1`）
-- `TIMEZONE` / `DEFAULT_TZ`
+- 常规分析接口：按 UTC 查询与聚合。
+- 关联定位接口：支持 `start_local/end_local + tz` 输入。
+- 前端默认展示 `Asia/Shanghai`，并保留 UTC 对照。
 
-## 深入文档
+## References
 
-- 历史详细部署与功能文档：`docs/OBSERVABILITY_DETAILED.md`
+- 观测后端：[`map-observability-backend/README.md`](map-observability-backend/README.md)
+- 观测前端：[`map-observability-frontend/README.md`](map-observability-frontend/README.md)
+- 根文档：[`../README.md`](../README.md)
