@@ -8,6 +8,9 @@ import {
   FridayChatEvent,
   FridayChatRequest,
   FridayConfig,
+  FridayReport,
+  FridayReportConfig,
+  LLMCallListPayload,
   LogLevel,
   OverviewData,
   RequestDetail,
@@ -118,6 +121,13 @@ export const analyticsApi = {
     appendParam(params, 'container', container);
     const suffix = params.toString() ? `?${params.toString()}` : '';
     const { data } = await client.get<RequestDetail>(`/requests/${requestId}${suffix}`);
+    return data;
+  },
+
+  async getLlmCalls(filters: FilterState, topN = 200): Promise<LLMCallListPayload> {
+    const params = buildFilterQuery(filters);
+    appendParam(params, 'top_n', topN);
+    const { data } = await client.get<LLMCallListPayload>(`/llm-calls?${params.toString()}`);
     return data;
   },
 
@@ -232,6 +242,36 @@ export const analyticsApi = {
     const { data } = await client.put<FridayConfig>('/friday/config', {
       base_url: baseUrl,
       model,
+    });
+    return data;
+  },
+
+  async getFridayReportConfig(): Promise<FridayReportConfig> {
+    const { data } = await client.get<FridayReportConfig>('/friday/reports/config');
+    return data;
+  },
+
+  async updateFridayReportConfig(config: Partial<FridayReportConfig>): Promise<FridayReportConfig> {
+    const { data } = await client.put<FridayReportConfig>('/friday/reports/config', config);
+    return data;
+  },
+
+  async listFridayReports(limit = 20): Promise<FridayReport[]> {
+    const params = new URLSearchParams();
+    appendParam(params, 'limit', limit);
+    const { data } = await client.get<FridayReport[] | { items?: FridayReport[] }>(`/friday/reports?${params.toString()}`);
+    return Array.isArray(data) ? data : data.items || [];
+  },
+
+  async getFridayReport(reportId: string): Promise<FridayReport> {
+    const { data } = await client.get<FridayReport>(`/friday/reports/${encodeURIComponent(reportId)}`);
+    return data;
+  },
+
+  async runFridayReport(reportType: 'weekly' | 'monthly' = 'weekly', lookbackDays?: number): Promise<FridayReport> {
+    const { data } = await client.post<FridayReport>('/friday/reports/run', {
+      report_type: reportType,
+      lookback_days: lookbackDays ?? (reportType === 'monthly' ? 31 : 7),
     });
     return data;
   },

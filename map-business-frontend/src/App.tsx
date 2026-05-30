@@ -6,6 +6,7 @@ import {
   ConfigProvider,
   Drawer,
   Input,
+  Modal,
   Select,
   Switch,
   Table,
@@ -17,6 +18,8 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 
 import { RequestCallTree, type RequestDetail } from 'map-tree-core';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 type ViewMode = 'chat' | 'backend';
 type ChatRole = 'user' | 'assistant';
@@ -30,6 +33,8 @@ type AdminPageKey =
   | 'address-config'
   | 'data-access'
   | 'data-assets'
+  | 'mcp-server'
+  | 'skills'
   | 'master-agent'
   | 'business-agent'
   | 'flow-policy'
@@ -50,6 +55,7 @@ interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
+  agentNames?: string[];
 }
 
 interface SourceReferenceItem {
@@ -84,7 +90,7 @@ interface SseEvent {
 
 interface AdminSummary {
   updated_at: string;
-  master_enabled: boolean;
+  master_version?: string;
   business_agent_count: number;
   business_agent_enabled_count: number;
   permission_rule_count: number;
@@ -94,6 +100,8 @@ interface AdminSummary {
   model_count: number;
   user_count: number;
   user_enabled_count: number;
+  mcp_server_count?: number;
+  skill_count?: number;
 }
 
 interface ModelRecord {
@@ -159,15 +167,32 @@ interface MasterAgentConfig {
   temperature: number;
   max_tokens: number;
   summarize_style: string;
-  enabled: boolean;
   scene_selector_model: string;
+  route_model: string;
+  summary_model: string;
   route_strategy: string;
   stream_version: string;
   timeout_s: number;
-  fallback_enabled: boolean;
-  query_rewrite_enabled: boolean;
-  content_review_enabled: boolean;
+  route_prompt: string;
+  summary_prompt: string;
+  current_version: string;
+  draft_version: string;
+  prompt_versions: MasterPromptVersionItem[];
   policies: string[];
+}
+
+interface MasterPromptVersionItem {
+  version: string;
+  created_at: string;
+  operator: string;
+  note: string;
+  route_prompt: string;
+  summary_prompt: string;
+  route_model: string;
+  summary_model: string;
+  model: string;
+  temperature: number;
+  max_tokens: number;
 }
 
 interface AgentMountedResourceItem {
@@ -200,6 +225,8 @@ interface AgentPromptConfig {
   base_model: string;
   system_prompt: string;
   user_prompt: string;
+  tool_call_prompt: string;
+  tool_internal_prompts: AgentToolInternalPromptItem[];
   summary_prompt: string;
   tool_prompts: AgentToolPromptItem[];
   temperature: number;
@@ -207,6 +234,30 @@ interface AgentPromptConfig {
   current_version: string;
   version_note: string;
   history_versions: AgentPromptVersionItem[];
+}
+
+interface AgentToolInternalPromptItem {
+  tool_name: string;
+  prompt: string;
+  enabled: boolean;
+}
+
+interface AgentResourceMountItem {
+  mount_id: string;
+  resource_type: 'mcp_server' | 'mcp_tool' | 'skill' | 'knowledge_base' | 'data_model' | 'builtin_tool';
+  resource_id: string;
+  resource_name: string;
+  source_name: string;
+  enabled: boolean;
+  include_all_tools: boolean;
+  mcp_server_id?: string | null;
+  mcp_tool_names: string[];
+  skill_id?: string | null;
+  kb_code?: string | null;
+  data_model_code?: string | null;
+  builtin_tool_name?: string | null;
+  created_at?: string | null;
+  config: Record<string, unknown>;
 }
 
 interface AgentTestConfig {
@@ -233,6 +284,7 @@ interface BusinessAgentConfig {
   tools: string[];
   allowed_roles: string[];
   mounted_resources: AgentMountedResourceItem[];
+  resource_mounts: AgentResourceMountItem[];
   glossary_terms: string[];
   prompt_config: AgentPromptConfig;
   test_config: AgentTestConfig;
@@ -375,6 +427,9 @@ interface FlowSkillDescriptor {
   version: string;
   description: string;
   tool_name: string;
+  executor_type?: string;
+  content?: string;
+  metadata?: Record<string, unknown>;
   mount_agents: string[];
   required_scopes: string[];
   allowed_users: string[];
@@ -385,11 +440,53 @@ interface FlowSkillDescriptor {
   status: string;
 }
 
+interface McpToolConfig {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  enabled: boolean;
+  last_seen_at?: string | null;
+}
+
+interface McpServerConfig {
+  server_id: string;
+  display_name: string;
+  transport: 'stdio' | 'sse' | 'streamable_http';
+  enabled: boolean;
+  command: string;
+  args: string[];
+  url: string;
+  headers: Record<string, string>;
+  env_refs: Record<string, string>;
+  timeout_s: number;
+  tools: McpToolConfig[];
+  status: string;
+  last_refreshed_at?: string | null;
+  remarks: string;
+}
+
+interface UploadedSkill {
+  skill_id: string;
+  name: string;
+  display_name: string;
+  version: string;
+  description: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  mount_agents: string[];
+  status: string;
+  source: string;
+  uploaded_at: string;
+  updated_at?: string | null;
+}
+
 interface FlowRuntimeSnapshot {
   updated_at?: string;
   flow_policy: FlowPolicyConfig;
   scenario_packs: ScenarioPackConfig[];
   flow_skill_descriptors: FlowSkillDescriptor[];
+  mcp_servers?: McpServerConfig[];
+  skills?: UploadedSkill[];
 }
 
 interface FlowRequestConfig {
@@ -431,6 +528,8 @@ interface AdminFullConfig {
   flow_policy: FlowPolicyConfig;
   scenario_packs: ScenarioPackConfig[];
   flow_skill_descriptors: FlowSkillDescriptor[];
+  mcp_servers: McpServerConfig[];
+  skills: UploadedSkill[];
   release_history: ReleaseRecord[];
 }
 
@@ -474,6 +573,8 @@ const ADMIN_PAGE_LABEL: Record<AdminPageKey, string> = {
   'address-config': '地址配置',
   'data-access': '数据接入',
   'data-assets': '数据管理',
+  'mcp-server': 'MCP Server',
+  skills: 'Skills',
   'master-agent': 'Master智能体',
   'business-agent': '业务智能体',
   'flow-policy': '心流策略',
@@ -531,6 +632,22 @@ const sanitizeText = (value: unknown): string => {
   } catch {
     return String(value);
   }
+};
+
+const dedupeStrings = (items: string[]): string[] => Array.from(new Set(items.filter(Boolean)));
+
+const extractAgentNamesFromRows = (rows: Record<string, unknown>[]): string[] =>
+  dedupeStrings(rows.map((row) => sanitizeText(row.agent_name) || sanitizeText(row.agent_code)).filter(Boolean));
+
+const extractAgentNamesFromDetail = (requestDetail: RequestDetail | undefined): string[] => {
+  if (!requestDetail?.agent_timeline?.length) {
+    return [];
+  }
+  return dedupeStrings(
+    requestDetail.agent_timeline
+      .map((row) => sanitizeText(row?.agent_name) || sanitizeText(row?.agent_code))
+      .filter(Boolean),
+  );
 };
 
 const toPrettyJson = (value: unknown): string => {
@@ -711,11 +828,14 @@ const createEmptyBusinessAgent = (): BusinessAgentConfig => ({
   tools: ['general_qa_agent'],
   allowed_roles: ['all'],
   mounted_resources: [],
+  resource_mounts: [],
   glossary_terms: [],
   prompt_config: {
     base_model: MODEL_OPTIONS[0].value,
     system_prompt: '你是业务智能体，请先给结论，再给证据。',
     user_prompt: '{query}',
+    tool_call_prompt: '请根据用户问题选择合适的 tool 或 skill，并说明必要的数据依据。',
+    tool_internal_prompts: [{ tool_name: 'general_qa_agent', prompt: '直接回答问题。', enabled: true }],
     summary_prompt: '请输出 TL;DR 与关键指标。',
     tool_prompts: [{ tool_name: 'general_qa_agent', system_prompt: '直接回答问题。', user_prompt: '{query}' }],
     temperature: 0.1,
@@ -743,11 +863,14 @@ const normalizeBusinessAgent = (agent: BusinessAgentConfig): BusinessAgentConfig
     tools: agent.tools || [],
     allowed_roles: agent.allowed_roles || ['all'],
     mounted_resources: agent.mounted_resources || [],
+    resource_mounts: agent.resource_mounts || [],
     glossary_terms: agent.glossary_terms || [],
     prompt_config: {
       base_model: agent.prompt_config?.base_model || agent.model || MODEL_OPTIONS[0].value,
       system_prompt: agent.prompt_config?.system_prompt || '',
       user_prompt: agent.prompt_config?.user_prompt || '{query}',
+      tool_call_prompt: agent.prompt_config?.tool_call_prompt || agent.prompt_config?.system_prompt || '',
+      tool_internal_prompts: agent.prompt_config?.tool_internal_prompts || [],
       summary_prompt: agent.prompt_config?.summary_prompt || '',
       tool_prompts: agent.prompt_config?.tool_prompts?.length ? agent.prompt_config.tool_prompts : toolPromptFallback,
       temperature: agent.prompt_config?.temperature ?? 0.1,
@@ -924,7 +1047,16 @@ const App = () => {
   const [flowSessionOverride, setFlowSessionOverride] = useState<FlowRequestConfig>(FLOW_MODE_DEFAULT_CONFIG);
   const [scenarioPacks, setScenarioPacks] = useState<ScenarioPackConfig[]>([]);
   const [flowSkillDescriptors, setFlowSkillDescriptors] = useState<FlowSkillDescriptor[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
+  const [uploadedSkills, setUploadedSkills] = useState<UploadedSkill[]>([]);
+  const [masterVersions, setMasterVersions] = useState<MasterPromptVersionItem[]>([]);
+  const [masterDiff, setMasterDiff] = useState('');
   const [releaseHistory, setReleaseHistory] = useState<ReleaseRecord[]>([]);
+  const [expandedInputOpen, setExpandedInputOpen] = useState(false);
+  const [expandedInputValue, setExpandedInputValue] = useState('');
+  const [agentTestInput, setAgentTestInput] = useState('');
+  const [agentTestMessages, setAgentTestMessages] = useState<Array<{ role: ChatRole; content: string }>>([]);
+  const [agentTestLoading, setAgentTestLoading] = useState(false);
 
   const [releaseNote, setReleaseNote] = useState('');
   const [releaseVersion, setReleaseVersion] = useState('v1');
@@ -935,6 +1067,7 @@ const App = () => {
   const [editingAgentOpen, setEditingAgentOpen] = useState(false);
   const [agentConfigTab, setAgentConfigTab] = useState<AgentConfigTabKey>('basic');
   const streamAbortRef = useRef<AbortController | null>(null);
+  const chatMessageListRef = useRef<HTMLDivElement | null>(null);
 
   const latestAssistantContent = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -1044,6 +1177,21 @@ const App = () => {
     setFlowSessionOverride(cloneFlowRequestConfig(runtimeFlowRequestConfig));
   }, [flowUseRuntimePolicy, runtimeFlowRequestConfig]);
 
+  useEffect(() => {
+    const holder = chatMessageListRef.current;
+    if (!holder) {
+      return;
+    }
+    const behavior: ScrollBehavior = isStreaming ? 'auto' : 'smooth';
+    const raf = window.requestAnimationFrame(() => {
+      holder.scrollTo({
+        top: holder.scrollHeight,
+        behavior,
+      });
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [messages, isStreaming, chatMode, activeHistoryId]);
+
   const applyActionToDetail = (current: RequestDetail, actionRow: Record<string, unknown>): RequestDetail => {
     const next: RequestDetail = {
       ...current,
@@ -1099,12 +1247,32 @@ const App = () => {
   };
 
   const applyMetaEvent = (meta: Record<string, unknown>) => {
+    const phase = sanitizeText(meta.phase);
+
+    if (phase === 'agent_result') {
+      const rows = Array.isArray(meta.agents) ? (meta.agents as Record<string, unknown>[]) : [];
+      const agentNames = extractAgentNamesFromRows(rows);
+      if (agentNames.length > 0) {
+        setMessages((current) => {
+          const cloned = [...current];
+          const last = cloned[cloned.length - 1];
+          if (!last || last.role !== 'assistant') {
+            return current;
+          }
+          cloned[cloned.length - 1] = {
+            ...last,
+            agentNames: dedupeStrings([...(last.agentNames || []), ...agentNames]),
+          };
+          return cloned;
+        });
+      }
+    }
+
     setDetail((current) => {
       if (!current) {
         return current;
       }
 
-      const phase = sanitizeText(meta.phase);
       const next: RequestDetail = {
         ...current,
       };
@@ -1295,6 +1463,8 @@ const App = () => {
         },
         scenario_packs: full.scenario_packs || [],
         flow_skill_descriptors: full.flow_skill_descriptors || [],
+        mcp_servers: full.mcp_servers || [],
+        skills: full.skills || [],
       });
       setFlowSessionOverride(
         cloneFlowRequestConfig(
@@ -1321,6 +1491,9 @@ const App = () => {
       );
       setScenarioPacks(full.scenario_packs || []);
       setFlowSkillDescriptors((full.flow_skill_descriptors || []).map((item) => normalizeFlowSkillDescriptor(item)));
+      setMcpServers(full.mcp_servers || []);
+      setUploadedSkills(full.skills || []);
+      setMasterVersions(full.master_agent?.prompt_versions || []);
       setReleaseHistory(full.release_history || []);
     } catch (error) {
       setAdminError(error instanceof Error ? error.message : '管理端数据加载失败');
@@ -1345,6 +1518,12 @@ const App = () => {
       }
       if (!flowSkillDescriptors.length) {
         setFlowSkillDescriptors((snapshot.flow_skill_descriptors || []).map((item) => normalizeFlowSkillDescriptor(item)));
+      }
+      if (snapshot.mcp_servers) {
+        setMcpServers(snapshot.mcp_servers);
+      }
+      if (snapshot.skills) {
+        setUploadedSkills(snapshot.skills);
       }
     } catch {
       // keep local default config when snapshot is unavailable
@@ -1416,6 +1595,7 @@ const App = () => {
       id: `a-${Date.now()}`,
       role: 'assistant',
       content: '',
+      agentNames: [],
     };
 
     setChatHistory((prev) => [
@@ -1828,6 +2008,85 @@ const App = () => {
     );
   };
 
+  const saveMcpServers = async () => {
+    await saveSection('/api/admin/mcp-servers', mcpServers, 'MCP Server 配置已保存', 'MCP Server 配置保存失败');
+  };
+
+  const saveUploadedSkills = async () => {
+    await saveSection('/api/admin/skills', uploadedSkills, 'Skill 配置已保存', 'Skill 配置保存失败');
+  };
+
+  const publishMasterPrompt = async () => {
+    const response = await fetch('/api/admin/master-agent/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operator: 'admin', note: releaseNote || 'Master 提示词发布', version: releaseVersion || undefined }),
+    });
+    if (response.ok) {
+      const payload = await response.json();
+      setMasterDiff(payload.diff || '');
+      setReleaseNote('');
+      setSaveStatus('Master 提示词已发布');
+      await loadAdminData();
+    } else {
+      setSaveStatus('Master 提示词发布失败');
+    }
+  };
+
+  const diffMasterPrompt = async (version?: string) => {
+    const target = version || masterConfig?.current_version || 'current';
+    const response = await fetch(`/api/admin/master-agent/diff?from=${encodeURIComponent(target)}&to=current`);
+    if (response.ok) {
+      const payload = await response.json();
+      setMasterDiff(payload.diff || '');
+    }
+  };
+
+  const rollbackMasterPrompt = async (version: string) => {
+    const response = await fetch('/api/admin/master-agent/rollback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version, operator: 'admin', note: `切换到 ${version}` }),
+    });
+    if (response.ok) {
+      setSaveStatus(`已切换到 Master ${version}`);
+      await loadAdminData();
+    } else {
+      setSaveStatus(`切换 Master ${version} 失败`);
+    }
+  };
+
+  const runAgentTest = async () => {
+    if (!editingAgent || !agentTestInput.trim()) {
+      return;
+    }
+    const question = agentTestInput.trim();
+    setAgentTestInput('');
+    setAgentTestMessages((prev) => [...prev, { role: 'user', content: question }]);
+    setAgentTestLoading(true);
+    try {
+      const response = await fetch(`/api/admin/business-agents/${editingAgent.agent_code}/test-chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: question,
+          history: agentTestMessages.map((item) => ({ role: item.role, content: item.content })),
+          agent: editingAgent,
+        }),
+      });
+      const payload = await response.json();
+      const content = payload?.result?.content || payload?.result?.error || '测试无返回内容';
+      setAgentTestMessages((prev) => [...prev, { role: 'assistant', content }]);
+    } catch (error) {
+      setAgentTestMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: `测试失败：${error instanceof Error ? error.message : String(error)}` },
+      ]);
+    } finally {
+      setAgentTestLoading(false);
+    }
+  };
+
   const publishConfigSnapshot = async () => {
     if (!releaseNote.trim()) {
       setSaveStatus('请输入发布说明');
@@ -2122,7 +2381,7 @@ const App = () => {
               </div>
             </div>
           ) : null}
-          <div className="chat-message-list">
+          <div className="chat-message-list" ref={chatMessageListRef}>
             {messages.length === 0 ? (
               <div className="empty-hint">
                 <div>输入问题开始问答。</div>
@@ -2138,7 +2397,22 @@ const App = () => {
             {messages.map((item, index) => (
               <div key={item.id} className={`message-row ${item.role}`}>
                 <div className="message-role">{item.role === 'user' ? '你' : 'MAP'}</div>
-                <div className="message-content">{item.content || (item.role === 'assistant' && isStreaming ? '思考中...' : '')}</div>
+                <div className="message-content">
+                  {item.role === 'assistant' ? (
+                    <div className="message-markdown">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          a: ({ ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+                        }}
+                      >
+                        {item.content || (isStreaming ? '思考中...' : '')}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    item.content
+                  )}
+                </div>
                 {item.role === 'assistant' && (item.content || isStreaming) ? (
                   <div className="assistant-actions-row">
                     <Button
@@ -2174,9 +2448,15 @@ const App = () => {
                       </Button>
                     ) : null}
                     <Tag>
-                      {detail?.agent_timeline?.length
-                        ? `${sanitizeText(detail.agent_timeline[detail.agent_timeline.length - 1]?.agent_name || '通用助手')}`
-                        : 'MasterAgent 任务调度'}
+                      {(() => {
+                        const agentNames =
+                          item.agentNames && item.agentNames.length > 0
+                            ? item.agentNames
+                            : index === messages.length - 1
+                              ? extractAgentNamesFromDetail(detail)
+                              : [];
+                        return `子智能体：${agentNames.length ? agentNames.join(' / ') : 'MasterAgent 任务调度'}`;
+                      })()}
                     </Tag>
                     {index === messages.length - 1 ? <Tag>{detail?.request.status || (isStreaming ? 'running' : 'success')}</Tag> : null}
                   </div>
@@ -2198,6 +2478,14 @@ const App = () => {
               }}
             />
             <div className="chat-input-actions">
+              <Button
+                onClick={() => {
+                  setExpandedInputValue(inputValue);
+                  setExpandedInputOpen(true);
+                }}
+              >
+                扩展输入
+              </Button>
               {isStreaming ? (
                 <Button danger onClick={() => stopStreaming()}>
                   停止
@@ -2209,6 +2497,36 @@ const App = () => {
             </div>
           </div>
         </Card>
+
+        <Modal
+          title="扩展输入"
+          open={expandedInputOpen}
+          width={820}
+          onCancel={() => setExpandedInputOpen(false)}
+          onOk={() => {
+            setInputValue(expandedInputValue);
+            setExpandedInputOpen(false);
+            void handleSend(expandedInputValue);
+          }}
+          okText="发送"
+          cancelText="取消"
+        >
+          <Input.TextArea
+            className="expanded-chat-input"
+            value={expandedInputValue}
+            autoSize={{ minRows: 12, maxRows: 18 }}
+            placeholder="输入长文本。弹窗内 Enter 换行，Ctrl/Cmd+Enter 发送。"
+            onChange={(event) => setExpandedInputValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                setInputValue(expandedInputValue);
+                setExpandedInputOpen(false);
+                void handleSend(expandedInputValue);
+              }
+            }}
+          />
+        </Modal>
 
         {tracePanelOpen ? (
           <aside className="map-trace-sidebar">
@@ -2585,6 +2903,259 @@ const App = () => {
     </Card>
   );
 
+  const renderMcpServerPage = () => (
+    <Card
+      loading={adminLoading}
+      title="MCP Server"
+      extra={
+        <div className="backend-toolbar">
+          <Button
+            onClick={() =>
+              setMcpServers([
+                {
+                  server_id: `mcp-${Date.now()}`,
+                  display_name: '新 MCP Server',
+                  transport: 'stdio',
+                  enabled: true,
+                  command: '',
+                  args: [],
+                  url: '',
+                  headers: {},
+                  env_refs: {},
+                  timeout_s: 30,
+                  tools: [],
+                  status: 'unknown',
+                  remarks: '',
+                },
+                ...mcpServers,
+              ])
+            }
+          >
+            新增
+          </Button>
+          <Button type="primary" onClick={() => void saveMcpServers()}>
+            保存
+          </Button>
+        </div>
+      }
+    >
+      <Table
+        className="wide-config-table"
+        rowKey="server_id"
+        pagination={false}
+        scroll={{ x: 1280 }}
+        dataSource={mcpServers}
+        columns={[
+          { title: 'Server ID', dataIndex: 'server_id', key: 'server_id', width: 180 },
+          {
+            title: '名称',
+            key: 'display_name',
+            width: 180,
+            render: (_, row, index) => (
+              <Input
+                value={row.display_name}
+                onChange={(event) => {
+                  const next = [...mcpServers];
+                  next[index] = { ...row, display_name: event.target.value };
+                  setMcpServers(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: 'Transport',
+            key: 'transport',
+            width: 150,
+            render: (_, row, index) => (
+              <Select
+                value={row.transport}
+                options={[
+                  { label: 'stdio', value: 'stdio' },
+                  { label: 'sse', value: 'sse' },
+                  { label: 'streamable_http', value: 'streamable_http' },
+                ]}
+                onChange={(value) => {
+                  const next = [...mcpServers];
+                  next[index] = { ...row, transport: value };
+                  setMcpServers(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '命令 / URL',
+            key: 'endpoint',
+            width: 260,
+            render: (_, row, index) => (
+              <Input
+                value={row.transport === 'stdio' ? row.command : row.url}
+                onChange={(event) => {
+                  const next = [...mcpServers];
+                  next[index] =
+                    row.transport === 'stdio'
+                      ? { ...row, command: event.target.value }
+                      : { ...row, url: event.target.value };
+                  setMcpServers(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: 'Args',
+            key: 'args',
+            width: 220,
+            render: (_, row, index) => (
+              <Input
+                value={stringifyListInput(row.args)}
+                onChange={(event) => {
+                  const next = [...mcpServers];
+                  next[index] = { ...row, args: parseListInput(event.target.value) };
+                  setMcpServers(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: 'Tools',
+            key: 'tools',
+            width: 260,
+            render: (_, row) => (
+              <div className="chip-wrap">
+                {row.tools.map((tool) => (
+                  <Tag key={tool.name}>{tool.name}</Tag>
+                ))}
+              </div>
+            ),
+          },
+          { title: '状态', dataIndex: 'status', key: 'status', width: 160 },
+          {
+            title: '启用',
+            key: 'enabled',
+            width: 80,
+            render: (_, row, index) => (
+              <Switch
+                checked={row.enabled}
+                onChange={(checked) => {
+                  const next = [...mcpServers];
+                  next[index] = { ...row, enabled: checked };
+                  setMcpServers(next);
+                }}
+              />
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+
+  const renderSkillsPage = () => (
+    <Card
+      loading={adminLoading}
+      title="Skills"
+      extra={
+        <div className="backend-toolbar">
+          <Button
+            onClick={() =>
+              setUploadedSkills([
+                {
+                  skill_id: `skill-${Date.now()}`,
+                  name: 'new_skill',
+                  display_name: '新 Skill',
+                  version: '1.0.0',
+                  description: '',
+                  content: '# 新 Skill\n\n请在这里填写 skill 指令。',
+                  metadata: {},
+                  mount_agents: [],
+                  status: 'active',
+                  source: 'manual_upload',
+                  uploaded_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                },
+                ...uploadedSkills,
+              ])
+            }
+          >
+            新增
+          </Button>
+          <Button type="primary" onClick={() => void saveUploadedSkills()}>
+            保存
+          </Button>
+        </div>
+      }
+    >
+      <Table
+        className="wide-config-table"
+        rowKey="skill_id"
+        pagination={false}
+        scroll={{ x: 1280 }}
+        dataSource={uploadedSkills}
+        columns={[
+          { title: 'Skill ID', dataIndex: 'skill_id', key: 'skill_id', width: 180 },
+          {
+            title: '展示名称',
+            key: 'display_name',
+            width: 180,
+            render: (_, row, index) => (
+              <Input
+                value={row.display_name}
+                onChange={(event) => {
+                  const next = [...uploadedSkills];
+                  next[index] = { ...row, display_name: event.target.value };
+                  setUploadedSkills(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '挂载 Agent',
+            key: 'mount_agents',
+            width: 220,
+            render: (_, row, index) => (
+              <Input
+                value={stringifyListInput(row.mount_agents)}
+                onChange={(event) => {
+                  const next = [...uploadedSkills];
+                  next[index] = { ...row, mount_agents: parseListInput(event.target.value) };
+                  setUploadedSkills(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: 'Skill 指令',
+            key: 'content',
+            render: (_, row, index) => (
+              <Input.TextArea
+                autoSize={{ minRows: 2, maxRows: 6 }}
+                value={row.content}
+                onChange={(event) => {
+                  const next = [...uploadedSkills];
+                  next[index] = { ...row, content: event.target.value, updated_at: new Date().toISOString() };
+                  setUploadedSkills(next);
+                }}
+              />
+            ),
+          },
+          {
+            title: '状态',
+            key: 'status',
+            width: 100,
+            render: (_, row, index) => (
+              <Switch
+                checked={row.status === 'active'}
+                onChange={(checked) => {
+                  const next = [...uploadedSkills];
+                  next[index] = { ...row, status: checked ? 'active' : 'inactive' };
+                  setUploadedSkills(next);
+                }}
+              />
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+
   const renderMasterAgentPage = () => (
     <Card
       loading={adminLoading}
@@ -2613,11 +3184,19 @@ const App = () => {
             />
           </label>
           <label>
-            <span>场景识别模型</span>
+            <span>路由模型</span>
             <Select
-              value={masterConfig.scene_selector_model}
+              value={masterConfig.route_model || masterConfig.scene_selector_model}
               options={MODEL_OPTIONS}
-              onChange={(value) => setMasterConfig({ ...masterConfig, scene_selector_model: value })}
+              onChange={(value) => setMasterConfig({ ...masterConfig, route_model: value, scene_selector_model: value })}
+            />
+          </label>
+          <label>
+            <span>总结模型</span>
+            <Select
+              value={masterConfig.summary_model || masterConfig.model}
+              options={MODEL_OPTIONS}
+              onChange={(value) => setMasterConfig({ ...masterConfig, summary_model: value })}
             />
           </label>
           <label>
@@ -2665,6 +3244,22 @@ const App = () => {
             />
           </label>
           <label className="full-span">
+            <span>场景路由提示词</span>
+            <Input.TextArea
+              autoSize={{ minRows: 4, maxRows: 10 }}
+              value={masterConfig.route_prompt}
+              onChange={(event) => setMasterConfig({ ...masterConfig, route_prompt: event.target.value })}
+            />
+          </label>
+          <label className="full-span">
+            <span>总结提示词</span>
+            <Input.TextArea
+              autoSize={{ minRows: 4, maxRows: 10 }}
+              value={masterConfig.summary_prompt}
+              onChange={(event) => setMasterConfig({ ...masterConfig, summary_prompt: event.target.value })}
+            />
+          </label>
+          <label className="full-span">
             <span>执行策略（每行一条）</span>
             <Input.TextArea
               autoSize={{ minRows: 4, maxRows: 8 }}
@@ -2680,31 +3275,49 @@ const App = () => {
               }
             />
           </label>
-          <label className="switch-row">
-            <span>启用状态</span>
-            <Switch checked={masterConfig.enabled} onChange={(checked) => setMasterConfig({ ...masterConfig, enabled: checked })} />
-          </label>
-          <label className="switch-row">
-            <span>Fallback</span>
-            <Switch
-              checked={masterConfig.fallback_enabled}
-              onChange={(checked) => setMasterConfig({ ...masterConfig, fallback_enabled: checked })}
+          <div className="full-span detail-layout">
+            <Card
+              size="small"
+              title={`提示词版本：${masterConfig.current_version || 'draft'}`}
+              extra={
+                <div className="backend-toolbar">
+                  <Button onClick={() => void diffMasterPrompt(masterConfig.current_version)}>查看 Diff</Button>
+                  <Button type="primary" onClick={() => void publishMasterPrompt()}>
+                    发布提示词
+                  </Button>
+                </div>
+              }
+            >
+              {masterDiff ? <pre className="raw-json master-diff-view">{masterDiff}</pre> : <div className="empty-hint">发布前可查看当前草稿与历史版本差异。</div>}
+            </Card>
+            <Table
+              size="small"
+              rowKey="version"
+              pagination={false}
+              dataSource={masterVersions}
+              columns={[
+                { title: '版本', dataIndex: 'version', key: 'version', width: 100 },
+                { title: '操作人', dataIndex: 'operator', key: 'operator', width: 100 },
+                { title: '说明', dataIndex: 'note', key: 'note' },
+                { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 180 },
+                {
+                  title: '操作',
+                  key: 'actions',
+                  width: 220,
+                  render: (_, row) => (
+                    <div className="backend-toolbar">
+                      <Button size="small" onClick={() => void diffMasterPrompt(row.version)}>
+                        Diff 当前
+                      </Button>
+                      <Button size="small" onClick={() => void rollbackMasterPrompt(row.version)}>
+                        切换
+                      </Button>
+                    </div>
+                  ),
+                },
+              ]}
             />
-          </label>
-          <label className="switch-row">
-            <span>Query Rewrite</span>
-            <Switch
-              checked={masterConfig.query_rewrite_enabled}
-              onChange={(checked) => setMasterConfig({ ...masterConfig, query_rewrite_enabled: checked })}
-            />
-          </label>
-          <label className="switch-row">
-            <span>内容审查</span>
-            <Switch
-              checked={masterConfig.content_review_enabled}
-              onChange={(checked) => setMasterConfig({ ...masterConfig, content_review_enabled: checked })}
-            />
-          </label>
+          </div>
         </div>
       ) : null}
     </Card>
@@ -3015,8 +3628,10 @@ const App = () => {
       }
     >
       <Table
+        className="wide-config-table"
         rowKey="skill_id"
         pagination={false}
+        scroll={{ x: 1280 }}
         dataSource={flowSkillDescriptors}
         columns={[
           { title: 'Skill ID', dataIndex: 'skill_id', key: 'skill_id', width: 190 },
@@ -3556,6 +4171,10 @@ const App = () => {
         return renderDataAccessPage();
       case 'data-assets':
         return renderDataAssetsPage();
+      case 'mcp-server':
+        return renderMcpServerPage();
+      case 'skills':
+        return renderSkillsPage();
       case 'master-agent':
         return renderMasterAgentPage();
       case 'business-agent':
@@ -3614,6 +4233,8 @@ const App = () => {
         items: [
           { key: 'master-agent', label: 'Master智能体' },
           { key: 'business-agent', label: '业务智能体' },
+          { key: 'mcp-server', label: 'MCP Server' },
+          { key: 'skills', label: 'Skills' },
           { key: 'flow-policy', label: '心流策略' },
           { key: 'scenario-hub', label: 'ScenarioHub' },
           { key: 'skill-hub', label: 'SkillHub' },
@@ -3754,7 +4375,12 @@ const App = () => {
                       setActiveHistoryId(item.id);
                       setMessages([
                         { id: `${item.id}-q`, role: 'user', content: item.question },
-                        { id: `${item.id}-a`, role: 'assistant', content: item.answer },
+                        {
+                          id: `${item.id}-a`,
+                          role: 'assistant',
+                          content: item.answer,
+                          agentNames: extractAgentNamesFromDetail(item.detail),
+                        },
                       ]);
                       setDetail(item.detail);
                       setTracePanelOpen(false);
@@ -3808,7 +4434,7 @@ const App = () => {
         <Drawer
           title={editingAgent ? `编辑业务智能体：${editingAgent.display_name}` : '编辑业务智能体'}
           open={editingAgentOpen}
-          width={520}
+          width={860}
           onClose={() => {
             setEditingAgentOpen(false);
             setEditingAgent(null);
@@ -3923,6 +4549,155 @@ const App = () => {
                   label: '资源挂载',
                   children: (
                     <div className="detail-layout">
+                      <Card
+                        size="small"
+                        title="typed 资源挂载"
+                        extra={
+                          <Button
+                            size="small"
+                            onClick={() =>
+                              setEditingAgent({
+                                ...editingAgent,
+                                resource_mounts: [
+                                  ...(editingAgent.resource_mounts || []),
+                                  {
+                                    mount_id: `mount-${Date.now()}`,
+                                    resource_type: 'builtin_tool',
+                                    resource_id: 'general_qa_agent',
+                                    resource_name: '通用问答',
+                                    source_name: '',
+                                    enabled: true,
+                                    include_all_tools: false,
+                                    mcp_tool_names: [],
+                                    builtin_tool_name: 'general_qa_agent',
+                                    created_at: new Date().toISOString(),
+                                    config: {},
+                                  },
+                                ],
+                              })
+                            }
+                          >
+                            添加资源
+                          </Button>
+                        }
+                      >
+                        <Table
+                          size="small"
+                          pagination={false}
+                          rowKey="mount_id"
+                          dataSource={editingAgent.resource_mounts || []}
+                          columns={[
+                            {
+                              title: '类型',
+                              key: 'resource_type',
+                              width: 150,
+                              render: (_, row, index) => (
+                                <Select
+                                  value={row.resource_type}
+                                  options={[
+                                    { label: 'MCP Server', value: 'mcp_server' },
+                                    { label: 'MCP Tool', value: 'mcp_tool' },
+                                    { label: 'Skill', value: 'skill' },
+                                    { label: '知识库', value: 'knowledge_base' },
+                                    { label: '数据模型', value: 'data_model' },
+                                    { label: '内置工具', value: 'builtin_tool' },
+                                  ]}
+                                  onChange={(value) => {
+                                    const next = [...(editingAgent.resource_mounts || [])];
+                                    next[index] = { ...row, resource_type: value };
+                                    setEditingAgent({ ...editingAgent, resource_mounts: next });
+                                  }}
+                                />
+                              ),
+                            },
+                            {
+                              title: '资源',
+                              key: 'resource',
+                              render: (_, row, index) => {
+                                const options =
+                                  row.resource_type === 'mcp_server' || row.resource_type === 'mcp_tool'
+                                    ? mcpServers.map((server) => ({ label: server.display_name, value: server.server_id }))
+                                    : row.resource_type === 'skill'
+                                      ? uploadedSkills.map((skill) => ({ label: skill.display_name, value: skill.skill_id }))
+                                      : [
+                                          { label: 'general_qa_agent', value: 'general_qa_agent' },
+                                          { label: 'search_mounted_kb_agent', value: 'search_mounted_kb_agent' },
+                                          { label: 'ask_database_agent', value: 'ask_database_agent' },
+                                        ];
+                                return (
+                                  <Select
+                                    value={row.mcp_server_id || row.skill_id || row.builtin_tool_name || row.resource_id}
+                                    options={options}
+                                    onChange={(value) => {
+                                      const next = [...(editingAgent.resource_mounts || [])];
+                                      next[index] = {
+                                        ...row,
+                                        resource_id: value,
+                                        resource_name: value,
+                                        mcp_server_id: row.resource_type.startsWith('mcp') ? value : row.mcp_server_id,
+                                        skill_id: row.resource_type === 'skill' ? value : row.skill_id,
+                                        builtin_tool_name: row.resource_type === 'builtin_tool' ? value : row.builtin_tool_name,
+                                      };
+                                      setEditingAgent({ ...editingAgent, resource_mounts: next });
+                                    }}
+                                  />
+                                );
+                              },
+                            },
+                            {
+                              title: 'MCP Tools',
+                              key: 'mcp_tools',
+                              render: (_, row, index) => {
+                                const server = mcpServers.find((item) => item.server_id === row.mcp_server_id);
+                                return (
+                                  <Select
+                                    mode="multiple"
+                                    disabled={!server || row.resource_type !== 'mcp_tool'}
+                                    value={row.mcp_tool_names || []}
+                                    options={(server?.tools || []).map((tool) => ({ label: tool.name, value: tool.name }))}
+                                    onChange={(value) => {
+                                      const next = [...(editingAgent.resource_mounts || [])];
+                                      next[index] = { ...row, mcp_tool_names: value, include_all_tools: false };
+                                      setEditingAgent({ ...editingAgent, resource_mounts: next });
+                                    }}
+                                  />
+                                );
+                              },
+                            },
+                            {
+                              title: '全部工具',
+                              key: 'include_all_tools',
+                              width: 100,
+                              render: (_, row, index) => (
+                                <Switch
+                                  checked={row.include_all_tools}
+                                  disabled={!row.resource_type.startsWith('mcp')}
+                                  onChange={(checked) => {
+                                    const next = [...(editingAgent.resource_mounts || [])];
+                                    next[index] = { ...row, include_all_tools: checked };
+                                    setEditingAgent({ ...editingAgent, resource_mounts: next });
+                                  }}
+                                />
+                              ),
+                            },
+                            {
+                              title: '启用',
+                              key: 'enabled',
+                              width: 80,
+                              render: (_, row, index) => (
+                                <Switch
+                                  checked={row.enabled}
+                                  onChange={(checked) => {
+                                    const next = [...(editingAgent.resource_mounts || [])];
+                                    next[index] = { ...row, enabled: checked };
+                                    setEditingAgent({ ...editingAgent, resource_mounts: next });
+                                  }}
+                                />
+                              ),
+                            },
+                          ]}
+                        />
+                      </Card>
                       <Card
                         size="small"
                         title="挂载工具"
@@ -4088,7 +4863,20 @@ const App = () => {
                             />
                           </label>
                           <label className="full-span">
-                            <span>System Prompt</span>
+                            <span>工具调用提示词</span>
+                            <Input.TextArea
+                              autoSize={{ minRows: 3, maxRows: 8 }}
+                              value={editingAgent.prompt_config.tool_call_prompt}
+                              onChange={(event) =>
+                                setEditingAgent({
+                                  ...editingAgent,
+                                  prompt_config: { ...editingAgent.prompt_config, tool_call_prompt: event.target.value },
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="full-span">
+                            <span>系统提示词（兼容字段）</span>
                             <Input.TextArea
                               autoSize={{ minRows: 3, maxRows: 8 }}
                               value={editingAgent.prompt_config.system_prompt}
@@ -4139,6 +4927,92 @@ const App = () => {
                             />
                           </label>
                         </div>
+                      </Card>
+                      <Card
+                        size="small"
+                        title="工具内部提示词"
+                        extra={
+                          <Button
+                            size="small"
+                            onClick={() =>
+                              setEditingAgent({
+                                ...editingAgent,
+                                prompt_config: {
+                                  ...editingAgent.prompt_config,
+                                  tool_internal_prompts: [
+                                    ...editingAgent.prompt_config.tool_internal_prompts,
+                                    { tool_name: 'general_qa_agent', prompt: '', enabled: true },
+                                  ],
+                                },
+                              })
+                            }
+                          >
+                            新增
+                          </Button>
+                        }
+                      >
+                        <Table
+                          size="small"
+                          pagination={false}
+                          rowKey={(row, index) => `${row.tool_name}-${index}`}
+                          dataSource={editingAgent.prompt_config.tool_internal_prompts}
+                          columns={[
+                            {
+                              title: '工具',
+                              key: 'tool_name',
+                              width: 160,
+                              render: (_, row, index) => (
+                                <Input
+                                  value={row.tool_name}
+                                  onChange={(event) => {
+                                    const next = [...editingAgent.prompt_config.tool_internal_prompts];
+                                    next[index] = { ...row, tool_name: event.target.value };
+                                    setEditingAgent({
+                                      ...editingAgent,
+                                      prompt_config: { ...editingAgent.prompt_config, tool_internal_prompts: next },
+                                    });
+                                  }}
+                                />
+                              ),
+                            },
+                            {
+                              title: '拆分/并发执行提示词',
+                              key: 'prompt',
+                              render: (_, row, index) => (
+                                <Input.TextArea
+                                  autoSize={{ minRows: 2, maxRows: 5 }}
+                                  value={row.prompt}
+                                  onChange={(event) => {
+                                    const next = [...editingAgent.prompt_config.tool_internal_prompts];
+                                    next[index] = { ...row, prompt: event.target.value };
+                                    setEditingAgent({
+                                      ...editingAgent,
+                                      prompt_config: { ...editingAgent.prompt_config, tool_internal_prompts: next },
+                                    });
+                                  }}
+                                />
+                              ),
+                            },
+                            {
+                              title: '启用',
+                              key: 'enabled',
+                              width: 80,
+                              render: (_, row, index) => (
+                                <Switch
+                                  checked={row.enabled}
+                                  onChange={(checked) => {
+                                    const next = [...editingAgent.prompt_config.tool_internal_prompts];
+                                    next[index] = { ...row, enabled: checked };
+                                    setEditingAgent({
+                                      ...editingAgent,
+                                      prompt_config: { ...editingAgent.prompt_config, tool_internal_prompts: next },
+                                    });
+                                  }}
+                                />
+                              ),
+                            },
+                          ]}
+                        />
                       </Card>
                       <Card size="small" title="工具提示词">
                         <Table
@@ -4217,8 +5091,35 @@ const App = () => {
                           <Tag>当前状态：{editingAgent.test_config.publish_status || '未发布'}</Tag>
                           <Tag>最后保存：{editingAgent.test_config.last_saved_at || '-'}</Tag>
                         </div>
-                        <div className="table-gap-top">暂无对话，输入问题后点击发送测试。</div>
-                        <div className="table-sub-text">提示：测试上下文会缓存，最多对话 10 轮。测试结果不会保存。</div>
+                        <div className="agent-test-chat">
+                          <div className="agent-test-messages">
+                            {agentTestMessages.length === 0 ? <div className="empty-hint">只测试当前业务智能体，不影响已发布配置。</div> : null}
+                            {agentTestMessages.map((item, index) => (
+                              <div key={`${item.role}-${index}`} className={`agent-test-message ${item.role}`}>
+                                <Tag>{item.role === 'user' ? '用户' : '智能体'}</Tag>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
+                              </div>
+                            ))}
+                          </div>
+                          <Input.TextArea
+                            value={agentTestInput}
+                            autoSize={{ minRows: 3, maxRows: 6 }}
+                            placeholder="向当前业务智能体提问"
+                            onChange={(event) => setAgentTestInput(event.target.value)}
+                            onPressEnter={(event) => {
+                              if (!event.shiftKey) {
+                                event.preventDefault();
+                                void runAgentTest();
+                              }
+                            }}
+                          />
+                          <div className="chat-input-actions">
+                            <Button onClick={() => setAgentTestMessages([])}>清空</Button>
+                            <Button type="primary" loading={agentTestLoading} onClick={() => void runAgentTest()}>
+                              发送测试
+                            </Button>
+                          </div>
+                        </div>
                       </Card>
                     </div>
                   ),

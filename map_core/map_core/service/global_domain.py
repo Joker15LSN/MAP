@@ -40,6 +40,7 @@ from ..service.agent.tool_call_agent import Tool
 from ..service.agent.tool_registry import build_tool_registry, get_registered_agent_tool
 from ..service.scene_selector import SceneSelector
 from ..utils.llm_engine import LLMEngine
+from ..utils.llm_trace_context import llm_trace_context
 from ..utils.query_rewriter import QueryRewriter
 from ..utils.term_replacer import replace_request_query_for_global_domain
 from .agent.agent_mapping import SceneAgentConfig
@@ -87,7 +88,7 @@ class _GlobalDomainSceneSelectionObserver:
 
     def on_stage_start(self, stage: str, data: dict[str, Any]) -> None:
         record_kwargs: dict[str, Any] = {}
-        if stage == "big_scene":
+        if stage in {"big_scene", "direct_sub_agent_route"}:
             record_kwargs["base_state"] = self.base_state
         fire_and_forget(
             self.state_store.record_event(
@@ -361,6 +362,22 @@ class GlobalDomain:
                 "original_query": original_query,
             }
         )
+        scene_selection = getattr(request, "scene_selection", None)
+        if (
+            getattr(request, "summarize_config", None) is None
+            and scene_selection is not None
+            and getattr(scene_selection, "summary_prompt", None)
+        ):
+            summary_payload = {
+                "system_prompt": scene_selection.summary_prompt,
+            }
+            if getattr(scene_selection, "summary_llm_config", None) is not None:
+                summary_payload["llm_config"] = scene_selection.summary_llm_config
+            request = request.model_copy(
+                update={
+                    "summarize_config": summary_payload
+                }
+            )
         prepared_request = cast(
             GlobalDomainRequest,
             replace_request_query_for_global_domain(request),
@@ -446,8 +463,12 @@ class GlobalDomain:
         }
         summarize_config = getattr(request, "summarize_config", None)
         if summarize_config is not None:
-            summarize_extra["summarize_config"] = summarize_config.model_dump(
-                exclude_none=True
+            summarize_extra["summarize_config"] = (
+                summarize_config.model_dump(exclude_none=True)
+                if hasattr(summarize_config, "model_dump")
+                else summarize_config
+                if isinstance(summarize_config, dict)
+                else {}
             )
         summarize_request = AgentRequest(
             query=request.query,
@@ -476,10 +497,22 @@ class GlobalDomain:
 
         if stream:
             try:
-                summary_stream = await self.summarize_agent.execute(
-                    summarize_request,
-                    stream=True,
-                )
+                with llm_trace_context(
+                    state_store=self.state_store,
+                    state_id=self.state_id,
+                    request_id=self.request_id,
+                    session_id=self.session_id,
+                    staff_code=self.staff_code,
+                    agent_code="Master",
+                    agent_name="Master 智能体",
+                    component="summarize_agent",
+                    phase="master_summary",
+                    call_kind="summarize",
+                ):
+                    summary_stream = await self.summarize_agent.execute(
+                        summarize_request,
+                        stream=True,
+                    )
             except Exception as exc:
                 record_summarize_failure(
                     state_store=self.state_store,
@@ -496,21 +529,33 @@ class GlobalDomain:
             ]:
                 summary_parts: list[str] = []
                 try:
-                    async for chunk in cast(
-                        AsyncGenerator[str | dict[str, Any], None], summary_stream
+                    with llm_trace_context(
+                        state_store=self.state_store,
+                        state_id=self.state_id,
+                        request_id=self.request_id,
+                        session_id=self.session_id,
+                        staff_code=self.staff_code,
+                        agent_code="Master",
+                        agent_name="Master 智能体",
+                        component="summarize_agent",
+                        phase="master_summary",
+                        call_kind="summarize",
                     ):
-                        if isinstance(chunk, dict):
-                            if chunk.get("type") != "content" or "data" not in chunk:
+                        async for chunk in cast(
+                            AsyncGenerator[str | dict[str, Any], None], summary_stream
+                        ):
+                            if isinstance(chunk, dict):
+                                if chunk.get("type") != "content" or "data" not in chunk:
+                                    continue
+                                text = str(chunk.get("data") or "")
+                                summary_parts.append(text)
+                                yield chunk
                                 continue
-                            text = str(chunk.get("data") or "")
-                            summary_parts.append(text)
-                            yield chunk
-                            continue
 
-                        text = str(chunk)
-                        if text:
-                            summary_parts.append(text)
-                        yield text
+                            text = str(chunk)
+                            if text:
+                                summary_parts.append(text)
+                            yield text
                 except Exception as exc:
                     record_summarize_failure(
                         state_store=self.state_store,
@@ -533,7 +578,19 @@ class GlobalDomain:
             return _tracked_summary_stream()
 
         try:
-            result = await self.summarize_agent.execute(summarize_request)
+            with llm_trace_context(
+                state_store=self.state_store,
+                state_id=self.state_id,
+                request_id=self.request_id,
+                session_id=self.session_id,
+                staff_code=self.staff_code,
+                agent_code="Master",
+                agent_name="Master 智能体",
+                component="summarize_agent",
+                phase="master_summary",
+                call_kind="summarize",
+            ):
+                result = await self.summarize_agent.execute(summarize_request)
         except Exception as exc:
             record_summarize_failure(
                 state_store=self.state_store,
@@ -616,6 +673,10 @@ class GlobalDomain:
 
         return AgentDispatchConfig(
             scene_agent_configs=scene_agent_configs,
+            mcp_servers=getattr(request_config, "mcp_servers", None) or [],
+            skills=getattr(request_config, "skills", None) or [],
+            flow_skill_descriptors=getattr(request_config, "flow_skill_descriptors", None)
+            or [],
             fetch_selected_agent_configs=isinstance(request, GlobalDomainChatV3Schema),
             merge_fallback_scene_agent_configs=not isinstance(
                 request, SceneAgentDebugRequest

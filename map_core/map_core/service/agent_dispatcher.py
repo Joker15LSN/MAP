@@ -20,6 +20,7 @@ from .agent.base import AgentActionEvent, AgentRequest, AgentResult
 from .agent.fallback_agent_configs import get_fallback_scene_agent_configs
 from .agent.tool_call_agent import Tool, ToolCallAgent
 from .agent_runtime import AgentExecutionHooks, AgentExecutionSpec, AgentRuntime
+from .dynamic_tools import build_mcp_tools, build_prompt_skill_tools
 from .state_store import (
     GlobalAgentStateStore,
     fire_and_forget,
@@ -30,6 +31,9 @@ class AgentDispatchConfig(BaseModel):
     scene_agent_configs: dict[str, SceneAgentConfig] | None = None
     fetch_selected_agent_configs: bool = False
     merge_fallback_scene_agent_configs: bool = True
+    mcp_servers: list[dict[str, Any]] = []
+    skills: list[dict[str, Any]] = []
+    flow_skill_descriptors: list[dict[str, Any]] = []
 
 
 class AgentDispatcher:
@@ -73,6 +77,21 @@ class AgentDispatcher:
 
     def register_scene_agent_config(self, name: str, config: SceneAgentConfig) -> None:
         self.scene_agent_configs[name] = config
+
+    def _register_dynamic_tools(self, config: AgentDispatchConfig) -> None:
+        dynamic_tools = {}
+        dynamic_tools.update(build_mcp_tools(config.mcp_servers or []))
+        dynamic_tools.update(
+            build_prompt_skill_tools(
+                skills=config.skills or [],
+                descriptors=config.flow_skill_descriptors or [],
+                llm=self.llm,
+            )
+        )
+        if not dynamic_tools:
+            return
+        self.tool_registry.update(dynamic_tools)
+        self.agent_runtime.tool_registry = self.tool_registry
 
     def _get_scene_configs(
         self, config: AgentDispatchConfig
@@ -140,6 +159,7 @@ class AgentDispatcher:
         *,
         tool_context: dict[str, Any] | None,
     ) -> tuple[AgentRequest, AgentDispatchConfig, dict[str, Any] | None]:
+        self._register_dynamic_tools(config)
         agents_to_fetch = self._resolve_agents_to_fetch(request, config)
         if not agents_to_fetch:
             return (

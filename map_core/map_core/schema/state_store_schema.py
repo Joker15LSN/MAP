@@ -48,6 +48,40 @@ class ToolCallRecordDocument:
     args: Any = None
     output: Any = None
     status: str | None = None
+    duration_s: float | None = None
+    error: Any = None
+
+
+@dataclass
+class LLMCallRecordDocument:
+    """Mongo schema for the llm_call_records collection."""
+
+    state_id: str
+    request_id: str | None = None
+    session_id: str | None = None
+    staff_code: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
+    seq: int = 0
+    agent_code: str | None = None
+    agent_name: str | None = None
+    component: str | None = None
+    phase: str | None = None
+    step: int | None = None
+    call_kind: str | None = None
+    model: str | None = None
+    provider_request_id: str | None = None
+    start_ts: datetime | None = None
+    end_ts: datetime | None = None
+    duration_s: float | None = None
+    status: str | None = None
+    usage: dict[str, int] | None = None
+    error: Any = None
+    finish_reason: str | None = None
+    prompt_summary: str | None = None
+    tool_names: list[str] | None = None
+    ts: datetime = field(
+        default_factory=lambda: datetime.now(ZoneInfo("Asia/Shanghai"))
+    )
 
 
 @dataclass

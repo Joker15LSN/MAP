@@ -58,6 +58,9 @@ class SkillDescriptorSchema(BaseModel):
     version: str = "1.0.0"
     description: str = ""
     tool_name: str
+    executor_type: str = "tool"
+    content: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
     mount_agents: list[str] = Field(default_factory=list)
     required_scopes: list[str] = Field(default_factory=list)
     allowed_users: list[str] = Field(default_factory=lambda: ["*"])

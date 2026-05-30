@@ -23,6 +23,7 @@ import json
 import time
 from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass
+from datetime import datetime
 from typing import (
     Any,
     Awaitable,
@@ -32,6 +33,7 @@ from typing import (
     cast,
     overload,
 )
+from zoneinfo import ZoneInfo
 
 from loguru import logger as loguru_logger
 from openai import AsyncOpenAI, OpenAI
@@ -47,6 +49,15 @@ from tenacity import (
 
 from ..config.config_schema import LLMConfig
 from ..schema.agent_schema import Function, Message, ToolCall
+from .llm_trace_context import (
+    get_llm_trace_context,
+    now_shanghai,
+    summarize_llm_messages,
+)
+
+
+def datetime_from_epoch(value: float) -> datetime:
+    return datetime.fromtimestamp(value, tz=ZoneInfo("Asia/Shanghai"))
 
 JSON_SCHEMA_UNAVAILABLE_MESSAGE = "This response_format type is unavailable now"
 JSON_OBJECT_OUTPUT_INSTRUCTION = "Use JSON format as output."
@@ -329,12 +340,20 @@ class LLMEngine:
             response = self._coerce_chat_completion_exception(e)
             if response is None:
                 self.logger.error(f"Async ask_tool failed: {e}")
+                self._record_llm_call(
+                    messages=msgs,
+                    params=params,
+                    started_at=started,
+                    status="failed",
+                    call_kind="tool_selection",
+                    error=e,
+                )
                 raise
 
         # Normalize response
         if not response.choices:
             llm_resp = self._handle_async_response(response, started_at=started)
-            return ToolCallResponse(
+            result = ToolCallResponse(
                 content="",
                 tool_calls=[],
                 model=llm_resp.model,
@@ -344,6 +363,15 @@ class LLMEngine:
                 request_id=llm_resp.request_id,
                 raw=response,
             )
+            self._record_llm_call(
+                messages=msgs,
+                params=params,
+                started_at=started,
+                status="success",
+                call_kind="tool_selection",
+                response=result,
+            )
+            return result
 
         message = response.choices[0].message
         content = message.content or ""
@@ -364,7 +392,7 @@ class LLMEngine:
             )
 
         llm_resp = self._handle_async_response(response, started_at=started)
-        return ToolCallResponse(
+        result = ToolCallResponse(
             content=content,
             tool_calls=tool_calls,
             model=llm_resp.model,
@@ -374,6 +402,15 @@ class LLMEngine:
             request_id=llm_resp.request_id,
             raw=response,
         )
+        self._record_llm_call(
+            messages=msgs,
+            params=params,
+            started_at=started,
+            status="success",
+            call_kind="tool_selection",
+            response=result,
+        )
+        return result
 
     def chat(
         self,
@@ -1165,6 +1202,74 @@ class LLMEngine:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.aclose()
 
+    def _record_llm_call(
+        self,
+        *,
+        messages: Sequence[ChatCompletionMessageParam],
+        params: dict[str, Any],
+        started_at: float,
+        status: str,
+        call_kind: str,
+        response: LLMResponse | ToolCallResponse | None = None,
+        error: BaseException | str | None = None,
+        usage: dict[str, int] | None = None,
+    ) -> None:
+        trace_context = get_llm_trace_context()
+        state_store = trace_context.get("state_store")
+        state_id = trace_context.get("state_id")
+        if state_store is None or not state_id:
+            return
+
+        end_ts = now_shanghai()
+        started_dt = datetime_from_epoch(started_at)
+        tools = params.get("tools")
+        tool_names: list[str] | None = None
+        if isinstance(tools, list):
+            tool_names = []
+            for item in tools:
+                if not isinstance(item, dict):
+                    continue
+                fn = item.get("function")
+                if isinstance(fn, dict) and fn.get("name"):
+                    tool_names.append(str(fn["name"]))
+
+        payload = {
+            "request_id": trace_context.get("request_id"),
+            "session_id": trace_context.get("session_id"),
+            "staff_code": trace_context.get("staff_code"),
+            "agent_code": trace_context.get("agent_code"),
+            "agent_name": trace_context.get("agent_name"),
+            "component": trace_context.get("component")
+            or trace_context.get("agent_code")
+            or call_kind,
+            "phase": trace_context.get("phase"),
+            "step": trace_context.get("step"),
+            "call_kind": trace_context.get("call_kind") or call_kind,
+            "model": getattr(response, "model", None) or params.get("model") or self.config.model,
+            "provider_request_id": getattr(response, "request_id", None),
+            "start_ts": started_dt,
+            "end_ts": end_ts,
+            "duration_s": time.time() - started_at,
+            "status": status,
+            "usage": usage or getattr(response, "usage", None),
+            "error": str(error) if error is not None else None,
+            "finish_reason": getattr(response, "finish_reason", None),
+            "prompt_summary": summarize_llm_messages(list(messages)),
+            "tool_names": tool_names,
+        }
+        try:
+            from ..service.state_store import fire_and_forget
+
+            fire_and_forget(
+                state_store.record_event(
+                    state_id=str(state_id),
+                    event_type="llm_call",
+                    payload=payload,
+                )
+            )
+        except Exception:
+            self.logger.debug("LLM trace recording skipped", exc_info=True)
+
     # ------------------------------------------------------------------
     # Internal single-attempt operations (no retries)
     # ------------------------------------------------------------------
@@ -1176,7 +1281,16 @@ class LLMEngine:
         params = self._prepare_params(stream=False, **kwargs)
         try:
             response = self._create_sync_chat_completion(messages=msgs, params=params)
-            return self._handle_sync_response(response, started_at=started)
+            result = self._handle_sync_response(response, started_at=started)
+            self._record_llm_call(
+                messages=msgs,
+                params=params,
+                started_at=started,
+                status="success",
+                call_kind="chat",
+                response=result,
+            )
+            return result
         except Exception as e:
             if self._should_fallback_to_json_object(e, params):
                 self.logger.warning(
@@ -1191,21 +1305,65 @@ class LLMEngine:
                         messages=fallback_msgs,
                         params=fallback_params,
                     )
-                    return self._handle_sync_response(response, started_at=started)
+                    result = self._handle_sync_response(response, started_at=started)
+                    self._record_llm_call(
+                        messages=fallback_msgs,
+                        params=fallback_params,
+                        started_at=started,
+                        status="success",
+                        call_kind="chat",
+                        response=result,
+                    )
+                    return result
                 except Exception as fallback_error:
                     response = self._coerce_chat_completion_exception(fallback_error)
                     if response is not None:
-                        return self._handle_sync_response(
-                            response, started_at=started
+                        result = self._handle_sync_response(
+                            response,
+                            started_at=started,
                         )
+                        self._record_llm_call(
+                            messages=fallback_msgs,
+                            params=fallback_params,
+                            started_at=started,
+                            status="success",
+                            call_kind="chat",
+                            response=result,
+                        )
+                        return result
                     self.logger.error(
                         f"Sync invoke json_object fallback failed: {fallback_error}"
+                    )
+                    self._record_llm_call(
+                        messages=fallback_msgs,
+                        params=fallback_params,
+                        started_at=started,
+                        status="failed",
+                        call_kind="chat",
+                        error=fallback_error,
                     )
                     raise
             response = self._coerce_chat_completion_exception(e)
             if response is not None:
-                return self._handle_sync_response(response, started_at=started)
+                result = self._handle_sync_response(response, started_at=started)
+                self._record_llm_call(
+                    messages=msgs,
+                    params=params,
+                    started_at=started,
+                    status="success",
+                    call_kind="chat",
+                    response=result,
+                )
+                return result
             self.logger.error(f"Sync invoke failed: {e}")
+            self._record_llm_call(
+                messages=msgs,
+                params=params,
+                started_at=started,
+                status="failed",
+                call_kind="chat",
+                error=e,
+            )
             raise
 
     async def _ainvoke_once(
@@ -1220,7 +1378,16 @@ class LLMEngine:
                 messages=msgs,
                 params=params,
             )
-            return self._handle_async_response(response, started_at=started)
+            result = self._handle_async_response(response, started_at=started)
+            self._record_llm_call(
+                messages=msgs,
+                params=params,
+                started_at=started,
+                status="success",
+                call_kind="chat",
+                response=result,
+            )
+            return result
         except Exception as e:
             if self._should_fallback_to_json_object(e, params):
                 self.logger.warning(
@@ -1235,43 +1402,102 @@ class LLMEngine:
                         messages=fallback_msgs,
                         params=fallback_params,
                     )
-                    return self._handle_async_response(response, started_at=started)
+                    result = self._handle_async_response(response, started_at=started)
+                    self._record_llm_call(
+                        messages=fallback_msgs,
+                        params=fallback_params,
+                        started_at=started,
+                        status="success",
+                        call_kind="chat",
+                        response=result,
+                    )
+                    return result
                 except Exception as fallback_error:
                     response = self._coerce_chat_completion_exception(fallback_error)
                     if response is not None:
-                        return self._handle_async_response(
-                            response, started_at=started
+                        result = self._handle_async_response(
+                            response,
+                            started_at=started,
                         )
+                        self._record_llm_call(
+                            messages=fallback_msgs,
+                            params=fallback_params,
+                            started_at=started,
+                            status="success",
+                            call_kind="chat",
+                            response=result,
+                        )
+                        return result
                     self.logger.error(
                         f"Async invoke json_object fallback failed: {fallback_error}"
+                    )
+                    self._record_llm_call(
+                        messages=fallback_msgs,
+                        params=fallback_params,
+                        started_at=started,
+                        status="failed",
+                        call_kind="chat",
+                        error=fallback_error,
                     )
                     raise
             response = self._coerce_chat_completion_exception(e)
             if response is not None:
-                return self._handle_async_response(response, started_at=started)
+                result = self._handle_async_response(response, started_at=started)
+                self._record_llm_call(
+                    messages=msgs,
+                    params=params,
+                    started_at=started,
+                    status="success",
+                    call_kind="chat",
+                    response=result,
+                )
+                return result
             self.logger.error(
                 f"Async invoke failed after {time.time() - started:.2f}s: "
                 f"{type(e).__name__}: {e}"
+            )
+            self._record_llm_call(
+                messages=msgs,
+                params=params,
+                started_at=started,
+                status="failed",
+                call_kind="chat",
+                error=e,
             )
             raise
 
     def _stream_once(
         self, messages: Sequence[LLMMessage | dict[str, Any]], **kwargs
     ) -> Generator[str, None, None]:
+        started = time.time()
         msgs = self._prepare_messages(list(messages))
         params = self._prepare_params(stream=True, **kwargs)
         try:
             response = self._sync_client.chat.completions.create(
                 messages=msgs, **params
             )
-            return self._handle_sync_stream(response)
+            return self._trace_sync_stream(
+                self._handle_sync_stream(response),
+                messages=msgs,
+                params=params,
+                started_at=started,
+            )
         except Exception as e:
             self.logger.error(f"Sync stream failed: {e}")
+            self._record_llm_call(
+                messages=msgs,
+                params=params,
+                started_at=started,
+                status="failed",
+                call_kind="stream",
+                error=e,
+            )
             raise
 
     async def _astream_once(
         self, messages: Sequence[LLMMessage | dict[str, Any]], **kwargs
     ) -> AsyncGenerator[dict[str, Any], None]:
+        started = time.time()
         msgs = self._prepare_messages(list(messages))
         params = self._prepare_params(stream=True, **kwargs)
         # Request usage stats in the final streaming chunk so callers can
@@ -1288,9 +1514,90 @@ class LLMEngine:
             response = await self._async_client.chat.completions.create(
                 messages=msgs, **params
             )
-            return self._handle_async_stream(response)
+            return self._trace_async_stream(
+                self._handle_async_stream(response),
+                messages=msgs,
+                params=params,
+                started_at=started,
+            )
         except Exception as e:
             self.logger.error(f"Async stream failed: {e}")
+            self._record_llm_call(
+                messages=msgs,
+                params=params,
+                started_at=started,
+                status="failed",
+                call_kind="stream",
+                error=e,
+            )
+            raise
+
+    def _trace_sync_stream(
+        self,
+        stream: Generator[str, None, None],
+        *,
+        messages: Sequence[ChatCompletionMessageParam],
+        params: dict[str, Any],
+        started_at: float,
+    ) -> Generator[str, None, None]:
+        try:
+            for chunk in stream:
+                yield chunk
+            self._record_llm_call(
+                messages=messages,
+                params=params,
+                started_at=started_at,
+                status="success",
+                call_kind="stream",
+            )
+        except Exception as exc:
+            self._record_llm_call(
+                messages=messages,
+                params=params,
+                started_at=started_at,
+                status="failed",
+                call_kind="stream",
+                error=exc,
+            )
+            raise
+
+    async def _trace_async_stream(
+        self,
+        stream: AsyncGenerator[dict[str, Any], None],
+        *,
+        messages: Sequence[ChatCompletionMessageParam],
+        params: dict[str, Any],
+        started_at: float,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        usage: dict[str, int] | None = None
+        try:
+            async for chunk in stream:
+                if isinstance(chunk, dict) and chunk.get("type") == "usage":
+                    raw_usage = chunk.get("data")
+                    if isinstance(raw_usage, dict):
+                        usage = {
+                            str(k): int(v)
+                            for k, v in raw_usage.items()
+                            if isinstance(v, int)
+                        }
+                yield chunk
+            self._record_llm_call(
+                messages=messages,
+                params=params,
+                started_at=started_at,
+                status="success",
+                call_kind="stream",
+                usage=usage,
+            )
+        except Exception as exc:
+            self._record_llm_call(
+                messages=messages,
+                params=params,
+                started_at=started_at,
+                status="failed",
+                call_kind="stream",
+                error=exc,
+            )
             raise
 
     # ------------------------------------------------------------------

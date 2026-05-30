@@ -19,6 +19,7 @@ from ..database.mongodb import MongoClient
 from ..schema.state_event_schema import AgentEventSchema
 from ..schema.state_store_schema import (
     AgentExecutionDocument,
+    LLMCallRecordDocument,
     RequestRecordDocument,
     ToolCallRecordDocument,
 )
@@ -66,6 +67,7 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
     """
 
     _TOOL_CALL_EVENT_TYPES: frozenset[str] = frozenset({"tool_call", "tool_result"})
+    _LLM_CALL_EVENT_TYPES: frozenset[str] = frozenset({"llm_call"})
     _REQUEST_EVENT_TYPES: frozenset[str] = frozenset({"request.start", "request.end"})
     _REQUEST_AGENT_INDEX_KEYS: list[tuple[str, int]] = [
         ("request_id", 1),
@@ -78,10 +80,12 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
         agent_executions_collection: str = app_config.MONGODB_AGENT_EXECUTIONS_COLLECTION,
         tool_call_collection: str = app_config.MONGODB_TOOL_CALL_COLLECTION,
         request_collection: str = app_config.MONGODB_REQUEST_COLLECTION,
+        llm_call_collection: str = app_config.MONGODB_LLM_CALL_COLLECTION,
     ) -> None:
         self._agent_executions_col_name = agent_executions_collection
         self._tool_call_col_name = tool_call_collection
         self._request_col_name = request_collection
+        self._llm_call_col_name = llm_call_collection
 
         cfg = getattr(app_config, "MONGODB_CONFIG", None)
         if not cfg or "uri" not in cfg:
@@ -134,6 +138,7 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
             if collection_name in {
                 self._agent_executions_col_name,
                 self._tool_call_col_name,
+                self._llm_call_col_name,
             }:
                 if not await self._collection_has_index(
                     collection,
@@ -233,6 +238,8 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
 
         if event_type in self._TOOL_CALL_EVENT_TYPES:
             await self._handle_tool_call_event(state_id, event_type, payload)
+        elif event_type in self._LLM_CALL_EVENT_TYPES:
+            await self._handle_llm_call_event(state_id, payload)
         elif event_type in self._REQUEST_EVENT_TYPES:
             await self._handle_request_event(state_id, event_type, payload)
         else:
@@ -346,6 +353,12 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
                 if isinstance(output, dict) and output.get("success") is False
                 else "success"
             )
+            if payload.get("duration_s") is not None:
+                document.duration_s = payload.get("duration_s")
+            if payload.get("error") is not None:
+                document.error = payload.get("error")
+            elif isinstance(output, dict) and output.get("error") is not None:
+                document.error = output.get("error")
 
         try:
             collection = await self._get_collection(self._tool_call_col_name)
@@ -355,6 +368,54 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
         except Exception as exc:
             logger.error(
                 f"[MongoHandler] Tool call event write failed for {state_id}: {exc}"
+            )
+
+    async def _handle_llm_call_event(
+        self,
+        state_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        ctx = self._get_state_context(state_id)
+        seq = await self._next_seq(state_id)
+        agent_code, agent_name = self._resolve_agent_identity(payload, ctx)
+        raw_meta = ctx.get("meta")
+        meta: dict[str, Any] = (
+            cast(dict[str, Any], raw_meta) if isinstance(raw_meta, dict) else {}
+        )
+
+        document = LLMCallRecordDocument(
+            state_id=state_id,
+            request_id=payload.get("request_id") or ctx.get("request_id"),
+            session_id=payload.get("session_id") or ctx.get("session_id"),
+            staff_code=payload.get("staff_code") or ctx.get("staff_code"),
+            meta=meta,
+            seq=seq,
+            agent_code=agent_code,
+            agent_name=agent_name,
+            component=payload.get("component"),
+            phase=payload.get("phase"),
+            step=payload.get("step"),
+            call_kind=payload.get("call_kind"),
+            model=payload.get("model"),
+            provider_request_id=payload.get("provider_request_id"),
+            start_ts=payload.get("start_ts"),
+            end_ts=payload.get("end_ts"),
+            duration_s=payload.get("duration_s"),
+            status=payload.get("status"),
+            usage=payload.get("usage"),
+            error=payload.get("error"),
+            finish_reason=payload.get("finish_reason"),
+            prompt_summary=payload.get("prompt_summary"),
+            tool_names=payload.get("tool_names"),
+        )
+        try:
+            collection = await self._get_collection(self._llm_call_col_name)
+            if collection is None:
+                return
+            await collection.insert_one(asdict(document))
+        except Exception as exc:
+            logger.error(
+                f"[MongoHandler] LLM call event write failed for {state_id}: {exc}"
             )
 
     async def _handle_request_event(

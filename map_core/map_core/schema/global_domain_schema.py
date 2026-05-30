@@ -28,6 +28,9 @@ class AgentDispatchConfigSchema(BaseModel):
     """Configuration for dispatching agents based on scene classification."""
 
     scene_agent_configs: dict[str, SceneAgentConfigSchema] | None = None
+    mcp_servers: list[dict[str, Any]] | None = None
+    skills: list[dict[str, Any]] | None = None
+    flow_skill_descriptors: list[dict[str, Any]] | None = None
 
     @model_validator(mode="after")
     def validate_scene_agent_configs_keys(self) -> "AgentDispatchConfigSchema":
@@ -116,6 +119,12 @@ class SceneSelectionConfigSchema(BaseModel):
     scene_registry: SceneRegistrySchema | None = None
     big_scene_system_prompt_template: str | None = None
     sub_scene_user_prompt_template: str | None = None
+    route_prompt: str | None = None
+    route_model: str | None = None
+    route_llm_config: LLMConfig | None = None
+    summary_prompt: str | None = None
+    summary_model: str | None = None
+    summary_llm_config: LLMConfig | None = None
     enabled_agent_codes: dict[str, EnabledAgentConfigSchema] | None = None
 
     @field_validator("big_scene_system_prompt_template")

@@ -4,7 +4,7 @@ import { Collapse, Tree } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 
 import { analyticsApi } from '../api/client';
-import { CorrelationLogItem, LogLevel, RequestDetail, ToolCallCorrelationPayload } from '../types';
+import { CorrelationLogItem, LLMCallRecord, LogLevel, RequestDetail, ToolCallCorrelationPayload } from '../types';
 import { formatIsoTimePair } from '../utils/time';
 import { inferCbbContainerByTool, isCbbContainer } from '../constants/containers';
 import type { ContainerKey } from '../constants/containers';
@@ -31,7 +31,7 @@ interface SubQuestionResultBlock {
   rows: GenericRecord[];
 }
 const PAGE_SIZE = 10;
-const DETAIL_PANEL_KEYS = ['timeline', 'tools', 'scene'] as const;
+const DETAIL_PANEL_KEYS = ['timeline', 'llm', 'tools', 'scene'] as const;
 
 const dateRender = (value: unknown) => {
   if (!value) {
@@ -723,6 +723,7 @@ export const RequestDetailDrawer = ({
   const [toolTreeKeyword, setToolTreeKeyword] = useState('');
 
   const requestId = String(detail?.request?.request_id || '');
+  const llmCallRows = useMemo<LLMCallRecord[]>(() => detail?.llm_calls || [], [detail?.llm_calls]);
   const mergedToolCallRows = useMemo<ToolCallRow[]>(() => {
     const sourceRows = (detail?.tool_calls || []).map((row) => row as ToolCallRow);
     if (sourceRows.length === 0) {
@@ -1072,6 +1073,7 @@ export const RequestDetailDrawer = ({
                 <Tag>状态: {detail.request.status || 'unknown'}</Tag>
                 <Tag>耗时: {detail.request.duration_s.toFixed(2)}s</Tag>
                 <Tag>Token: {detail.request.token_total}</Tag>
+                <Tag>LLM 调用: {detail.summary?.llm_call_count ?? llmCallRows.length}</Tag>
               </div>
               <div className="detail-query">{detail.request.query || '-'}</div>
             </Card>
@@ -1121,6 +1123,66 @@ export const RequestDetailDrawer = ({
                             render: (value: unknown) => Number(value || 0).toFixed(2),
                           },
                           { title: '状态', dataIndex: 'status', key: 'status', render: (value: unknown) => value || 'unknown' },
+                        ]}
+                      />
+                    ),
+                  },
+                  {
+                    key: 'llm',
+                    label: `LLM 调用轨迹（${llmCallRows.length}）`,
+                    children: (
+                      <Table
+                        className="llm-trace-table"
+                        scroll={{ x: 'max-content' }}
+                        rowKey={(row: LLMCallRecord) => `${row.state_id || requestId}-${row.seq ?? '-'}-${row.start_ts || row.ts || ''}`}
+                        pagination={false}
+                        dataSource={llmCallRows}
+                        columns={[
+                          { title: '#', dataIndex: 'seq', key: 'seq', width: 70 },
+                          { title: 'agent', dataIndex: 'agent_code', key: 'agent_code', width: 150 },
+                          { title: 'component', dataIndex: 'component', key: 'component', width: 150 },
+                          { title: 'phase', dataIndex: 'phase', key: 'phase', width: 170 },
+                          { title: 'step', dataIndex: 'step', key: 'step', width: 160 },
+                          { title: 'model', dataIndex: 'model', key: 'model', width: 180 },
+                          {
+                            title: '状态',
+                            dataIndex: 'status',
+                            key: 'status',
+                            width: 110,
+                            render: (value: unknown) => <Tag>{String(value || 'unknown')}</Tag>,
+                          },
+                          {
+                            title: '耗时(s)',
+                            dataIndex: 'duration_s',
+                            key: 'duration_s',
+                            width: 110,
+                            render: (value: unknown) => Number(value || 0).toFixed(2),
+                          },
+                          {
+                            title: 'Token',
+                            dataIndex: 'usage',
+                            key: 'usage',
+                            width: 160,
+                            render: (value: unknown) => {
+                              const usage = (value || {}) as Record<string, unknown>;
+                              return String(usage.total_tokens ?? usage.total ?? usage.completion_tokens ?? '-');
+                            },
+                          },
+                          { title: '开始(UTC+8)', dataIndex: 'start_ts', key: 'start_ts', width: 220, render: dateRender },
+                          {
+                            title: '提示摘要',
+                            dataIndex: 'prompt_summary',
+                            key: 'prompt_summary',
+                            width: 360,
+                            render: (value: unknown) => <div className="log-line-full">{String(value || '-')}</div>,
+                          },
+                          {
+                            title: '错误',
+                            dataIndex: 'error',
+                            key: 'error',
+                            width: 280,
+                            render: (value: unknown) => <div className="log-line-full">{String(value || '-')}</div>,
+                          },
                         ]}
                       />
                     ),

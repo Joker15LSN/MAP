@@ -106,7 +106,11 @@ services:
       sh -lc "
       npm config set registry https://registry.npmmirror.com &&
       npm config set install-links true &&
-      if [ ! -x node_modules/.bin/vite ] || [ ! -x node_modules/.bin/tsc ]; then npm ci --no-fund --no-audit; fi &&
+      LOCK_HASH=$$(sha256sum package-lock.json | awk '{print $$1}') &&
+      NEED_INSTALL=0 &&
+      if [ ! -x node_modules/.bin/vite ] || [ ! -x node_modules/.bin/tsc ]; then NEED_INSTALL=1; fi &&
+      if [ ! -f node_modules/.package-lock.hash ] || [ \"$$(cat node_modules/.package-lock.hash 2>/dev/null)\" != \"$$LOCK_HASH\" ]; then NEED_INSTALL=1; fi &&
+      if [ \"$$NEED_INSTALL\" -eq 1 ]; then npm ci --include=dev --no-fund --no-audit && echo \"$$LOCK_HASH\" > node_modules/.package-lock.hash; fi &&
       npm run dev -- --host 0.0.0.0 --port 5174
       "
     depends_on:
@@ -160,7 +164,11 @@ services:
       sh -lc "
       npm config set registry https://registry.npmmirror.com &&
       npm config set install-links true &&
-      if [ ! -x node_modules/.bin/vite ] || [ ! -x node_modules/.bin/tsc ]; then npm ci --no-fund --no-audit; fi &&
+      LOCK_HASH=$$(sha256sum package-lock.json | awk '{print $$1}') &&
+      NEED_INSTALL=0 &&
+      if [ ! -x node_modules/.bin/vite ] || [ ! -x node_modules/.bin/tsc ]; then NEED_INSTALL=1; fi &&
+      if [ ! -f node_modules/.package-lock.hash ] || [ \"$$(cat node_modules/.package-lock.hash 2>/dev/null)\" != \"$$LOCK_HASH\" ]; then NEED_INSTALL=1; fi &&
+      if [ \"$$NEED_INSTALL\" -eq 1 ]; then npm ci --include=dev --no-fund --no-audit && echo \"$$LOCK_HASH\" > node_modules/.package-lock.hash; fi &&
       npm run dev -- --host 0.0.0.0 --port 5173
       "
     depends_on:

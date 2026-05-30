@@ -336,8 +336,9 @@ body {
 
 .friday-workspace {
   display: grid;
-  grid-template-columns: minmax(240px, 300px) 1fr;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(320px, 420px);
   gap: 16px;
+  align-items: start;
 }
 
 .friday-session-panel {
@@ -558,6 +559,67 @@ body {
 
 .friday-input-row .ant-input-textarea {
   width: 100%;
+}
+
+.friday-report-panel {
+  min-width: 0;
+}
+
+.friday-report-panel .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: calc(100vh - 220px);
+}
+
+.friday-report-table {
+  min-width: 0;
+}
+
+.friday-report-detail {
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 12px;
+  min-height: 260px;
+  overflow: auto;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.friday-report-period {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.friday-report-markdown {
+  margin-top: 10px;
+  line-height: 1.62;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.friday-report-markdown > * {
+  margin: 0 0 10px;
+}
+
+.friday-report-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.friday-report-markdown ul,
+.friday-report-markdown ol {
+  padding-left: 20px;
+}
+
+.friday-report-markdown pre,
+.llm-trace-table .log-line-full {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.llm-trace-table table {
+  min-width: 1320px;
 }
 
 .app-shell {
@@ -1184,6 +1246,25 @@ body.theme-dark .friday-chat-item.user .friday-chat-bubble {
   background: rgba(35, 39, 46, 0.95);
 }
 
+body.theme-dark .friday-report-detail {
+  background: rgba(19, 21, 25, 0.75);
+  border-color: #31353d;
+  color: #e5e7eb;
+}
+
+body.theme-dark .friday-report-markdown,
+body.theme-dark .friday-report-markdown p,
+body.theme-dark .friday-report-markdown li,
+body.theme-dark .friday-report-markdown td,
+body.theme-dark .friday-report-markdown th,
+body.theme-dark .friday-chat-markdown,
+body.theme-dark .friday-chat-markdown p,
+body.theme-dark .friday-chat-markdown li,
+body.theme-dark .friday-chat-markdown td,
+body.theme-dark .friday-chat-markdown th {
+  color: #e5e7eb;
+}
+
 body.theme-dark .app-header {
   background: linear-gradient(130deg, rgba(24, 27, 32, 0.95), rgba(20, 22, 26, 0.95));
   border-color: #323740;
@@ -1478,6 +1559,16 @@ body.theme-dark .action-btn-primary.ant-btn-primary:active {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@media (max-width: 1530px) {
+  .friday-workspace {
+    grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  }
+
+  .friday-report-panel {
+    grid-column: 1 / -1;
   }
 }
 

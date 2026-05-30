@@ -37,6 +37,10 @@ class FridayService:
         self.analytics_service = analytics_service
         self.correlation_service = correlation_service
         self.completion_client = completion_client or self._call_openai_compatible
+        self.report_collection = analytics_service.database["friday_reports"]
+        self.report_config_collection = analytics_service.database["friday_report_config"]
+        self._scheduler_task: asyncio.Task | None = None
+        self._scheduler_stop: asyncio.Event | None = None
 
     @staticmethod
     def _normalize_base_url(raw: str) -> str:
@@ -134,6 +138,334 @@ class FridayService:
     @staticmethod
     def _build_sse(event: str, payload: Dict[str, Any]) -> str:
         return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, default=FridayService._json_default)}\n\n"
+
+    def get_report_config(self) -> Dict[str, Any]:
+        existing = self.report_config_collection.find_one({"_id": "default"}, {"_id": 0})
+        if existing:
+            return existing
+        return {
+            "enabled": True,
+            "timezone": "Asia/Shanghai",
+            "weekly_day": 0,
+            "weekly_hour": 9,
+            "monthly_day": 1,
+            "monthly_hour": 9,
+            "monthly_minute": 15,
+            "slow_threshold_s": DEFAULT_SLOW_THRESHOLD_S,
+        }
+
+    def update_report_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        current = self.get_report_config()
+        updated = {**current, **payload, "updated_at": datetime.now(timezone.utc)}
+        self.report_config_collection.update_one(
+            {"_id": "default"},
+            {"$set": updated},
+            upsert=True,
+        )
+        updated.pop("_id", None)
+        return updated
+
+    def list_reports(self, report_type: str | None = None, limit: int = 20) -> Dict[str, Any]:
+        match: Dict[str, Any] = {}
+        if report_type:
+            match["report_type"] = report_type
+        rows = list(
+            self.report_collection.find(
+                match,
+                {
+                    "_id": 0,
+                    "report_id": 1,
+                    "report_type": 1,
+                    "title": 1,
+                    "period_start": 1,
+                    "period_end": 1,
+                    "generated_at": 1,
+                    "created_at": 1,
+                    "timezone": 1,
+                    "status": 1,
+                    "summary": 1,
+                    "metrics": 1,
+                },
+            ).sort("created_at", -1).limit(max(1, min(limit, 100)))
+        )
+        return {"items": rows}
+
+    def get_report(self, report_id: str) -> Dict[str, Any]:
+        doc = self.report_collection.find_one({"report_id": report_id}, {"_id": 0})
+        if not doc:
+            raise KeyError(f"report_id={report_id} not found")
+        return doc
+
+    def run_report(self, report_type: str = "weekly", lookback_days: int = 7) -> Dict[str, Any]:
+        return self._generate_report(report_type=report_type, lookback_days=lookback_days)
+
+    def start_scheduler(self) -> None:
+        if self._scheduler_task is not None and not self._scheduler_task.done():
+            return
+        self._scheduler_stop = asyncio.Event()
+        self._scheduler_task = asyncio.create_task(self._scheduler_loop())
+
+    async def stop_scheduler(self) -> None:
+        if self._scheduler_stop is not None:
+            self._scheduler_stop.set()
+        if self._scheduler_task is not None:
+            await asyncio.gather(self._scheduler_task, return_exceptions=True)
+        self._scheduler_task = None
+        self._scheduler_stop = None
+
+    async def _scheduler_loop(self) -> None:
+        assert self._scheduler_stop is not None
+        while not self._scheduler_stop.is_set():
+            try:
+                self._run_due_reports()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(self._scheduler_stop.wait(), timeout=60)
+            except asyncio.TimeoutError:
+                continue
+
+    def _run_due_reports(self) -> None:
+        cfg = self.get_report_config()
+        if not cfg.get("enabled", True):
+            return
+        tz = self._safe_zoneinfo(str(cfg.get("timezone") or "Asia/Shanghai"))
+        now = datetime.now(tz)
+        weekly_due = (
+            now.weekday() == int(cfg.get("weekly_day", 0))
+            and now.hour == int(cfg.get("weekly_hour", 9))
+        )
+        monthly_due = (
+            now.day == int(cfg.get("monthly_day", 1))
+            and now.hour == int(cfg.get("monthly_hour", 9))
+            and now.minute >= int(cfg.get("monthly_minute", 15))
+        )
+        if weekly_due:
+            self._generate_report_once_per_day("weekly", 7, now)
+        if monthly_due:
+            self._generate_report_once_per_day("monthly", 31, now)
+
+    def _generate_report_once_per_day(self, report_type: str, lookback_days: int, now: datetime) -> None:
+        key = f"{report_type}-{now.date().isoformat()}"
+        if self.report_collection.find_one({"schedule_key": key}, {"_id": 1}):
+            return
+        self._generate_report(report_type=report_type, lookback_days=lookback_days, schedule_key=key)
+
+    def _generate_report(
+        self,
+        *,
+        report_type: str,
+        lookback_days: int,
+        schedule_key: str | None = None,
+    ) -> Dict[str, Any]:
+        cfg = self.get_report_config()
+        tz = self._safe_zoneinfo(str(cfg.get("timezone") or "Asia/Shanghai"))
+        period_end = datetime.now(tz)
+        period_start = period_end - timedelta(days=lookback_days)
+        start_utc = period_start.astimezone(timezone.utc)
+        end_utc = period_end.astimezone(timezone.utc)
+        slow_threshold_s = float(cfg.get("slow_threshold_s") or DEFAULT_SLOW_THRESHOLD_S)
+        evidence = self._collect_report_evidence(start_utc, end_utc, slow_threshold_s)
+        title = (
+            f"MAP 调用质量周报（过去 {lookback_days} 天）"
+            if report_type == "weekly"
+            else f"MAP 调用质量月报（过去 {lookback_days} 天）"
+        )
+        markdown = self._build_report_markdown(title, evidence, slow_threshold_s)
+        generated_at = datetime.now(timezone.utc)
+        report = {
+            "report_id": f"friday-{uuid4().hex[:12]}",
+            "schedule_key": schedule_key,
+            "report_type": report_type,
+            "title": title,
+            "period_start": period_start,
+            "period_end": period_end,
+            "generated_at": generated_at,
+            "created_at": generated_at,
+            "timezone": str(cfg.get("timezone") or "Asia/Shanghai"),
+            "status": "success",
+            "summary": evidence["summary"],
+            "metrics": evidence["metrics"],
+            "sections": evidence,
+            "markdown": markdown,
+        }
+        self.report_collection.insert_one(report)
+        report.pop("_id", None)
+        return report
+
+    def _collect_report_evidence(
+        self,
+        start_utc: datetime,
+        end_utc: datetime,
+        slow_threshold_s: float,
+    ) -> Dict[str, Any]:
+        request_match = {"start_ts": {"$gte": start_utc, "$lte": end_utc}}
+        request_docs = list(
+            self.analytics_service.request_collection.find(
+                request_match,
+                {
+                    "_id": 0,
+                    "request_id": 1,
+                    "status": 1,
+                    "error": 1,
+                    "duration_s": 1,
+                    "start_ts": 1,
+                    "query": 1,
+                },
+            )
+        )
+        request_ids = [doc.get("request_id") for doc in request_docs if doc.get("request_id")]
+        tool_docs = list(
+            self.analytics_service.tool_collection.find(
+                {"request_id": {"$in": request_ids}},
+                {
+                    "_id": 0,
+                    "request_id": 1,
+                    "agent_code": 1,
+                    "tool": 1,
+                    "status": 1,
+                    "duration_s": 1,
+                    "error": 1,
+                    "output": 1,
+                    "ts": 1,
+                },
+            )
+        )
+        llm_docs = list(
+            self.analytics_service.llm_collection.find(
+                {"request_id": {"$in": request_ids}},
+                {
+                    "_id": 0,
+                    "request_id": 1,
+                    "agent_code": 1,
+                    "component": 1,
+                    "phase": 1,
+                    "model": 1,
+                    "status": 1,
+                    "duration_s": 1,
+                    "error": 1,
+                    "start_ts": 1,
+                },
+            )
+        )
+
+        failed_requests = [
+            doc for doc in request_docs if str(doc.get("status")).lower() not in {"success", "ok"}
+        ][:20]
+        tool_failures = []
+        data_failures = []
+        for doc in tool_docs:
+            output = doc.get("output") if isinstance(doc.get("output"), dict) else {}
+            error = doc.get("error") or output.get("error")
+            failed = str(doc.get("status")).lower() not in {"success", "ok", "none"} or bool(error)
+            if not failed:
+                continue
+            item = {**doc, "reason": str(error or doc.get("status") or "tool_failed")}
+            tool_failures.append(item)
+            if str(doc.get("tool") or "").lower() in {
+                "ask_database_agent",
+                "wenshu_agent",
+                "search_mounted_kb_agent",
+                "query_kb_chunk_tool",
+                "search_kb_chunk_tool",
+            }:
+                data_failures.append(item)
+
+        slow_requests = [
+            doc for doc in request_docs if float(doc.get("duration_s") or 0) >= slow_threshold_s
+        ]
+        slow_tools = [
+            doc for doc in tool_docs if float(doc.get("duration_s") or 0) >= slow_threshold_s
+        ]
+        slow_llm = [
+            doc for doc in llm_docs if float(doc.get("duration_s") or 0) >= slow_threshold_s
+        ]
+        llm_failures = [
+            doc for doc in llm_docs if str(doc.get("status")).lower() != "success"
+        ]
+
+        error_clusters = self._cluster_errors(
+            [doc.get("error") for doc in failed_requests]
+            + [doc.get("reason") for doc in tool_failures]
+            + [doc.get("error") for doc in llm_failures]
+        )
+        summary = {
+            "request_count": len(request_docs),
+            "failed_request_count": len(failed_requests),
+            "tool_failure_count": len(tool_failures),
+            "data_failure_count": len(data_failures),
+            "llm_failure_count": len(llm_failures),
+            "slow_request_count": len(slow_requests),
+            "slow_tool_count": len(slow_tools),
+            "slow_llm_count": len(slow_llm),
+        }
+        metrics = {
+            **summary,
+            "failure_rate": (len(failed_requests) / len(request_docs)) if request_docs else 0,
+        }
+        return {
+            "summary": summary,
+            "metrics": metrics,
+            "tool_failures": tool_failures[:30],
+            "data_failures": data_failures[:30],
+            "llm_failures": llm_failures[:30],
+            "slow_requests": sorted(slow_requests, key=lambda x: float(x.get("duration_s") or 0), reverse=True)[:30],
+            "slow_tools": sorted(slow_tools, key=lambda x: float(x.get("duration_s") or 0), reverse=True)[:30],
+            "slow_llm": sorted(slow_llm, key=lambda x: float(x.get("duration_s") or 0), reverse=True)[:30],
+            "failed_requests": failed_requests,
+            "error_clusters": error_clusters,
+            "suggested_actions": self._suggest_report_actions(summary, error_clusters),
+        }
+
+    @staticmethod
+    def _cluster_errors(errors: List[Any]) -> List[Dict[str, Any]]:
+        clusters: Dict[str, Dict[str, Any]] = {}
+        for error in errors:
+            text = str(error or "").strip()
+            if not text:
+                continue
+            key = text[:120].lower()
+            item = clusters.setdefault(key, {"reason": text[:300], "count": 0})
+            item["count"] += 1
+        rows = list(clusters.values())
+        rows.sort(key=lambda item: item["count"], reverse=True)
+        return rows[:20]
+
+    @staticmethod
+    def _suggest_report_actions(summary: Dict[str, int], clusters: List[Dict[str, Any]]) -> List[str]:
+        actions: List[str] = []
+        if summary.get("tool_failure_count", 0) > 0:
+            actions.append("优先查看失败次数最高的工具，补充超时、鉴权和入参校验日志。")
+        if summary.get("data_failure_count", 0) > 0:
+            actions.append("对知识库/问表/问数类数据源增加可用性探针和空结果区分。")
+        if summary.get("slow_llm_count", 0) > 0:
+            actions.append("按 phase 检查慢 LLM 调用，优先优化 Master 路由和 sub-agent 工具选择提示词。")
+        if clusters:
+            actions.append(f"聚类最高错误为：{clusters[0]['reason']}，建议作为本周首个排障主题。")
+        return actions or ["本周期未发现显著失败或慢调用，可继续观察趋势。"]
+
+    @staticmethod
+    def _build_report_markdown(title: str, evidence: Dict[str, Any], slow_threshold_s: float) -> str:
+        summary = evidence["summary"]
+        lines = [
+            f"# {title}",
+            "",
+            "## 概览",
+            f"- 请求总数：{summary['request_count']}",
+            f"- 失败请求：{summary['failed_request_count']}",
+            f"- 工具失败：{summary['tool_failure_count']}，数据获取失败：{summary['data_failure_count']}",
+            f"- 慢调用阈值：{slow_threshold_s}s；慢请求/工具/LLM：{summary['slow_request_count']}/{summary['slow_tool_count']}/{summary['slow_llm_count']}",
+            "",
+            "## 错误聚类",
+        ]
+        for item in evidence["error_clusters"][:8]:
+            lines.append(f"- {item['count']} 次：{item['reason']}")
+        if not evidence["error_clusters"]:
+            lines.append("- 暂无")
+        lines.extend(["", "## 建议动作"])
+        for item in evidence["suggested_actions"]:
+            lines.append(f"- {item}")
+        return "\n".join(lines)
 
     @staticmethod
     def _split_text_chunks(text: str, chunk_size: int = 18) -> List[str]:

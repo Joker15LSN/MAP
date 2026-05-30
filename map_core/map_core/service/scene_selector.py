@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from ..service.prompt.scene_classification_prompt import (
     SUB_SCENE_SYSTEM_PROMPT,
 )
 from ..utils.llm_engine import LLMEngine, LLMResponse
+from ..utils.llm_trace_context import llm_trace_context
 
 GlobalDomainRequest = GlobalDomainChatSchema | GlobalDomainChatV3Schema
 
@@ -378,6 +380,24 @@ class SceneSelector:
     def _render_template(template: str, template_vars: dict[str, Any]) -> str:
         return template.format(**template_vars)
 
+    @staticmethod
+    def _parse_json_object(content: str) -> dict[str, Any]:
+        text = (content or "").strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start < 0 or end <= start:
+                return {}
+            try:
+                parsed = json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                return {}
+        return parsed if isinstance(parsed, dict) else {}
+
     def build_history_context(
         self,
         history: Sequence[Message | dict[str, Any]] | None,
@@ -715,7 +735,7 @@ class SceneSelector:
         *,
         observer: SceneSelectionObserver | None = None,
     ) -> SceneSelectionOutcome:
-        """Run two-step scene selection and keep all selection decisions in one place."""
+        """Directly route to sub-agents while preserving the legacy result shape."""
         try:
             runtime_config = self.resolve_runtime_config(request)
         except ValidationError as exc:
@@ -729,89 +749,212 @@ class SceneSelector:
             logger.info("No scene agents enabled; skipping scene classification")
             return self._empty_scene_outcome()
 
+        return await self.select_scene_direct(
+            request,
+            runtime_config=runtime_config,
+            observer=observer,
+        )
+
+    async def select_scene_direct(
+        self,
+        request: GlobalDomainRequest,
+        *,
+        runtime_config: SceneSelectionRuntimeConfig,
+        observer: SceneSelectionObserver | None = None,
+    ) -> SceneSelectionOutcome:
         history_context = self._build_history_context(
             request.history,
             history_turn_limit=self._history_turn_limit,
         )
-
         token_usage: dict[str, int] = {}
-        self._notify_stage_start(observer, "big_scene", {"query": request.query})
-        big_scene_start = time.perf_counter()
-        big_scenes_result, big_scene_response = await self.select_big_scene(
-            request,
-            runtime_config=runtime_config,
-            history_context=history_context,
+        available_agents: list[dict[str, str]] = []
+        for big_scene, payload in runtime_config.scene_registry.items():
+            for agent_code, description in payload["sub_scenes"].items():
+                enabled_meta = (
+                    runtime_config.enabled_agent_codes or {}
+                ).get(agent_code)
+                available_agents.append(
+                    {
+                        "agent_code": agent_code,
+                        "agent_name": enabled_meta.agent_name
+                        if enabled_meta is not None
+                        else agent_code,
+                        "description": enabled_meta.agent_description
+                        if enabled_meta is not None
+                        else description,
+                        "big_scene": big_scene,
+                    }
+                )
+
+        allowed_codes = {item["agent_code"] for item in available_agents}
+        code_to_big_scene = {
+            item["agent_code"]: item["big_scene"] for item in available_agents
+        }
+        scene_selection = cast(
+            SceneSelectionConfigSchema | None,
+            getattr(request, "scene_selection", None),
         )
-        big_scene_duration = time.perf_counter() - big_scene_start
-        flat_big_scenes = [item.big_scene for item in big_scenes_result.big_scenes]
-        self._merge_token_usage(
-            token_usage,
-            big_scene_response.usage if big_scene_response else None,
+        route_prompt = (
+            getattr(scene_selection, "route_prompt", None)
+            or "你是 MAP Master 路由智能体。请根据用户问题直接选择最适合回答的业务智能体。"
         )
+        route_llm = self._llm
+        route_llm_config = getattr(scene_selection, "route_llm_config", None)
+        if route_llm_config is not None:
+            try:
+                route_llm = LLMEngine(config=route_llm_config)
+            except Exception as exc:
+                logger.warning(f"Invalid route_llm_config, using default LLM: {exc}")
+        user_prompt = (
+            f"{history_context}\n用户问题：{request.query}\n\n"
+            "可用业务智能体：\n"
+            f"{available_agents}\n\n"
+            "请仅输出 JSON，字段 agent_routes 为数组；每项包含 agent_code、confidence、reason。"
+        )
+
+        self._notify_stage_start(
+            observer,
+            "direct_sub_agent_route",
+            {"query": request.query, "available_agents": available_agents},
+        )
+        route_start = time.perf_counter()
+        response: LLMResponse | None = None
+        route_items: list[dict[str, Any]] = []
+        try:
+            with llm_trace_context(
+                state_store=getattr(observer, "state_store", None),
+                state_id=getattr(observer, "state_id", None),
+                request_id=(getattr(observer, "base_state", {}) or {}).get("request_id")
+                if isinstance(getattr(observer, "base_state", None), dict)
+                else None,
+                session_id=(getattr(observer, "base_state", {}) or {}).get("session_id")
+                if isinstance(getattr(observer, "base_state", None), dict)
+                else None,
+                staff_code=(getattr(observer, "base_state", {}) or {}).get("staff_code")
+                if isinstance(getattr(observer, "base_state", None), dict)
+                else None,
+                agent_code="Master",
+                agent_name="Master 智能体",
+                component="direct_sub_agent_router",
+                phase="master_route",
+                call_kind="route",
+            ):
+                response = await route_llm.asimple_chat(
+                    prompt=user_prompt,
+                    system_prompt=route_prompt,
+                    json_schema={
+                        "type": "object",
+                        "properties": {
+                            "agent_routes": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "agent_code": {
+                                            "type": "string",
+                                            "enum": sorted(allowed_codes),
+                                        },
+                                        "confidence": {
+                                            "type": "number",
+                                            "minimum": 0,
+                                            "maximum": 1,
+                                        },
+                                        "reason": {"type": "string"},
+                                    },
+                                    "required": [
+                                        "agent_code",
+                                        "confidence",
+                                        "reason",
+                                    ],
+                                },
+                            }
+                        },
+                        "required": ["agent_routes"],
+                    },
+                    schema_name="direct_sub_agent_route",
+                )
+            self._merge_token_usage(token_usage, response.usage)
+            parsed = self._parse_json_object(response.content)
+            raw_routes = parsed.get("agent_routes") if isinstance(parsed, dict) else []
+            if isinstance(raw_routes, list):
+                route_items = [item for item in raw_routes if isinstance(item, dict)]
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(f"Direct sub-agent routing failed: {exc}")
+
+        selected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in route_items:
+            code = str(item.get("agent_code") or "").strip()
+            if code not in allowed_codes or code in seen:
+                continue
+            seen.add(code)
+            selected.append(
+                {
+                    "agent_code": code,
+                    "confidence": float(item.get("confidence") or 0.5),
+                    "reason": str(item.get("reason") or "direct route"),
+                }
+            )
+
+        if not selected and "General_Assistant" in allowed_codes:
+            selected.append(
+                {
+                    "agent_code": "General_Assistant",
+                    "confidence": 0.3,
+                    "reason": "路由失败或置信度不足，使用通用问答兜底。",
+                }
+            )
+        elif not selected and available_agents:
+            selected.append(
+                {
+                    "agent_code": available_agents[0]["agent_code"],
+                    "confidence": 0.2,
+                    "reason": "路由失败，使用首个可用智能体兜底。",
+                }
+            )
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in selected:
+            big_scene = code_to_big_scene.get(item["agent_code"])
+            if big_scene is not None:
+                grouped.setdefault(big_scene, []).append(item)
+
+        result = SceneClassificationResult.model_construct(
+            big_scenes=[
+                SceneItem(
+                    big_scene=big_scene,
+                    confidence=max(float(item["confidence"]) for item in items),
+                    reason="direct sub-agent route",
+                )
+                for big_scene, items in grouped.items()
+            ],
+            sub_scenes=[
+                SubSceneResult.model_construct(
+                    big_scene=big_scene,
+                    sub_scenes=[item["agent_code"] for item in items],
+                    confidence=max(float(item["confidence"]) for item in items),
+                    reason="；".join(str(item["reason"]) for item in items)[:120],
+                )
+                for big_scene, items in grouped.items()
+            ],
+        )
+        route_duration = time.perf_counter() - route_start
         self._notify_stage_end(
             observer,
-            "big_scene",
+            "direct_sub_agent_route",
             "success",
             {
-                "big_scenes": flat_big_scenes,
+                "agent_routes": selected,
                 "meta": {
-                    "duration_s": big_scene_duration,
-                    "token_usage": big_scene_response.usage
-                    if big_scene_response
-                    else None,
+                    "duration_s": route_duration,
+                    "token_usage": response.usage if response else None,
                 },
             },
         )
-
-        sub_scenes_result: list[SubSceneResult] = []
-
-        if flat_big_scenes:
-            self._notify_stage_start(
-                observer,
-                "sub_scene",
-                {"big_scenes": flat_big_scenes},
-            )
-            sub_scene_start = time.perf_counter()
-            sub_scene_token_usage: dict[str, int] = {}
-            try:
-                (
-                    sub_scenes_result,
-                    sub_scene_token_usage,
-                ) = await self.select_sub_scene_with_usage(
-                    request.query,
-                    big_scenes=flat_big_scenes,
-                    sub_scene_descriptions=runtime_config.sub_scene_descriptions,
-                    scene_registry=runtime_config.scene_registry,
-                    big_scene_to_sub_scenes=runtime_config.big_scene_to_sub_scenes,
-                    history_context=history_context,
-                    sub_scene_user_prompt_template=runtime_config.sub_scene_user_prompt_template,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.error(f"Sub-scene selection failed: {exc}")
-            sub_scene_duration = time.perf_counter() - sub_scene_start
-            flat_sub_scenes = [ss for r in sub_scenes_result for ss in r.sub_scenes]
-            self._merge_token_usage(token_usage, sub_scene_token_usage)
-            self._notify_stage_end(
-                observer,
-                "sub_scene",
-                "success",
-                {
-                    "sub_scenes": flat_sub_scenes,
-                    "meta": {
-                        "duration_s": sub_scene_duration,
-                        "token_usage": sub_scene_token_usage or None,
-                    },
-                },
-            )
-
-        result = SceneClassificationResult.model_construct(
-            big_scenes=big_scenes_result.big_scenes,
-            sub_scenes=sub_scenes_result,
-        )
         logger.info(
-            f"{request.query} -> {big_scenes_result.big_scenes} -> {sub_scenes_result}"
+            f"{request.query} -> direct sub-agent routes -> {selected}"
         )
         return SceneSelectionOutcome(
             result=self._finalize_scene_result(result, request, runtime_config),

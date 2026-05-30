@@ -10,6 +10,7 @@ from loguru import logger
 
 from ...utils.global_context import agent_log_context
 from ...utils.llm_engine import LLMEngine
+from ...utils.llm_trace_context import llm_trace_context
 from ..prompt.tool_call_prompt import (
     NEXT_STEP_PROMPT,
     SCENE_POST_SUMMARY_SYSTEM_PROMPT,
@@ -456,12 +457,22 @@ class ToolCallAgent(TraceableAgent):
             logger.debug(
                 f"{self._agent_log_tag()}[Step {step}/{self.max_steps}] Calling LLM for tool selection"
             )
-            response = await self.llm.ask_tool(
-                session.messages,
-                system_msgs=[{"role": "system", "content": formatted_system_prompt}],
-                tools=tools,
-                tool_choice=self._llm_tool_choice(session.tool_called),
-            )
+            with llm_trace_context(
+                state_store=self.state_store,
+                state_id=self.state_id,
+                agent_code=self.name,
+                agent_name=self.agent_display_name,
+                component=self.name,
+                phase="sub_agent_tool_selection",
+                step=step,
+                call_kind="tool_selection",
+            ):
+                response = await self.llm.ask_tool(
+                    session.messages,
+                    system_msgs=[{"role": "system", "content": formatted_system_prompt}],
+                    tools=tools,
+                    tool_choice=self._llm_tool_choice(session.tool_called),
+                )
             self._accumulate_usage(response.usage)
             logger.debug(
                 "{}[Step {}/{}] Tool-selection LLM completed in {:.3f}s with finish_reason={} tool_calls={} request_id={!r}".format(

@@ -106,6 +106,43 @@ export interface RequestListPayload {
   items: RequestListItem[];
 }
 
+export interface LLMCallRecord {
+  request_id?: string;
+  state_id?: string;
+  session_id?: string;
+  staff_code?: string;
+  seq?: number;
+  agent_code?: string;
+  component?: string;
+  phase?: string;
+  step?: string;
+  call_kind?: string;
+  model?: string;
+  provider_request_id?: string;
+  start_ts?: string;
+  end_ts?: string;
+  duration_s?: number;
+  status?: string;
+  usage?: Record<string, unknown>;
+  error?: string;
+  finish_reason?: string;
+  prompt_summary?: string;
+  tool_names?: string[];
+  ts?: string;
+}
+
+export interface LLMCallListPayload {
+  items: LLMCallRecord[];
+  summary: {
+    total: number;
+    success: number;
+    failed: number;
+    avg_duration_s: number;
+    p95_duration_s: number;
+    token_total: number;
+  };
+}
+
 export interface RequestDetail {
   request: {
     request_id: string;
@@ -124,9 +161,11 @@ export interface RequestDetail {
   agent_timeline: Array<Record<string, unknown>>;
   agent_events: Array<Record<string, unknown>>;
   tool_calls: Array<Record<string, unknown>>;
+  llm_calls: LLMCallRecord[];
   summary: {
     agent_event_count: number;
     tool_call_count: number;
+    llm_call_count?: number;
   };
 }
 
@@ -340,6 +379,35 @@ export interface FridayConfig {
   active_base_url?: string;
   active_model?: string;
   config_file?: string;
+}
+
+export interface FridayReportConfig {
+  enabled: boolean;
+  timezone: string;
+  weekly_rrule?: string;
+  monthly_rrule?: string;
+  slow_request_threshold_s?: number;
+  slow_tool_threshold_s?: number;
+  slow_llm_threshold_s?: number;
+  updated_at?: string;
+}
+
+export interface FridayReport {
+  report_id: string;
+  report_type: 'weekly' | 'monthly' | string;
+  title: string;
+  period_start?: string;
+  period_end?: string;
+  generated_at?: string;
+  created_at?: string;
+  timezone?: string;
+  status?: string;
+  summary?: Record<string, unknown>;
+  sections?: Record<string, unknown>;
+  representative_request_ids?: string[];
+  suggested_actions?: string[];
+  markdown?: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface FridayChatRequest {

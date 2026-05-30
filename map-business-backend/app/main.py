@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import base64
+import difflib
+import io
 import json
 import os
+import re
 import uuid
+import zipfile
 from datetime import datetime
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request
+import httpx
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -15,6 +21,7 @@ from .schemas import (
     AdminState,
     AddressConfigItem,
     BasicSettingItem,
+    BusinessAgentTestChatRequest,
     BusinessAgentConfig,
     ChatRequest,
     DashboardCardConfig,
@@ -26,6 +33,11 @@ from .schemas import (
     FlowPolicyConfig,
     FlowSkillDescriptor,
     MasterAgentConfig,
+    MasterPromptVersion,
+    MasterPublishRequest,
+    MasterRollbackRequest,
+    McpServerConfig,
+    McpToolConfig,
     ModelRecord,
     ModelCenterConfig,
     PermissionRule,
@@ -34,7 +46,9 @@ from .schemas import (
     RolePolicy,
     SecurityPolicyItem,
     SessionPolicyItem,
+    SkillUploadRequest,
     SkillPolicy,
+    UploadedSkill,
     UserAccount,
 )
 from .store import AdminStateStore
@@ -116,6 +130,17 @@ TOOL_NAME_ALIASES: dict[str, str] = {
 }
 
 
+def _now_iso() -> str:
+    return datetime.now().isoformat()
+
+
+def _slugify(value: str, *, prefix: str = "item") -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_.-]+", "-", value.strip()).strip("-").lower()
+    if not normalized:
+        normalized = uuid.uuid4().hex[:8]
+    return f"{prefix}-{normalized}" if not normalized.startswith(f"{prefix}-") else normalized
+
+
 def _resolve_large_model_row(
     state: AdminState,
     model_name: str | None,
@@ -150,9 +175,87 @@ def _normalize_tool_name(raw_tool_name: str) -> str | None:
     if not cleaned:
         return None
     mapped = TOOL_NAME_ALIASES.get(cleaned, cleaned)
-    if mapped in KNOWN_TOOL_NAMES:
+    if (
+        mapped in KNOWN_TOOL_NAMES
+        or mapped.startswith("mcp__")
+        or mapped.startswith("skill__")
+    ):
         return mapped
     return None
+
+
+def _mcp_tool_runtime_name(server_id: str, tool_name: str) -> str:
+    return f"mcp__{_slugify(server_id, prefix='server').replace('-', '_')}__{_slugify(tool_name, prefix='tool').replace('-', '_')}"
+
+
+def _skill_runtime_tool_name(skill_id: str) -> str:
+    return f"skill__{_slugify(skill_id, prefix='skill').replace('-', '_')}"
+
+
+def _master_version_payload(
+    master: MasterAgentConfig,
+    *,
+    version: str,
+    operator: str,
+    note: str,
+) -> MasterPromptVersion:
+    return MasterPromptVersion(
+        version=version,
+        created_at=_now_iso(),
+        operator=operator,
+        note=note,
+        route_prompt=master.route_prompt,
+        summary_prompt=master.summary_prompt,
+        route_model=master.route_model,
+        summary_model=master.summary_model,
+        model=master.model,
+        temperature=master.temperature,
+        max_tokens=master.max_tokens,
+    )
+
+
+def _master_version_to_config(
+    master: MasterAgentConfig,
+    version: MasterPromptVersion,
+) -> MasterAgentConfig:
+    return master.model_copy(
+        update={
+            "route_prompt": version.route_prompt,
+            "summary_prompt": version.summary_prompt,
+            "route_model": version.route_model,
+            "summary_model": version.summary_model,
+            "model": version.model,
+            "temperature": version.temperature,
+            "max_tokens": version.max_tokens,
+            "current_version": version.version,
+            "draft_version": f"{version.version}-draft",
+        }
+    )
+
+
+def _master_prompt_snapshot(master: MasterAgentConfig | MasterPromptVersion) -> str:
+    payload = {
+        "route_model": master.route_model,
+        "summary_model": master.summary_model,
+        "model": master.model,
+        "temperature": master.temperature,
+        "max_tokens": master.max_tokens,
+        "route_prompt": master.route_prompt,
+        "summary_prompt": master.summary_prompt,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _unified_diff(from_label: str, from_text: str, to_label: str, to_text: str) -> str:
+    return "".join(
+        difflib.unified_diff(
+            from_text.splitlines(keepends=True),
+            to_text.splitlines(keepends=True),
+            fromfile=from_label,
+            tofile=to_label,
+            lineterm="",
+        )
+    )
 
 
 def _build_scene_selection_payload(state: AdminState) -> dict[str, Any]:
@@ -179,7 +282,93 @@ def _build_scene_selection_payload(state: AdminState) -> dict[str, Any]:
             "agent_description": "通用知识问答与日常咨询。",
         }
 
-    return {"enabled_agent_codes": enabled_agent_codes}
+    default_api_key = os.getenv("MAP_LLM_API_KEY", "")
+    route_model_row = _resolve_large_model_row(state, state.master_agent.route_model)
+    summary_model_row = _resolve_large_model_row(state, state.master_agent.summary_model)
+    route_llm_config = (
+        {
+            "base_url": route_model_row.model_url.strip(),
+            "api_key": default_api_key,
+            "model": route_model_row.model_name.strip(),
+            "temperature": state.master_agent.temperature,
+            "max_tokens": state.master_agent.max_tokens,
+        }
+        if route_model_row is not None
+        else None
+    )
+    summary_llm_config = (
+        {
+            "base_url": summary_model_row.model_url.strip(),
+            "api_key": default_api_key,
+            "model": summary_model_row.model_name.strip(),
+            "temperature": state.master_agent.temperature,
+            "max_tokens": state.master_agent.max_tokens,
+        }
+        if summary_model_row is not None
+        else None
+    )
+    return {
+        "enabled_agent_codes": enabled_agent_codes,
+        "route_prompt": state.master_agent.route_prompt,
+        "route_model": state.master_agent.route_model,
+        "route_llm_config": route_llm_config,
+        "summary_prompt": state.master_agent.summary_prompt,
+        "summary_model": state.master_agent.summary_model,
+        "summary_llm_config": summary_llm_config,
+    }
+
+
+def _derive_agent_tool_names(state: AdminState, agent: BusinessAgentConfig) -> list[str]:
+    tool_names: list[str] = [
+        normalized
+        for normalized in (
+            _normalize_tool_name(tool_name) for tool_name in (agent.tools or [])
+        )
+        if normalized is not None
+    ]
+    mcp_by_id = {server.server_id: server for server in state.mcp_servers}
+
+    for mount in agent.resource_mounts or []:
+        if not mount.enabled:
+            continue
+        if mount.resource_type == "builtin_tool":
+            raw_name = mount.builtin_tool_name or mount.resource_id or mount.resource_name
+            normalized = _normalize_tool_name(raw_name)
+            if normalized:
+                tool_names.append(normalized)
+        elif mount.resource_type == "knowledge_base":
+            tool_names.append("search_mounted_kb_agent")
+        elif mount.resource_type == "data_model":
+            tool_names.append("ask_database_agent")
+        elif mount.resource_type == "skill":
+            skill_id = mount.skill_id or mount.resource_id
+            if skill_id:
+                tool_names.append(_skill_runtime_tool_name(skill_id))
+        elif mount.resource_type in {"mcp_server", "mcp_tool"}:
+            server_id = mount.mcp_server_id or mount.resource_id
+            server = mcp_by_id.get(server_id)
+            if not server or not server.enabled:
+                continue
+            selected_tool_names = (
+                [tool.name for tool in server.tools if tool.enabled]
+                if mount.include_all_tools or mount.resource_type == "mcp_server"
+                else list(mount.mcp_tool_names or [])
+            )
+            for tool_name in selected_tool_names:
+                if tool_name:
+                    tool_names.append(_mcp_tool_runtime_name(server.server_id, tool_name))
+
+    return _dedupe_text_items(tool_names)
+
+
+def _build_runtime_resource_payload(state: AdminState) -> dict[str, Any]:
+    return {
+        "mcp_servers": [server.model_dump() for server in state.mcp_servers if server.enabled],
+        "skills": [skill.model_dump() for skill in state.skills if skill.status == "active"],
+        "flow_skill_descriptors": [
+            item.model_dump() for item in state.flow_skill_descriptors if item.status == "active"
+        ],
+    }
 
 
 def _build_dispatch_config_payload(state: AdminState) -> dict[str, Any]:
@@ -190,20 +379,13 @@ def _build_dispatch_config_payload(state: AdminState) -> dict[str, Any]:
         if not agent.enabled or agent_code not in SUPPORTED_SCENE_AGENT_CODES:
             continue
 
-        normalized_tools = _dedupe_text_items(
-            [
-                normalized
-                for normalized in (
-                    _normalize_tool_name(tool_name) for tool_name in (agent.tools or [])
-                )
-                if normalized is not None
-            ]
-        )
+        normalized_tools = _derive_agent_tool_names(state, agent)
         if not normalized_tools:
             normalized_tools = ["general_qa_agent"]
 
         prompt = (
-            (agent.prompt_config.system_prompt if agent.prompt_config else "").strip()
+            (agent.prompt_config.tool_call_prompt if agent.prompt_config else "").strip()
+            or (agent.prompt_config.system_prompt if agent.prompt_config else "").strip()
             or agent.prompt_template.strip()
             or "你是业务智能体，请根据用户问题给出准确、简洁、可执行的回答。"
         )
@@ -235,7 +417,19 @@ def _build_dispatch_config_payload(state: AdminState) -> dict[str, Any]:
             "max_steps": 1 if agent_code == "General_Assistant" else 2,
             "description": agent.description.strip() or agent.scene_name.strip() or agent.display_name.strip() or agent_code,
             "force_tool_call": True,
+            "tool_internal_prompts": [
+                item.model_dump()
+                for item in (agent.prompt_config.tool_internal_prompts if agent.prompt_config else [])
+                if item.enabled
+            ],
+            "resource_mounts": [item.model_dump() for item in agent.resource_mounts],
         }
+        summary_prompt = (agent.prompt_config.summary_prompt if agent.prompt_config else "").strip()
+        if summary_prompt:
+            scene_agent_config["scene_post_summary"] = {
+                "enabled": True,
+                "system_prompt": summary_prompt,
+            }
         if llm_config is not None:
             scene_agent_config["llm_config"] = llm_config
         scene_agent_configs[agent_code] = scene_agent_config
@@ -264,7 +458,9 @@ def _build_dispatch_config_payload(state: AdminState) -> dict[str, Any]:
             ),
         }
 
-    return {"scene_agent_configs": scene_agent_configs}
+    payload = {"scene_agent_configs": scene_agent_configs}
+    payload.update(_build_runtime_resource_payload(state))
+    return payload
 
 
 def _build_runtime_chat_payload(payload: ChatRequest) -> dict[str, Any]:
@@ -457,6 +653,25 @@ async def flow_runtime_snapshot() -> dict[str, Any]:
         "flow_skill_descriptors": [
             item.model_dump() for item in state.flow_skill_descriptors
         ],
+        "mcp_servers": [item.model_dump() for item in state.mcp_servers],
+        "skills": [item.model_dump() for item in state.skills],
+        "business_agents": [
+            {
+                "agent_code": agent.agent_code,
+                "display_name": agent.display_name,
+                "enabled": agent.enabled,
+                "resource_mounts": [item.model_dump() for item in agent.resource_mounts],
+                "prompt_config": agent.prompt_config.model_dump(),
+            }
+            for agent in state.business_agents
+        ],
+        "master_agent": {
+            "route_prompt": state.master_agent.route_prompt,
+            "summary_prompt": state.master_agent.summary_prompt,
+            "route_model": state.master_agent.route_model,
+            "summary_model": state.master_agent.summary_model,
+            "current_version": state.master_agent.current_version,
+        },
     }
 
 
@@ -475,12 +690,14 @@ async def admin_summary() -> dict[str, Any]:
     )
     return {
         "updated_at": state.updated_at,
-        "master_enabled": state.master_agent.enabled,
+        "master_version": state.master_agent.current_version,
         "business_agent_count": len(state.business_agents),
         "business_agent_enabled_count": len(enabled_business_agents),
         "permission_rule_count": len(state.permission_rules),
         "knowledge_binding_count": len(state.knowledge_bindings),
         "skill_enabled_count": len(enabled_skills),
+        "mcp_server_count": len(state.mcp_servers),
+        "skill_count": len(state.skills),
         "release_count": len(state.release_history),
         "model_count": model_total,
         "user_count": len(state.user_accounts),
@@ -555,6 +772,143 @@ async def put_master_agent(payload: MasterAgentConfig) -> MasterAgentConfig:
     return state.master_agent
 
 
+@app.post("/api/admin/master-agent/publish")
+async def publish_master_agent(payload: MasterPublishRequest) -> dict[str, Any]:
+    def _publish(draft: AdminState) -> dict[str, Any]:
+        master = draft.master_agent
+        previous = next(
+            (
+                item
+                for item in master.prompt_versions
+                if item.version == master.current_version
+            ),
+            None,
+        )
+        version = (payload.version or "").strip()
+        if not version:
+            existing_numbers = []
+            for item in master.prompt_versions:
+                if item.version.startswith("v") and item.version[1:].isdigit():
+                    existing_numbers.append(int(item.version[1:]))
+            version = f"v{(max(existing_numbers) if existing_numbers else 0) + 1}"
+        if any(item.version == version for item in master.prompt_versions):
+            raise HTTPException(status_code=409, detail=f"version {version} already exists")
+
+        created = _master_version_payload(
+            master,
+            version=version,
+            operator=payload.operator,
+            note=payload.note.strip() or "Master 提示词发布",
+        )
+        master.prompt_versions.insert(0, created)
+        draft.master_agent = master.model_copy(
+            update={"current_version": version, "draft_version": f"{version}-draft"}
+        )
+        record = ReleaseRecord(
+            id=f"rel-{uuid.uuid4().hex[:8]}",
+            version=version,
+            operator=payload.operator,
+            note=payload.note.strip() or "Master 提示词发布",
+            affected_agents=["Master"],
+            risk_level="medium",
+            created_at=_now_iso(),
+        )
+        draft.release_history.insert(0, record)
+        previous_snapshot = (
+            _master_prompt_snapshot(previous)
+            if previous is not None
+            else ""
+        )
+        return {
+            "version": created.model_dump(),
+            "release": record.model_dump(),
+            "diff": _unified_diff(
+                previous.version if previous is not None else "empty",
+                previous_snapshot,
+                version,
+                _master_prompt_snapshot(created),
+            ),
+        }
+
+    _, result = store.update(_publish)
+    return result
+
+
+@app.get("/api/admin/master-agent/versions")
+async def list_master_versions() -> list[MasterPromptVersion]:
+    return store.load().master_agent.prompt_versions
+
+
+@app.get("/api/admin/master-agent/versions/{version}")
+async def get_master_version(version: str) -> MasterPromptVersion:
+    for item in store.load().master_agent.prompt_versions:
+        if item.version == version:
+            return item
+    raise HTTPException(status_code=404, detail=f"version {version} not found")
+
+
+@app.get("/api/admin/master-agent/diff")
+async def diff_master_versions(
+    from_version: str | None = None,
+    to_version: str | None = None,
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None, alias="to"),
+) -> dict[str, Any]:
+    state = store.load()
+    master = state.master_agent
+    from_key = (from_version or from_ or "").strip()
+    to_key = (to_version or to or "current").strip()
+    versions = {item.version: item for item in master.prompt_versions}
+
+    def _snapshot_for(key: str) -> tuple[str, str]:
+        if key in {"", "current"}:
+            return "current", _master_prompt_snapshot(master)
+        version = versions.get(key)
+        if version is None:
+            raise HTTPException(status_code=404, detail=f"version {key} not found")
+        return version.version, _master_prompt_snapshot(version)
+
+    from_label, from_text = _snapshot_for(from_key or master.current_version)
+    to_label, to_text = _snapshot_for(to_key)
+    return {
+        "from": from_label,
+        "to": to_label,
+        "diff": _unified_diff(from_label, from_text, to_label, to_text),
+    }
+
+
+@app.post("/api/admin/master-agent/rollback")
+async def rollback_master_agent(payload: MasterRollbackRequest) -> MasterAgentConfig:
+    def _rollback(draft: AdminState) -> MasterAgentConfig:
+        target = next(
+            (
+                item
+                for item in draft.master_agent.prompt_versions
+                if item.version == payload.version
+            ),
+            None,
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"version {payload.version} not found")
+        draft.master_agent = _master_version_to_config(draft.master_agent, target)
+        draft.release_history.insert(
+            0,
+            ReleaseRecord(
+                id=f"rel-{uuid.uuid4().hex[:8]}",
+                version=payload.version,
+                operator=payload.operator,
+                note=payload.note.strip() or f"回滚 Master 到 {payload.version}",
+                affected_agents=["Master"],
+                risk_level="medium",
+                created_at=_now_iso(),
+            ),
+        )
+        return draft.master_agent
+
+    _, updated = store.update(_rollback)
+    return updated
+
+
 @app.get("/api/admin/business-agents")
 async def get_business_agents() -> list[BusinessAgentConfig]:
     state = store.load()
@@ -594,6 +948,57 @@ async def put_business_agent(agent_code: str, payload: BusinessAgentConfig) -> B
 
     _, updated = store.update(_update)
     return updated
+
+
+@app.post("/api/admin/business-agents/{agent_code}/test-chat")
+async def test_business_agent(
+    agent_code: str,
+    payload: BusinessAgentTestChatRequest,
+    request: Request,
+    request_token: str | None = Header(default=None, alias="X-request-token"),
+) -> dict[str, Any]:
+    state = store.load()
+    agent = payload.agent
+    if agent is None:
+        agent = next((item for item in state.business_agents if item.agent_code == agent_code), None)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"agent {agent_code} not found")
+    if agent.agent_code != agent_code:
+        raise HTTPException(status_code=400, detail="agent_code in path and body must match")
+
+    temp_state = state.model_copy(update={"business_agents": [agent]})
+    dispatch_payload = _build_dispatch_config_payload(temp_state)
+    scene_agent_config = (dispatch_payload.get("scene_agent_configs") or {}).get(agent_code)
+    if scene_agent_config is None:
+        raise HTTPException(status_code=400, detail=f"agent {agent_code} cannot be materialized")
+
+    headers = _forward_headers(request_token, request)
+    debug_payload = {
+        "query": payload.query,
+        "history": payload.history,
+        "agent_code": agent_code,
+        "scene_agent_config": scene_agent_config,
+        "dispatch_config": dispatch_payload,
+        "scene_selection": _build_scene_selection_payload(temp_state),
+    }
+    try:
+        return await core_client.chat_by_path(
+            "/global_domain/debug/scene_agent/run",
+            debug_payload,
+            headers=headers,
+        )
+    except Exception as exc:
+        return {
+            "request_id": "bff-fallback",
+            "state_id": "bff-fallback",
+            "agent_code": agent_code,
+            "result": {
+                "success": False,
+                "name": agent_code,
+                "content": "",
+                "error": f"MAP 算法服务不可用或测试执行失败: {exc}",
+            },
+        }
 
 
 @app.get("/api/admin/session-policies")
@@ -707,6 +1112,240 @@ async def get_skill_policies() -> list[SkillPolicy]:
 async def put_skill_policies(payload: list[SkillPolicy]) -> list[SkillPolicy]:
     state, _ = store.update(lambda draft: setattr(draft, "skill_policies", payload))
     return state.skill_policies
+
+
+@app.get("/api/admin/mcp-servers")
+async def get_mcp_servers() -> list[McpServerConfig]:
+    return store.load().mcp_servers
+
+
+@app.put("/api/admin/mcp-servers")
+async def put_mcp_servers(payload: list[McpServerConfig]) -> list[McpServerConfig]:
+    state, _ = store.update(lambda draft: setattr(draft, "mcp_servers", payload))
+    return state.mcp_servers
+
+
+@app.post("/api/admin/mcp-servers")
+async def post_mcp_server(payload: McpServerConfig) -> McpServerConfig:
+    def _upsert(draft: AdminState) -> McpServerConfig:
+        for idx, item in enumerate(draft.mcp_servers):
+            if item.server_id == payload.server_id:
+                draft.mcp_servers[idx] = payload
+                return payload
+        draft.mcp_servers.insert(0, payload)
+        return payload
+
+    _, server = store.update(_upsert)
+    return server
+
+
+async def _probe_mcp_tools(server: McpServerConfig) -> tuple[list[McpToolConfig], str]:
+    """Best-effort MCP tool discovery without storing credentials."""
+    now = _now_iso()
+    if server.transport == "stdio":
+        # Backend config should not launch arbitrary local commands just to render admin UI.
+        return (
+            [
+                tool.model_copy(update={"last_seen_at": now})
+                for tool in server.tools
+            ],
+            "stdio_configured",
+        )
+
+    if not server.url.strip():
+        return (server.tools, "missing_url")
+
+    payloads = [
+        {"jsonrpc": "2.0", "id": "map-tools-list", "method": "tools/list", "params": {}},
+        {"method": "tools/list", "params": {}},
+    ]
+    headers = {
+        key: value
+        for key, value in server.headers.items()
+        if isinstance(value, str) and value
+    }
+    timeout = httpx.Timeout(timeout=max(5, server.timeout_s), connect=5.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            last_error = ""
+            for payload in payloads:
+                try:
+                    response = await client.post(server.url, json=payload, headers=headers)
+                    response.raise_for_status()
+                    data = response.json()
+                    raw_tools = (
+                        data.get("result", {}).get("tools")
+                        if isinstance(data.get("result"), dict)
+                        else data.get("tools")
+                    )
+                    if not isinstance(raw_tools, list):
+                        continue
+                    return (
+                        [
+                            McpToolConfig(
+                                name=str(item.get("name") or "").strip(),
+                                description=str(item.get("description") or ""),
+                                input_schema=item.get("inputSchema")
+                                if isinstance(item.get("inputSchema"), dict)
+                                else item.get("input_schema")
+                                if isinstance(item.get("input_schema"), dict)
+                                else {},
+                                enabled=True,
+                                last_seen_at=now,
+                            )
+                            for item in raw_tools
+                            if isinstance(item, dict)
+                            and str(item.get("name") or "").strip()
+                        ],
+                        "ok",
+                    )
+                except Exception as exc:
+                    last_error = str(exc)
+            return (server.tools, f"refresh_failed: {last_error or 'invalid tools/list response'}")
+    except Exception as exc:
+        return (server.tools, f"refresh_failed: {exc}")
+
+
+@app.post("/api/admin/mcp-servers/{server_id}/refresh-tools")
+async def refresh_mcp_server_tools(server_id: str) -> McpServerConfig:
+    state = store.load()
+    server = next((item for item in state.mcp_servers if item.server_id == server_id), None)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"MCP server {server_id} not found")
+    tools, status = await _probe_mcp_tools(server)
+
+    def _update(draft: AdminState) -> McpServerConfig:
+        for idx, item in enumerate(draft.mcp_servers):
+            if item.server_id == server_id:
+                updated = item.model_copy(
+                    update={
+                        "tools": tools,
+                        "status": status,
+                        "last_refreshed_at": _now_iso(),
+                    }
+                )
+                draft.mcp_servers[idx] = updated
+                return updated
+        raise HTTPException(status_code=404, detail=f"MCP server {server_id} not found")
+
+    _, updated = store.update(_update)
+    return updated
+
+
+@app.get("/api/admin/skills")
+async def get_uploaded_skills() -> list[UploadedSkill]:
+    return store.load().skills
+
+
+@app.put("/api/admin/skills")
+async def put_uploaded_skills(payload: list[UploadedSkill]) -> list[UploadedSkill]:
+    def _replace(draft: AdminState) -> list[UploadedSkill]:
+        draft.skills = payload
+        _sync_uploaded_skills_to_skillhub(draft)
+        return draft.skills
+
+    state, skills = store.update(_replace)
+    return skills
+
+
+def _decode_skill_upload(payload: SkillUploadRequest) -> tuple[str, dict[str, Any]]:
+    raw_content = payload.content.encode("utf-8")
+    if payload.encoding == "base64":
+        raw_content = base64.b64decode(payload.content)
+
+    filename = payload.filename.strip()
+    if filename.lower().endswith(".zip"):
+        with zipfile.ZipFile(io.BytesIO(raw_content)) as archive:
+            names = archive.namelist()
+            skill_name = next((name for name in names if name.endswith("SKILL.md")), None)
+            if skill_name is None:
+                raise HTTPException(status_code=400, detail="zip must contain SKILL.md")
+            skill_content = archive.read(skill_name).decode("utf-8")
+            metadata = dict(payload.metadata)
+            manifest_name = next((name for name in names if name.endswith("skill.json")), None)
+            if manifest_name:
+                try:
+                    manifest = json.loads(archive.read(manifest_name).decode("utf-8"))
+                    if isinstance(manifest, dict):
+                        metadata.update(manifest)
+                except json.JSONDecodeError as exc:
+                    raise HTTPException(status_code=400, detail=f"invalid skill.json: {exc}") from exc
+            return skill_content, metadata
+
+    return raw_content.decode("utf-8"), dict(payload.metadata)
+
+
+def _skill_from_upload(payload: SkillUploadRequest) -> UploadedSkill:
+    content, metadata = _decode_skill_upload(payload)
+    raw_name = str(metadata.get("name") or payload.filename.rsplit(".", 1)[0]).strip()
+    skill_id = str(metadata.get("skill_id") or _slugify(raw_name, prefix="skill"))
+    raw_mount_agents = metadata.get("mount_agents")
+    mount_agents = (
+        payload.mount_agents
+        if payload.mount_agents
+        else [str(item) for item in raw_mount_agents]
+        if isinstance(raw_mount_agents, list)
+        else []
+    )
+    now = _now_iso()
+    return UploadedSkill(
+        skill_id=skill_id,
+        name=raw_name or skill_id,
+        display_name=str(metadata.get("display_name") or raw_name or skill_id),
+        version=str(metadata.get("version") or "1.0.0"),
+        description=str(metadata.get("description") or ""),
+        content=content,
+        metadata=metadata,
+        mount_agents=mount_agents,
+        status=str(metadata.get("status") or "active"),
+        uploaded_at=now,
+        updated_at=now,
+    )
+
+
+def _sync_uploaded_skills_to_skillhub(draft: AdminState) -> None:
+    non_uploaded = [
+        item
+        for item in draft.flow_skill_descriptors
+        if item.metadata.get("source") != "manual_upload"
+    ]
+    uploaded_descriptors = [
+        FlowSkillDescriptor(
+            skill_id=skill.skill_id,
+            name=skill.name,
+            display_name=skill.display_name,
+            version=skill.version,
+            description=skill.description,
+            tool_name=_skill_runtime_tool_name(skill.skill_id),
+            executor_type="prompt_skill",
+            content=skill.content,
+            metadata={**skill.metadata, "source": "manual_upload"},
+            mount_agents=list(skill.mount_agents),
+            required_scopes=[],
+            audit_tags=["manual_upload", "prompt_skill"],
+            status="active" if skill.status == "active" else "inactive",
+        )
+        for skill in draft.skills
+    ]
+    draft.flow_skill_descriptors = [*uploaded_descriptors, *non_uploaded]
+
+
+@app.post("/api/admin/skills/upload")
+async def upload_skill(payload: SkillUploadRequest) -> UploadedSkill:
+    uploaded = _skill_from_upload(payload)
+
+    def _upsert(draft: AdminState) -> UploadedSkill:
+        for idx, item in enumerate(draft.skills):
+            if item.skill_id == uploaded.skill_id:
+                draft.skills[idx] = uploaded
+                _sync_uploaded_skills_to_skillhub(draft)
+                return uploaded
+        draft.skills.insert(0, uploaded)
+        _sync_uploaded_skills_to_skillhub(draft)
+        return uploaded
+
+    _, skill = store.update(_upsert)
+    return skill
 
 
 @app.get("/api/admin/flow-policy")

@@ -44,6 +44,21 @@ class DisabledFridayService:
     def stream_chat(self, *args, **kwargs):
         raise RuntimeError("Friday service is not configured")
 
+    def get_report_config(self, *args, **kwargs):
+        raise RuntimeError("Friday service is not configured")
+
+    def update_report_config(self, *args, **kwargs):
+        raise RuntimeError("Friday service is not configured")
+
+    def list_reports(self, *args, **kwargs):
+        raise RuntimeError("Friday service is not configured")
+
+    def get_report(self, *args, **kwargs):
+        raise RuntimeError("Friday service is not configured")
+
+    def run_report(self, *args, **kwargs):
+        raise RuntimeError("Friday service is not configured")
+
 
 def create_app(
     settings_override: Optional[Settings] = None,
@@ -102,6 +117,8 @@ def create_app(
             analytics_service=app.state.analytics_service,
             correlation_service=app.state.correlation_service,
         )
+        if hasattr(app.state.friday_service, "start_scheduler"):
+            app.state.friday_service.start_scheduler()
 
         if settings.mongo_uri_ubddev:
             mongo_client_ubddev = create_client(settings.mongo_uri_ubddev)
@@ -135,6 +152,8 @@ def create_app(
         try:
             yield
         finally:
+            if hasattr(app.state.friday_service, "stop_scheduler"):
+                await app.state.friday_service.stop_scheduler()
             mongo_client.close()
             if app.state.mongo_client_ubddev is not None:
                 app.state.mongo_client_ubddev.close()

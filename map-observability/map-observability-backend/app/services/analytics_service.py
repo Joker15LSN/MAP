@@ -54,6 +54,7 @@ class AnalyticsService:
         self.request_collection = self.database[self.collections.request_records]
         self.agent_collection = self.database[self.collections.agent_executions]
         self.tool_collection = self.database[self.collections.tool_call_records]
+        self.llm_collection = self.database[self.collections.llm_call_records]
 
     def _to_token_total(self, doc: Dict) -> float:
         usage = doc.get("token_usage_total") or {}
@@ -105,6 +106,8 @@ class AnalyticsService:
         return assert_container_supported(container)
 
     def _should_filter_container_with_loki(self, container: str) -> bool:
+        if self.loki_query_service is None or not self.loki_query_service.is_enabled():
+            return False
         return container not in self.trusted_container_filters
 
     @staticmethod
@@ -703,6 +706,93 @@ class AnalyticsService:
             "failure_top": failure_top,
         }
 
+    def get_llm_calls(self, filters: FilterOptions, top_n: int = 200) -> Dict:
+        request_match = self._build_request_match(filters)
+        request_ids = [
+            doc.get("request_id")
+            for doc in self.request_collection.find(request_match, {"request_id": 1})
+            if doc.get("request_id")
+        ]
+        if not request_ids:
+            return {
+                "items": [],
+                "summary": {
+                    "call_count": 0,
+                    "failed_count": 0,
+                    "total": 0,
+                    "success": 0,
+                    "failed": 0,
+                    "avg_duration_s": 0.0,
+                    "p95_duration_s": 0.0,
+                    "token_total": 0,
+                },
+            }
+
+        match: Dict[str, Any] = {"request_id": {"$in": request_ids}}
+        if filters.agent_code:
+            match["agent_code"] = filters.agent_code
+        cursor = self.llm_collection.find(
+            match,
+            {
+                "_id": 0,
+                "state_id": 1,
+                "request_id": 1,
+                "session_id": 1,
+                "staff_code": 1,
+                "seq": 1,
+                "agent_code": 1,
+                "agent_name": 1,
+                "component": 1,
+                "phase": 1,
+                "step": 1,
+                "call_kind": 1,
+                "model": 1,
+                "provider_request_id": 1,
+                "start_ts": 1,
+                "end_ts": 1,
+                "duration_s": 1,
+                "status": 1,
+                "usage": 1,
+                "error": 1,
+                "finish_reason": 1,
+                "prompt_summary": 1,
+                "tool_names": 1,
+            },
+        ).sort([("start_ts", -1), ("seq", -1)]).limit(top_n)
+        items = list(cursor)
+        failed_count = sum(1 for item in items if str(item.get("status")) != "success")
+        durations = [
+            to_float(item.get("duration_s"), 0.0)
+            for item in items
+            if item.get("duration_s") is not None
+        ]
+        token_total = 0
+        for item in items:
+            usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
+            token_total += int(
+                to_float(
+                    usage.get("total_tokens")
+                    or usage.get("total")
+                    or usage.get("completion_tokens")
+                    or 0,
+                    0.0,
+                )
+            )
+        call_count = len(items)
+        return {
+            "items": items,
+            "summary": {
+                "call_count": call_count,
+                "failed_count": failed_count,
+                "total": call_count,
+                "success": call_count - failed_count,
+                "failed": failed_count,
+                "avg_duration_s": average(durations),
+                "p95_duration_s": percentile(durations, 95),
+                "token_total": token_total,
+            },
+        }
+
     def list_requests(
         self,
         filters: FilterOptions,
@@ -1015,6 +1105,36 @@ class AnalyticsService:
             ).sort("ts", 1)
         )
         tool_calls = self._merge_tool_call_rows(tool_calls_raw)
+        llm_calls = list(
+            self.llm_collection.find(
+                {"request_id": request_id},
+                {
+                    "_id": 0,
+                    "state_id": 1,
+                    "request_id": 1,
+                    "session_id": 1,
+                    "staff_code": 1,
+                    "seq": 1,
+                    "agent_code": 1,
+                    "agent_name": 1,
+                    "component": 1,
+                    "phase": 1,
+                    "step": 1,
+                    "call_kind": 1,
+                    "model": 1,
+                    "provider_request_id": 1,
+                    "start_ts": 1,
+                    "end_ts": 1,
+                    "duration_s": 1,
+                    "status": 1,
+                    "usage": 1,
+                    "error": 1,
+                    "finish_reason": 1,
+                    "prompt_summary": 1,
+                    "tool_names": 1,
+                },
+            ).sort([("start_ts", 1), ("seq", 1)])
+        )
 
         timeline = self._build_agent_timeline(agent_events)
 
@@ -1027,9 +1147,11 @@ class AnalyticsService:
             "agent_timeline": timeline,
             "agent_events": agent_events,
             "tool_calls": tool_calls,
+            "llm_calls": llm_calls,
             "summary": {
                 "agent_event_count": len(agent_events),
                 "tool_call_count": len(tool_calls),
                 "tool_call_raw_count": len(tool_calls_raw),
+                "llm_call_count": len(llm_calls),
             },
         }

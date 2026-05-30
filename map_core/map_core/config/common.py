@@ -187,6 +187,7 @@ MONGODB_STATE_RECORD_COLLECTION = "agent_call_states"  # legacy, kept for refere
 MONGODB_AGENT_EXECUTIONS_COLLECTION = "agent_executions"
 MONGODB_TOOL_CALL_COLLECTION = "tool_call_records"
 MONGODB_REQUEST_COLLECTION = "request_records"
+MONGODB_LLM_CALL_COLLECTION = "llm_call_records"
 
 # Agents memory
 MONGODB_AGENT_MEMORY_COLLECTION = "agent_session_memories"

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Input, Select, Tag } from '@agentscope-ai/design';
+import { Alert, Button, Card, Input, Select, Table, Tag } from '@agentscope-ai/design';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { analyticsApi } from '../api/client';
-import { FilterState, FridayAction, FridayConversation, FridayEvidenceItem, FridayMessage } from '../types';
+import { FilterState, FridayAction, FridayConversation, FridayEvidenceItem, FridayMessage, FridayReport } from '../types';
 import { inferMainFlowContainer, MainFlowContainerKey } from '../constants/containers';
 
 type FridayHistoryMessage = { role: 'user' | 'assistant' | 'system'; content: string };
@@ -82,6 +82,13 @@ const formatCount = (value: unknown) => {
     return '0';
   }
   return String(number);
+};
+
+const formatReportTime = (value?: string) => {
+  if (!value) {
+    return '-';
+  }
+  return value.replace('T', ' ').slice(0, 19);
 };
 
 const EvidenceView = ({ evidence }: { evidence?: FridayEvidenceItem }) => {
@@ -166,6 +173,11 @@ export const FridayPage = ({ filters, onRunAction }: FridayPageProps) => {
       return fallbackEnv;
     }
   });
+  const [reports, setReports] = useState<FridayReport[]>([]);
+  const [selectedReport, setSelectedReport] = useState<FridayReport>();
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [reportRunning, setReportRunning] = useState<'weekly' | 'monthly' | ''>('');
+  const [reportError, setReportError] = useState('');
 
   useEffect(() => {
     try {
@@ -211,6 +223,58 @@ export const FridayPage = ({ filters, onRunAction }: FridayPageProps) => {
     () => conversations.find((item) => item.id === activeConversationId),
     [conversations, activeConversationId],
   );
+
+  const loadReports = async (preferredReportId?: string) => {
+    setReportsLoading(true);
+    setReportError('');
+    try {
+      const items = await analyticsApi.listFridayReports(20);
+      setReports(items);
+      const target = items.find((item) => item.report_id === preferredReportId) || items[0];
+      if (target) {
+        const detail = await analyticsApi.getFridayReport(target.report_id);
+        setSelectedReport(detail);
+      } else {
+        setSelectedReport(undefined);
+      }
+    } catch (error) {
+      setReportError(String((error as Error)?.message || error));
+    } finally {
+      setReportsLoading(false);
+    }
+  };
+
+  const openReport = async (reportId: string) => {
+    setReportsLoading(true);
+    setReportError('');
+    try {
+      const detail = await analyticsApi.getFridayReport(reportId);
+      setSelectedReport(detail);
+    } catch (error) {
+      setReportError(String((error as Error)?.message || error));
+    } finally {
+      setReportsLoading(false);
+    }
+  };
+
+  const runReport = async (reportType: 'weekly' | 'monthly') => {
+    setReportRunning(reportType);
+    setReportError('');
+    try {
+      const generated = await analyticsApi.runFridayReport(reportType);
+      setSelectedReport(generated);
+      await loadReports(generated.report_id);
+    } catch (error) {
+      setReportError(String((error as Error)?.message || error));
+    } finally {
+      setReportRunning('');
+    }
+  };
+
+  useEffect(() => {
+    loadReports();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const updateConversation = (conversationId: string, updater: (conversation: FridayConversation) => FridayConversation) => {
     setConversations((prev) =>
@@ -486,6 +550,75 @@ export const FridayPage = ({ filters, onRunAction }: FridayPageProps) => {
           </div>
         </Card>
       </div>
+
+      <Card
+        className="friday-report-panel"
+        title="周报 / 月报"
+        loading={reportsLoading}
+        extra={(
+          <div className="friday-card-extra">
+            <Button loading={reportRunning === 'weekly'} onClick={() => runReport('weekly')}>生成周报</Button>
+            <Button loading={reportRunning === 'monthly'} onClick={() => runReport('monthly')}>生成月报</Button>
+            <Button onClick={() => loadReports()}>刷新</Button>
+          </div>
+        )}
+      >
+        {reportError ? <Alert className="table-gap-bottom" type="error" showIcon message={reportError} /> : null}
+        <Table
+          className="friday-report-table"
+          size="small"
+          rowKey={(row: FridayReport) => row.report_id}
+          pagination={false}
+          scroll={{ x: 'max-content', y: 220 }}
+          dataSource={reports}
+          columns={[
+            {
+              title: '报告',
+              dataIndex: 'title',
+              key: 'title',
+              width: 180,
+              render: (value: string, row: FridayReport) => (
+                <Button type="link" onClick={() => openReport(row.report_id)}>
+                  {value || row.report_id}
+                </Button>
+              ),
+            },
+            { title: '类型', dataIndex: 'report_type', key: 'report_type', width: 90 },
+            {
+              title: '生成时间',
+              dataIndex: 'generated_at',
+              key: 'generated_at',
+              width: 150,
+              render: formatReportTime,
+            },
+          ]}
+        />
+
+        {selectedReport ? (
+          <div className="friday-report-detail">
+            <div className="summary-row">
+              <Tag>{selectedReport.report_type === 'monthly' ? '月报' : '周报'}</Tag>
+              <Tag>状态: {selectedReport.status || 'unknown'}</Tag>
+              <Tag>失败请求: {formatCount(selectedReport.summary?.failed_request_count)}</Tag>
+              <Tag>慢 LLM: {formatCount(selectedReport.summary?.slow_llm_count)}</Tag>
+            </div>
+            <div className="friday-report-period">
+              {formatReportTime(selectedReport.period_start)} 至 {formatReportTime(selectedReport.period_end)}
+            </div>
+            {selectedReport.markdown ? (
+              <div className="friday-report-markdown">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {selectedReport.markdown}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <pre className="raw-json">{JSON.stringify(selectedReport, null, 2)}</pre>
+            )}
+          </div>
+        ) : (
+          <Alert className="table-gap-top" type="info" showIcon message="暂无报告，可手动生成周报或月报。" />
+        )}
+      </Card>
     </div>
   );
 };

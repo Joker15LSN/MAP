@@ -60,14 +60,31 @@
     "temperature": 0.2,
     "max_tokens": 4096,
     "summarize_style": "结构化总结 + 关键结论优先",
-    "enabled": true,
     "scene_selector_model": "deepseek-v4-flash",
+    "route_model": "deepseek-v4-flash",
+    "summary_model": "deepseek-v4-flash",
     "route_strategy": "scene_first",
     "stream_version": "v2",
     "timeout_s": 180,
-    "fallback_enabled": true,
-    "query_rewrite_enabled": false,
-    "content_review_enabled": false,
+    "route_prompt": "你是 MAP Master 路由智能体。请根据用户问题、历史上下文和可用业务智能体，直接判断应调用哪些 sub-agent，输出候选 agent_code、confidence 与 reason。",
+    "summary_prompt": "请整合各业务智能体结果，优先给出结论、证据来源和下一步建议。",
+    "current_version": "v1",
+    "draft_version": "v1-draft",
+    "prompt_versions": [
+      {
+        "version": "v1",
+        "created_at": "2026-05-29T16:36:10.605296",
+        "operator": "migration",
+        "note": "旧配置迁移生成",
+        "route_prompt": "你是 MAP Master 路由智能体。请根据用户问题、历史上下文和可用业务智能体，直接判断应调用哪些 sub-agent，输出候选 agent_code、confidence 与 reason。",
+        "summary_prompt": "请整合各业务智能体结果，优先给出结论、证据来源和下一步建议。",
+        "route_model": "deepseek-v4-flash",
+        "summary_model": "deepseek-v4-flash",
+        "model": "deepseek-v4-flash",
+        "temperature": 0.2,
+        "max_tokens": 4096
+      }
+    ],
     "policies": [
       "优先根据场景路由分发到业务智能体",
       "无法命中业务智能体时由通用问答兜底",
@@ -97,11 +114,20 @@
         "all"
       ],
       "mounted_resources": [],
+      "resource_mounts": [],
       "glossary_terms": [],
       "prompt_config": {
         "base_model": "deepseek-v4-flash",
         "system_prompt": "你是企业通用问答助手，请直接回答用户问题。如果信息不确定请明确说明不确定性。",
         "user_prompt": "{query}",
+        "tool_call_prompt": "你是企业通用问答助手，请直接回答用户问题。如果信息不确定请明确说明不确定性。",
+        "tool_internal_prompts": [
+          {
+            "tool_name": "general_qa_agent",
+            "prompt": "直接给出中文结论，必要时分点回答。",
+            "enabled": true
+          }
+        ],
         "summary_prompt": "请给出简洁总结与关键信息点。",
         "tool_prompts": [
           {
@@ -153,5 +179,7 @@
   },
   "scenario_packs": [],
   "flow_skill_descriptors": [],
+  "mcp_servers": [],
+  "skills": [],
   "release_history": []
 }

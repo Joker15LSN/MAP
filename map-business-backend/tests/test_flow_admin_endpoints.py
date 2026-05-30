@@ -1,4 +1,5 @@
 import os
+import uuid
 
 from fastapi.testclient import TestClient
 
@@ -76,3 +77,84 @@ def test_flow_runtime_snapshot_contains_flow_sections() -> None:
     assert "flow_policy" in payload
     assert "scenario_packs" in payload
     assert "flow_skill_descriptors" in payload
+    assert "mcp_servers" in payload
+    assert "skills" in payload
+
+
+def test_master_prompt_publish_diff_and_rollback() -> None:
+    master_response = client.get("/api/admin/master-agent")
+    assert master_response.status_code == 200
+    master = master_response.json()
+    original_version = master["current_version"]
+    release_version = f"pytest-{uuid.uuid4().hex[:8]}"
+
+    master["route_prompt"] = "pytest route prompt"
+    master["summary_prompt"] = "pytest summary prompt"
+    put_response = client.put("/api/admin/master-agent", json=master)
+    assert put_response.status_code == 200
+
+    publish_response = client.post(
+        "/api/admin/master-agent/publish",
+        json={"operator": "pytest", "note": "test publish", "version": release_version},
+    )
+    assert publish_response.status_code == 200
+    assert publish_response.json()["version"]["version"] == release_version
+    assert "pytest route prompt" in publish_response.json()["diff"]
+
+    diff_response = client.get(
+        f"/api/admin/master-agent/diff?from={original_version}&to={release_version}"
+    )
+    assert diff_response.status_code == 200
+    assert "route_prompt" in diff_response.json()["diff"]
+
+    rollback_response = client.post(
+        "/api/admin/master-agent/rollback",
+        json={"version": original_version, "operator": "pytest", "note": "restore"},
+    )
+    assert rollback_response.status_code == 200
+    assert rollback_response.json()["current_version"] == original_version
+
+
+def test_mcp_skill_upload_and_runtime_snapshot() -> None:
+    server_id = f"pytest-mcp-{uuid.uuid4().hex[:8]}"
+    put_response = client.put(
+        "/api/admin/mcp-servers",
+        json=[
+            {
+                "server_id": server_id,
+                "display_name": "Pytest MCP",
+                "transport": "streamable_http",
+                "enabled": True,
+                "url": "http://127.0.0.1:9/mcp",
+                "tools": [
+                    {
+                        "name": "echo",
+                        "description": "echo tool",
+                        "input_schema": {"type": "object"},
+                        "enabled": True,
+                    }
+                ],
+            }
+        ],
+    )
+    assert put_response.status_code == 200
+    assert put_response.json()[0]["server_id"] == server_id
+
+    upload_response = client.post(
+        "/api/admin/skills/upload",
+        json={
+            "filename": "pytest_skill.md",
+            "content": "# Pytest Skill\n\nAnswer with a short test summary.",
+            "metadata": {"description": "pytest uploaded skill"},
+            "mount_agents": ["Operations"],
+        },
+    )
+    assert upload_response.status_code == 200
+    skill = upload_response.json()
+    assert skill["source"] == "manual_upload"
+
+    snapshot_response = client.get("/api/admin/flow-runtime-snapshot")
+    assert snapshot_response.status_code == 200
+    snapshot = snapshot_response.json()
+    assert any(item["server_id"] == server_id for item in snapshot["mcp_servers"])
+    assert any(item["skill_id"] == skill["skill_id"] for item in snapshot["skills"])

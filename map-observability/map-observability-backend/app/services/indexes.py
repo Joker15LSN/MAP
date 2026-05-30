@@ -19,6 +19,8 @@ def ensure_indexes(database: Database, collections: MongoCollections, ignore_aut
     request = database[collections.request_records]
     agent = database[collections.agent_executions]
     tool = database[collections.tool_call_records]
+    llm = database[collections.llm_call_records]
+    reports = database[collections.friday_reports]
 
     try:
         request.create_index([("request_id", ASCENDING)], background=True)
@@ -45,6 +47,17 @@ def ensure_indexes(database: Database, collections: MongoCollections, ignore_aut
         tool.create_index([("tool", ASCENDING)], background=True)
         tool.create_index([("ts", DESCENDING)], background=True)
         tool.create_index([("status", ASCENDING)], background=True)
+
+        llm.create_index([("request_id", ASCENDING)], background=True)
+        llm.create_index([("state_id", ASCENDING)], background=True)
+        llm.create_index([("agent_code", ASCENDING)], background=True)
+        llm.create_index([("phase", ASCENDING)], background=True)
+        llm.create_index([("start_ts", DESCENDING)], background=True)
+        llm.create_index([("status", ASCENDING)], background=True)
+
+        reports.create_index([("report_id", ASCENDING)], unique=True, background=True)
+        reports.create_index([("schedule_key", ASCENDING)], background=True)
+        reports.create_index([("created_at", DESCENDING)], background=True)
         logger.info("MongoDB indexes ensured successfully.")
         return True
     except OperationFailure as exc:

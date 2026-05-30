@@ -125,7 +125,12 @@ def find_invalid_tool_names(tool_names: Sequence[str] | None) -> list[str]:
 
     valid_tool_names = set(list_registered_tool_names())
     return sorted(
-        {tool_name for tool_name in tool_names if tool_name not in valid_tool_names}
+        {
+            tool_name
+            for tool_name in tool_names
+            if tool_name not in valid_tool_names
+            and not str(tool_name).startswith(("mcp__", "skill__"))
+        }
     )
 
 

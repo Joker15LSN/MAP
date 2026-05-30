@@ -11,6 +11,9 @@ class MongoCollections:
     request_records: str = "request_records"
     agent_executions: str = "agent_executions"
     tool_call_records: str = "tool_call_records"
+    llm_call_records: str = "llm_call_records"
+    friday_reports: str = "friday_reports"
+    friday_report_config: str = "friday_report_config"
 
 
 def create_client(mongo_uri: str) -> MongoClient:

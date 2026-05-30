@@ -23,6 +23,8 @@ class BaseSceneAgentConfig(BaseModel):
     force_tool_call: bool = False
     stop_on_no_tool_call: bool = True  # compatiable
     llm_config: LLMConfig | None = None
+    tool_internal_prompts: list[dict] = Field(default_factory=list)
+    resource_mounts: list[dict] = Field(default_factory=list)
 
 
 class ScenePostSummaryConfig(BaseScenePostSummaryConfig):

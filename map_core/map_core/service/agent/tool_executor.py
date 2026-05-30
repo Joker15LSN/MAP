@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
 from loguru import logger
 
 from ...schema.tool_extra_result_schema import ToolExtraResultSchema
+from ...utils.llm_trace_context import llm_trace_context
 from ..tool_extra_result_collector import ToolExtraResultCollector
 from .base import AgentRequest, BaseAgent, ExecutionResult
 from .skill_policy_checker import SkillPolicyChecker
@@ -147,6 +149,7 @@ class ToolExecutor:
         logger.debug(
             f"{log_tag}[Step {step_index}] Calling tool: {tool_name} with args: {args}"
         )
+        started = time.time()
         tool_meta: dict[str, Any] = {}
         meta: dict[str, Any] = {"tool_id": tool_call_id}
         agent_instance: BaseAgent | None = None
@@ -200,9 +203,38 @@ class ToolExecutor:
                 and agent_instance is not None
                 and tool_request is not None
             ):
-                result = await tool._run_prepared(agent_instance, tool_request, parid)
+                if (
+                    isinstance(agent_instance, TraceableAgent)
+                    and self.owner.state_store is not None
+                    and self.owner.state_id is not None
+                ):
+                    agent_instance.set_execution_context(
+                        self.owner.state_store,
+                        self.owner.state_id,
+                    )
+                with llm_trace_context(
+                    state_store=self.owner.state_store,
+                    state_id=self.owner.state_id,
+                    agent_code=self.owner.name,
+                    agent_name=self.owner.agent_display_name,
+                    component=tool_name,
+                    phase="tool_internal",
+                    step=step_index,
+                    call_kind="tool_internal_llm",
+                ):
+                    result = await tool._run_prepared(agent_instance, tool_request, parid)
             else:
-                result = await tool.run(args, tool_request, parid)
+                with llm_trace_context(
+                    state_store=self.owner.state_store,
+                    state_id=self.owner.state_id,
+                    agent_code=self.owner.name,
+                    agent_name=self.owner.agent_display_name,
+                    component=tool_name,
+                    phase="tool_internal",
+                    step=step_index,
+                    call_kind="tool_internal_llm",
+                ):
+                    result = await tool.run(args, tool_request, parid)
 
             logger.info(
                 f"{log_tag}[Step {step_index}] Tool '{tool_name}' executed successfully"
@@ -232,7 +264,7 @@ class ToolExecutor:
                 tool_name=tool_name,
                 result=result,
                 step_index=step_index,
-                meta=meta,
+                meta={**meta, "duration_s": time.time() - started},
             )
             return result
         except Exception as exc:
@@ -255,7 +287,11 @@ class ToolExecutor:
                 tool_name=tool_name,
                 result=error_result,
                 step_index=step_index,
-                meta=meta,
+                meta={
+                    **meta,
+                    "duration_s": time.time() - started,
+                    "error": str(exc),
+                },
             )
             return error_result
 
@@ -342,6 +378,11 @@ class ToolExecutor:
                     tool_name=call_obj.function.name,
                     result=timeout_result,
                     step_index=step,
+                    meta={
+                        "tool_id": call_obj.id,
+                        "duration_s": self.tools_timeout,
+                        "error": "tool timeout",
+                    },
                 )
                 results[call_obj.id] = timeout_result
 

@@ -50,6 +50,14 @@ def get_tools(
     return service.get_tools(context.filters, context.top_n)
 
 
+@router.get("/llm-calls")
+def get_llm_calls(
+    context: QueryContext = Depends(get_query_context),
+    service: AnalyticsService = Depends(get_analytics_service),
+) -> dict:
+    return service.get_llm_calls(context.filters, context.top_n)
+
+
 @router.get("/requests")
 def list_requests(
     context: QueryContext = Depends(get_query_context),
