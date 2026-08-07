@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Qoder IDE
+.qoder/
+
+# understand-anything knowledge graph
+.understand-anything/
