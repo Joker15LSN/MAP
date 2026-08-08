@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from ..core.identity import RequestPrincipal
 from ..repositories.config import ConfigRepository
 from ..schemas import (
     AdminState,
@@ -23,7 +24,7 @@ from ..schemas import (
     MasterRollbackRequest,
     ReleaseRecord,
 )
-from .deps import get_store
+from .deps import get_store, require_admin
 
 router = APIRouter()
 
@@ -108,6 +109,7 @@ async def get_master_agent(store: ConfigRepository = Depends(get_store)) -> Mast
 async def put_master_agent(
     payload: MasterAgentConfig,
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> MasterAgentConfig:
     state, _ = store.update(lambda draft: setattr(draft, "master_agent", payload))
     return state.master_agent
@@ -117,6 +119,7 @@ async def put_master_agent(
 async def publish_master_agent(
     payload: MasterPublishRequest,
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> dict[str, Any]:
     def _publish(draft: AdminState) -> dict[str, Any]:
         master = draft.master_agent
@@ -187,6 +190,7 @@ async def list_master_versions(store: ConfigRepository = Depends(get_store)) -> 
 async def get_master_version(
     version: str,
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> MasterPromptVersion:
     for item in store.load().master_agent.prompt_versions:
         if item.version == version:
@@ -201,6 +205,7 @@ async def diff_master_versions(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None, alias="to"),
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> dict[str, Any]:
     state = store.load()
     master = state.master_agent
@@ -229,6 +234,7 @@ async def diff_master_versions(
 async def rollback_master_agent(
     payload: MasterRollbackRequest,
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> MasterAgentConfig:
     def _rollback(draft: AdminState) -> MasterAgentConfig:
         target = next(

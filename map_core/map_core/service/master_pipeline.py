@@ -54,6 +54,9 @@ class MasterPipeline:
         self.session_id: str | None = (
             getattr(http_request.state, "session_id", None) if http_request else None
         )
+        self.workspace_id: str | None = (
+            getattr(http_request.state, "workspace_id", None) if http_request else None
+        )
         raw_request_token = (
             getattr(http_request.state, "request_token", None) if http_request else None
         )
@@ -89,6 +92,7 @@ class MasterPipeline:
             "_id": self.state_id,
             "request_id": self.request_id,
             "session_id": self.session_id,
+            "workspace_id": self.workspace_id,
             "staff_code": self.staff_code,
             "meta": {},
             "agent_code": "MasterPipeline",
@@ -123,6 +127,7 @@ class MasterPipeline:
         extra = {
             "request_id": self.request_id,
             "session_id": self.session_id,
+            "workspace_id": self.workspace_id,
             "staff_code": self.staff_code,
             "original_query": original_query,
             "backend_env": request.backend_env,
@@ -189,6 +194,7 @@ class MasterPipeline:
                 payload={
                     "request_id": self.request_id,
                     "session_id": self.session_id,
+                    "workspace_id": self.workspace_id,
                     "staff_code": self.staff_code,
                     "query": request.query,
                     "original_query": self._resolve_original_query(request),

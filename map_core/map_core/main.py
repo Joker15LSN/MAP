@@ -1,7 +1,8 @@
 import json
 import os
-import secrets
+import re
 import sys
+import uuid
 from argparse import ArgumentParser
 from contextlib import asynccontextmanager
 from importlib import import_module
@@ -22,6 +23,20 @@ _PROJECT_ROOT = str(Path(__file__).parents[1].absolute())
 MAX_LOGGED_REQUEST_BODY_CHARS = 13000
 MAX_LOGGED_JSON_FIELD_CHARS = 5000
 LOG_REDACTED_VALUE = "***REDACTED***"
+
+# Shared ID contract with the routers and the BFF (F-04): non-empty,
+# <=128 chars, restricted charset; illegal/missing request ids are replaced
+# with uuid4().hex, missing session ids stay None.
+_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
+
+
+def _validated_id_header(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if cleaned and _ID_PATTERN.fullmatch(cleaned):
+        return cleaned
+    return None
 SENSITIVE_KEYWORDS: tuple[str, ...] = (
     "api_key",
     "apikey",
@@ -238,8 +253,8 @@ class RequestContextMiddleware:
             return
 
         headers = Headers(scope=scope)
-        rid = headers.get("X-Request-ID") or secrets.token_hex(8)
-        sid = headers.get("X-Session-ID") or secrets.token_hex(8)
+        rid = _validated_id_header(headers.get("X-Request-ID")) or uuid.uuid4().hex
+        sid = _validated_id_header(headers.get("X-Session-ID"))
         path = str(scope.get("path") or "")
         request_log_enabled = path != "/health"
         state = scope.setdefault("state", {})
@@ -315,7 +330,8 @@ class RequestContextMiddleware:
                 state["_response_started"] = True
                 response_headers = MutableHeaders(scope=message)
                 response_headers["X-Request-ID"] = rid
-                response_headers["X-Session-ID"] = sid
+                if sid:
+                    response_headers["X-Session-ID"] = sid
             elif message["type"] == "http.response.body" and not message.get(
                 "more_body",
                 False,

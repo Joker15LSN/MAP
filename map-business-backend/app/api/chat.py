@@ -33,6 +33,14 @@ def _forward_headers(
         headers["X-UserId"] = request.headers["X-UserId"]
     if request.headers.get("X-UserName"):
         headers["X-UserName"] = request.headers["X-UserName"]
+    # F-04: propagate the BFF-owned IDs so map_core / Mongo / OTel join the
+    # same request/session/workspace identity.
+    if getattr(request.state, "request_id", None):
+        headers["X-Request-ID"] = request.state.request_id
+    if getattr(request.state, "session_id", None):
+        headers["X-Session-ID"] = request.state.session_id
+    if getattr(request.state, "workspace_id", None):
+        headers["X-Workspace-ID"] = request.state.workspace_id
     # Forward inbound W3C propagation headers so an existing upstream trace
     # continues even when OTel is disabled. With OTel enabled the httpx
     # instrumentation additionally injects a dynamic traceparent referencing

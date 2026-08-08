@@ -465,6 +465,7 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
                     state_id=state_id,
                     request_id=request_id,
                     session_id=payload.get("session_id"),
+                    workspace_id=payload.get("workspace_id"),
                     staff_code=payload.get("staff_code"),
                     query=payload.get("query"),
                     start_ts=payload.get("start_ts", ts),
@@ -491,6 +492,8 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
                     "$setOnInsert": {
                         "state_id": document.state_id,
                         "request_id": document.request_id,
+                        "session_id": document.session_id,
+                        "workspace_id": document.workspace_id,
                     },
                     "$set": {
                         "end_ts": document.end_ts,

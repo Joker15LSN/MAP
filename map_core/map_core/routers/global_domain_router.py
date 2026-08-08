@@ -1,5 +1,7 @@
 import json
+import re
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import StreamingResponse
@@ -37,6 +39,27 @@ STREAM_V2_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 
 
+_ID_HEADER_PATTERN = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
+
+
+def _validated_id_header(raw: str | None) -> str | None:
+    """Return the trimmed header value when it satisfies the F-04 ID contract.
+
+    Contract: non-empty, at most 128 chars, charset [A-Za-z0-9._:-].
+    Returns None when missing, empty, over-long, or containing other chars.
+    """
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if len(value) > 128:
+        return None
+    if not _ID_HEADER_PATTERN.fullmatch(value):
+        return None
+    return value
+
+
 def _apply_runtime_headers(
     http_request: Request,
     *,
@@ -45,6 +68,18 @@ def _apply_runtime_headers(
     http_request.state.request_token = request_token
     http_request.state.x_userid = http_request.headers.get("X-UserId", "missing")
     http_request.state.x_username = http_request.headers.get("X-UserName", "missing")
+    # F-04 unified id resolution: honor valid inbound headers, otherwise
+    # request_id falls back to a fresh uuid4().hex; session/workspace stay None.
+    http_request.state.request_id = (
+        _validated_id_header(http_request.headers.get("X-Request-ID"))
+        or uuid4().hex
+    )
+    http_request.state.session_id = _validated_id_header(
+        http_request.headers.get("X-Session-ID")
+    )
+    http_request.state.workspace_id = _validated_id_header(
+        http_request.headers.get("X-Workspace-ID")
+    )
 
 
 def _format_sse_event(event: GlobalDomainStreamEvent) -> str:
@@ -183,7 +218,7 @@ async def debug_select_scene(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ) -> list[str]:
-    http_request.state.request_token = request_token
+    _apply_runtime_headers(http_request, request_token=request_token)
     chat_request = request.to_chat_request()
     global_domain = GlobalDomain(request=chat_request, http_request=http_request)
     result = await global_domain.select_scene(request=chat_request)
@@ -200,7 +235,7 @@ async def debug_run_scene_agent(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ) -> SceneAgentDebugResponse:
-    http_request.state.request_token = request_token
+    _apply_runtime_headers(http_request, request_token=request_token)
     global_domain = GlobalDomain(request=request, http_request=http_request)
     return await global_domain.debug_scene_agent(request)
 
@@ -214,7 +249,7 @@ async def debug_run_tool_agent(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ) -> ToolAgentDebugResponse:
-    http_request.state.request_token = request_token
+    _apply_runtime_headers(http_request, request_token=request_token)
     global_domain = GlobalDomain(request=request, http_request=http_request)
     return await global_domain.debug_tool_agent(request)
 

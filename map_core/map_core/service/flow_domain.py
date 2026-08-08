@@ -139,6 +139,7 @@ class FlowDomain:
                 payload={
                     "request_id": self.request_id,
                     "session_id": self.global_domain.session_id,
+                    "workspace_id": self.global_domain.workspace_id,
                     "status": "failed",
                     "error": message,
                 },
@@ -837,6 +838,7 @@ class FlowDomain:
                     payload={
                         "request_id": self.request_id,
                         "session_id": self.global_domain.session_id,
+                        "workspace_id": self.global_domain.workspace_id,
                         "status": "success",
                         "duration_s": (end_ts - request_start_ts).total_seconds(),
                         "scene_result": {

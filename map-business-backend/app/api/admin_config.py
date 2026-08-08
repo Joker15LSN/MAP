@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from ..core.identity import RequestPrincipal
 from ..repositories.config import ConfigRepository
 from ..schemas import (
     AddressConfigItem,
@@ -34,7 +35,7 @@ from ..schemas import (
     SkillPolicy,
     UserAccount,
 )
-from .deps import get_store
+from .deps import get_store, require_admin
 
 router = APIRouter()
 
@@ -115,6 +116,7 @@ async def get_model_center(store: ConfigRepository = Depends(get_store)) -> Mode
 async def put_model_center(
     payload: ModelCenterConfig,
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> ModelCenterConfig:
     state, _ = store.update(lambda draft: setattr(draft, "model_center", payload))
     return state.model_center
@@ -129,6 +131,7 @@ async def get_basic_settings(store: ConfigRepository = Depends(get_store)) -> li
 async def put_basic_settings(
     payload: list[BasicSettingItem],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[BasicSettingItem]:
     state, _ = store.update(lambda draft: setattr(draft, "basic_settings", payload))
     return state.basic_settings
@@ -143,6 +146,7 @@ async def get_address_configs(store: ConfigRepository = Depends(get_store)) -> l
 async def put_address_configs(
     payload: list[AddressConfigItem],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[AddressConfigItem]:
     state, _ = store.update(lambda draft: setattr(draft, "address_configs", payload))
     return state.address_configs
@@ -157,6 +161,7 @@ async def get_data_connectors(store: ConfigRepository = Depends(get_store)) -> l
 async def put_data_connectors(
     payload: list[DataAccessItem],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[DataAccessItem]:
     state, _ = store.update(lambda draft: setattr(draft, "data_access_items", payload))
     return state.data_access_items
@@ -171,6 +176,7 @@ async def get_data_assets(store: ConfigRepository = Depends(get_store)) -> list[
 async def put_data_assets(
     payload: list[DataAssetItem],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[DataAssetItem]:
     state, _ = store.update(lambda draft: setattr(draft, "data_assets", payload))
     return state.data_assets
@@ -185,6 +191,7 @@ async def get_session_policies(store: ConfigRepository = Depends(get_store)) -> 
 async def put_session_policies(
     payload: list[SessionPolicyItem],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[SessionPolicyItem]:
     state, _ = store.update(lambda draft: setattr(draft, "session_policies", payload))
     return state.session_policies
@@ -199,6 +206,7 @@ async def get_dashboard_cards(store: ConfigRepository = Depends(get_store)) -> l
 async def put_dashboard_cards(
     payload: list[DashboardCardConfig],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[DashboardCardConfig]:
     state, _ = store.update(lambda draft: setattr(draft, "dashboard_cards", payload))
     return state.dashboard_cards
@@ -213,6 +221,7 @@ async def get_security_policies(store: ConfigRepository = Depends(get_store)) ->
 async def put_security_policies(
     payload: list[SecurityPolicyItem],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[SecurityPolicyItem]:
     state, _ = store.update(lambda draft: setattr(draft, "security_policies", payload))
     return state.security_policies
@@ -227,6 +236,7 @@ async def get_glossary_terms(store: ConfigRepository = Depends(get_store)) -> li
 async def put_glossary_terms(
     payload: list[GlossaryTermItem],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[GlossaryTermItem]:
     state, _ = store.update(lambda draft: setattr(draft, "glossary_terms", payload))
     return state.glossary_terms
@@ -241,6 +251,7 @@ async def get_homepage_recommendations(store: ConfigRepository = Depends(get_sto
 async def put_homepage_recommendations(
     payload: list[HomeRecommendationItem],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[HomeRecommendationItem]:
     state, _ = store.update(lambda draft: setattr(draft, "homepage_recommendations", payload))
     return state.homepage_recommendations
@@ -256,6 +267,7 @@ async def get_permission_rules(store: ConfigRepository = Depends(get_store)) -> 
 async def put_permission_rules(
     payload: list[PermissionRule],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[PermissionRule]:
     state, _ = store.update(lambda draft: setattr(draft, "permission_rules", payload))
     return state.permission_rules
@@ -270,6 +282,7 @@ async def get_role_policies(store: ConfigRepository = Depends(get_store)) -> lis
 async def put_role_policies(
     payload: list[RolePolicy],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[RolePolicy]:
     state, _ = store.update(lambda draft: setattr(draft, "role_policies", payload))
     return state.role_policies
@@ -284,6 +297,7 @@ async def get_user_accounts(store: ConfigRepository = Depends(get_store)) -> lis
 async def put_user_accounts(
     payload: list[UserAccount],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[UserAccount]:
     state, _ = store.update(lambda draft: setattr(draft, "user_accounts", payload))
     return state.user_accounts
@@ -299,6 +313,7 @@ async def get_knowledge_bindings(store: ConfigRepository = Depends(get_store)) -
 async def put_knowledge_bindings(
     payload: list[KnowledgeBinding],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[KnowledgeBinding]:
     state, _ = store.update(lambda draft: setattr(draft, "knowledge_bindings", payload))
     return state.knowledge_bindings
@@ -314,6 +329,7 @@ async def get_skill_policies(store: ConfigRepository = Depends(get_store)) -> li
 async def put_skill_policies(
     payload: list[SkillPolicy],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[SkillPolicy]:
     state, _ = store.update(lambda draft: setattr(draft, "skill_policies", payload))
     return state.skill_policies
@@ -328,6 +344,7 @@ async def get_flow_policy(store: ConfigRepository = Depends(get_store)) -> FlowP
 async def put_flow_policy(
     payload: FlowPolicyConfig,
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> FlowPolicyConfig:
     state, _ = store.update(lambda draft: setattr(draft, "flow_policy", payload))
     return state.flow_policy
@@ -342,6 +359,7 @@ async def get_scenario_packs(store: ConfigRepository = Depends(get_store)) -> li
 async def put_scenario_packs(
     payload: list[ScenarioPackConfig],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[ScenarioPackConfig]:
     state, _ = store.update(lambda draft: setattr(draft, "scenario_packs", payload))
     return state.scenario_packs
@@ -356,6 +374,7 @@ async def get_flow_skill_descriptors(store: ConfigRepository = Depends(get_store
 async def put_flow_skill_descriptors(
     payload: list[FlowSkillDescriptor],
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> list[FlowSkillDescriptor]:
     state, _ = store.update(lambda draft: setattr(draft, "flow_skill_descriptors", payload))
     return state.flow_skill_descriptors
@@ -375,6 +394,7 @@ async def append_release_history(
     risk_level: str = "low",
     affected_agents: str = "Master,Operations,Marketing,CustomerSuccess",
     store: ConfigRepository = Depends(get_store),
+    _: RequestPrincipal = Depends(require_admin),
 ) -> ReleaseRecord:
     now = datetime.now().isoformat()
     record = ReleaseRecord(

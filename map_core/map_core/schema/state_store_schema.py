@@ -97,6 +97,7 @@ class RequestRecordDocument:
     state_id: str
     request_id: str
     session_id: str | None = None
+    workspace_id: str | None = None
     staff_code: str | None = None
     query: str | None = None
     start_ts: datetime | None = None

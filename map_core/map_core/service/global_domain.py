@@ -152,6 +152,9 @@ class GlobalDomain:
         self.session_id: str | None = (
             getattr(http_request.state, "session_id", None) if http_request else None
         )
+        self.workspace_id: str | None = (
+            getattr(http_request.state, "workspace_id", None) if http_request else None
+        )
         raw_request_token = (
             getattr(http_request.state, "request_token", None) if http_request else None
         )
@@ -200,6 +203,7 @@ class GlobalDomain:
             "_id": self.state_id,
             "request_id": self.request_id,
             "session_id": self.session_id,
+            "workspace_id": self.workspace_id,
             "staff_code": self.staff_code,
             "meta": {},
             "agent_code": "GlobalDomainOrchestrator",
@@ -302,6 +306,7 @@ class GlobalDomain:
         extra = {
             "request_id": self.request_id,
             "session_id": self.session_id,
+            "workspace_id": self.workspace_id,
             "intention_id": AGENT_MEMORY_DEFAULT_INTENTION_ID,
             "staff_code": self.staff_code,
             "original_query": original_query,
@@ -1049,6 +1054,7 @@ class GlobalDomain:
                 payload={
                     "request_id": self.request_id,
                     "session_id": self.session_id,
+                    "workspace_id": self.workspace_id,
                     "staff_code": self.staff_code,
                     "query": request.query,
                     "original_query": self._resolve_original_query(request),
@@ -1310,6 +1316,7 @@ class GlobalDomain:
                     payload={
                         "request_id": self.request_id,
                         "session_id": self.session_id,
+                        "workspace_id": self.workspace_id,
                         "status": "success",
                         "duration_s": (end_ts - request_start_ts).total_seconds(),
                         "scene_result": safe_serialize(scene_result),
@@ -1351,6 +1358,7 @@ class GlobalDomain:
                     payload={
                         "request_id": self.request_id,
                         "session_id": self.session_id,
+                        "workspace_id": self.workspace_id,
                         "status": "failed",
                         "duration_s": (end_ts - request_start_ts).total_seconds(),
                         "error": str(exc),

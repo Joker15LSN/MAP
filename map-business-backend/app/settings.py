@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from .core.identity import AuthMode
+
 
 def _env_or(key: str, default: str) -> str:
     return os.getenv(key, default)
@@ -25,6 +27,20 @@ class Settings:
     state_file: str = field(
         default_factory=lambda: _env_or("MAP_BFF_STATE_FILE", "/app/data/admin_state.json")
     )
+    auth_mode: AuthMode = field(
+        default_factory=lambda: AuthMode(_env_or("MAP_AUTH_MODE", "dev"))
+    )
+    default_workspace_id: str = field(
+        default_factory=lambda: _env_or("MAP_DEFAULT_WORKSPACE_ID", "default")
+    )
+    # trusted_header 模式下要求请求携带共享代理 secret,否则 401。
+    trusted_proxy_secret: str = field(
+        default_factory=lambda: _env_or("MAP_TRUSTED_PROXY_SECRET", "")
+    )
+    trusted_proxy_required: bool = field(
+        default_factory=lambda: _env_or("MAP_TRUSTED_PROXY_REQUIRED", "false").lower()
+        in {"1", "true", "yes"}
+    )
 
 
 def load_settings() -> Settings:
@@ -32,4 +48,9 @@ def load_settings() -> Settings:
     return Settings(
         map_core_api_origin=_env_or("MAP_CORE_API_ORIGIN", "http://127.0.0.1:10000"),
         state_file=_env_or("MAP_BFF_STATE_FILE", "/app/data/admin_state.json"),
+        auth_mode=AuthMode(_env_or("MAP_AUTH_MODE", "dev")),
+        default_workspace_id=_env_or("MAP_DEFAULT_WORKSPACE_ID", "default"),
+        trusted_proxy_secret=_env_or("MAP_TRUSTED_PROXY_SECRET", ""),
+        trusted_proxy_required=_env_or("MAP_TRUSTED_PROXY_REQUIRED", "false").lower()
+        in {"1", "true", "yes"},
     )

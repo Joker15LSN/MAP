@@ -8,11 +8,40 @@ import type { SseEvent } from './types';
  * - `fetchJson`   期望 2xx 并解析 JSON,否则抛出错误。
  * - `postJson` / `putJson` 封装常见写操作(请求路径、参数与历史实现完全一致)。
  * - `streamSseEvents` 按 SSE 帧流式 yield 事件,支持中途 abort。
+ *
+ * F-04:每次请求携带 BFF 拥有的 `X-Request-ID`(每请求新生成)与
+ * `X-Session-ID`(浏览器会话内稳定,localStorage 持久化),使
+ * BFF/map_core/Mongo/OTel 能关联到同一 request/session。
  */
-export const apiRequest = (url: string, init?: RequestInit): Promise<Response> => fetch(url, init);
+
+const SESSION_ID_KEY = 'map_session_id';
+
+export const getOrCreateSessionId = (): string => {
+  let sessionId = localStorage.getItem(SESSION_ID_KEY);
+  if (!sessionId) {
+    sessionId = generateRequestId();
+    localStorage.setItem(SESSION_ID_KEY, sessionId);
+  }
+  return sessionId;
+};
+
+export const generateRequestId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
+export const buildIdHeaders = (): Record<string, string> => ({
+  'X-Request-ID': generateRequestId(),
+  'X-Session-ID': getOrCreateSessionId(),
+});
+
+export const apiRequest = (url: string, init?: RequestInit): Promise<Response> =>
+  fetch(url, mergeIdHeaders(init));
 
 export const fetchJson = async <T>(url: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(url, init);
+  const response = await fetch(url, mergeIdHeaders(init));
   if (!response.ok) {
     throw new Error(`request failed: ${response.status}`);
   }
@@ -35,6 +64,19 @@ export const putJson = <T>(url: string, body: unknown, init?: RequestInit): Prom
     ...init,
   });
 
+const mergeIdHeaders = (init?: RequestInit): RequestInit | undefined => {
+  if (!init) {
+    return { headers: buildIdHeaders() };
+  }
+  return {
+    ...init,
+    headers: {
+      ...buildIdHeaders(),
+      ...(init.headers as Record<string, string> | undefined),
+    },
+  };
+};
+
 export interface StreamSseOptions {
   endpoint: string;
   payload: unknown;
@@ -51,6 +93,7 @@ export async function* streamSseEvents(options: StreamSseOptions): AsyncGenerato
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      ...buildIdHeaders(),
     },
     signal,
     body: JSON.stringify(payload),
