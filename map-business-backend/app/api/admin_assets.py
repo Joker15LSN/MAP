@@ -35,7 +35,8 @@ from ..services.runtime_payloads import (
     skill_runtime_tool_name,
     slugify,
 )
-from .deps import get_core_client, get_store, require_admin
+from ..services.audit import admin_write_guard
+from .deps import get_core_client, get_store
 
 router = APIRouter()
 
@@ -78,7 +79,7 @@ async def get_business_agents(store: ConfigRepository = Depends(get_store)) -> l
 async def post_business_agent(
     payload: BusinessAgentConfig,
     store: ConfigRepository = Depends(get_store),
-    _: RequestPrincipal = Depends(require_admin),
+    _: RequestPrincipal = Depends(admin_write_guard),
 ) -> BusinessAgentConfig:
     now = datetime.now().isoformat()
 
@@ -99,7 +100,7 @@ async def put_business_agent(
     agent_code: str,
     payload: BusinessAgentConfig,
     store: ConfigRepository = Depends(get_store),
-    _: RequestPrincipal = Depends(require_admin),
+    _: RequestPrincipal = Depends(admin_write_guard),
 ) -> BusinessAgentConfig:
     if payload.agent_code != agent_code:
         raise HTTPException(status_code=400, detail="agent_code in path and body must match")
@@ -126,7 +127,7 @@ async def test_business_agent(
     request_token: str | None = Header(default=None, alias="X-request-token"),
     store: ConfigRepository = Depends(get_store),
     core_client: MapCoreClient = Depends(get_core_client),
-    _: RequestPrincipal = Depends(require_admin),
+    _: RequestPrincipal = Depends(admin_write_guard),
 ) -> dict[str, Any]:
     state = store.load()
     agent = payload.agent
@@ -181,7 +182,7 @@ async def get_mcp_servers(store: ConfigRepository = Depends(get_store)) -> list[
 async def put_mcp_servers(
     payload: list[McpServerConfig],
     store: ConfigRepository = Depends(get_store),
-    _: RequestPrincipal = Depends(require_admin),
+    _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[McpServerConfig]:
     state, _ = store.update(lambda draft: setattr(draft, "mcp_servers", payload))
     return state.mcp_servers
@@ -191,7 +192,7 @@ async def put_mcp_servers(
 async def post_mcp_server(
     payload: McpServerConfig,
     store: ConfigRepository = Depends(get_store),
-    _: RequestPrincipal = Depends(require_admin),
+    _: RequestPrincipal = Depends(admin_write_guard),
 ) -> McpServerConfig:
     def _upsert(draft: AdminState) -> McpServerConfig:
         for idx, item in enumerate(draft.mcp_servers):
@@ -276,7 +277,7 @@ async def _probe_mcp_tools(server: McpServerConfig) -> tuple[list[McpToolConfig]
 async def refresh_mcp_server_tools(
     server_id: str,
     store: ConfigRepository = Depends(get_store),
-    _: RequestPrincipal = Depends(require_admin),
+    _: RequestPrincipal = Depends(admin_write_guard),
 ) -> McpServerConfig:
     state = store.load()
     server = next((item for item in state.mcp_servers if item.server_id == server_id), None)
@@ -311,7 +312,7 @@ async def get_uploaded_skills(store: ConfigRepository = Depends(get_store)) -> l
 async def put_uploaded_skills(
     payload: list[UploadedSkill],
     store: ConfigRepository = Depends(get_store),
-    _: RequestPrincipal = Depends(require_admin),
+    _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[UploadedSkill]:
     def _replace(draft: AdminState) -> list[UploadedSkill]:
         draft.skills = payload
@@ -408,7 +409,7 @@ def _sync_uploaded_skills_to_skillhub(draft: AdminState) -> None:
 async def upload_skill(
     payload: SkillUploadRequest,
     store: ConfigRepository = Depends(get_store),
-    _: RequestPrincipal = Depends(require_admin),
+    _: RequestPrincipal = Depends(admin_write_guard),
 ) -> UploadedSkill:
     uploaded = _skill_from_upload(payload)
 
