@@ -123,6 +123,27 @@ services:
       timeout: 8s
       retries: 10
 
+  worker-service:
+    build:
+      context: ./map-business-backend
+      dockerfile: Dockerfile
+    container_name: map-worker-service
+    command: ["uv", "run", "python", "-m", "app.workers.main"]
+    environment:
+      MAP_CONTROL_DB_DSN: postgresql+asyncpg://map:map@postgres:5432/map
+      MAP_CORE_API_ORIGIN: http://algorithm-service:10000
+      MAP_BFF_STATE_FILE: /app/data/admin_state.json
+      MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
+      MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
+      MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${MAP_OTEL_PROTOCOL:-http/protobuf}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./map-business-backend/app/data:/app/data
+
   frontend-service:
     image: node:22-bookworm-slim
     container_name: map-frontend-service

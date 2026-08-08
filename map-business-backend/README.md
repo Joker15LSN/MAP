@@ -8,6 +8,22 @@
 - 隔离算法细节：封装 `map_core` 路径与 Header 透传。
 - 管理配置托管：维护模型中心、智能体、权限与心流策略配置。
 - 运行时配置注入：根据管理配置自动注入 `scene_selection` 与 `dispatch_config`。
+- 控制面数据（F-03）：会话/反馈/评测/任务/审计等产品数据的 PostgreSQL 事实源与异步作业框架。
+
+## Code Layout (F-01/F-03)
+
+```text
+app/
+├── main.py                  # app factory + middleware + router 注册（约 100 行）
+├── settings.py              # 环境配置（MAP_CORE_API_ORIGIN / MAP_BFF_STATE_FILE）
+├── api/                     # 路由：chat.py / admin_config.py / admin_master.py / admin_assets.py
+├── services/                # payload 构建、幂等处理等 use case
+├── repositories/            # ConfigRepository protocol（AdminState 文件适配）
+├── db/                      # SQLAlchemy 2.x async + Alembic（map_control schema）
+│   ├── models/              # workspaces/users/jobs/outbox_events/idempotency_records
+│   └── migrations/          # Alembic 迁移
+└── workers/                 # 独立进程 `python -m app.workers.main`（job claim/lease/retry）
+```
 
 ## API Overview
 
@@ -68,11 +84,39 @@ cd map-business-backend
 uv run pytest -q
 ```
 
+集成测试需要真实 PostgreSQL（默认 `127.0.0.1:15432`，即根目录 `docker compose up -d postgres`）：
+
+```bash
+docker compose up -d postgres
+MAP_CONTROL_TEST_DSN=postgresql+asyncpg://map:map@127.0.0.1:15432/map uv run pytest tests/integration -q
+```
+
+## Database Migrations (F-03)
+
+```bash
+# 升级到 head
+MAP_CONTROL_MIGRATION_DSN=postgresql+asyncpg://map:map@127.0.0.1:15432/map uv run alembic -c alembic.ini upgrade head
+# 降级一版 / 生成新迁移
+uv run alembic -c alembic.ini downgrade -1
+uv run alembic -c alembic.ini revision --autogenerate -m "description"
+```
+
+## Worker (F-03)
+
+```bash
+uv run python -m app.workers.main
+```
+
+SIGTERM 停止领取新任务并等待当前 handler 安全点；Compose 中对应 `worker-service`。
+
 ## Environment Variables
 
 - `MAP_CORE_API_ORIGIN`：算法服务地址（默认 `http://127.0.0.1:10000`）
 - `MAP_BFF_STATE_FILE`：状态文件路径（默认 `/app/data/admin_state.json`）
 - `MAP_LLM_API_KEY`：用于下发智能体 `llm_config.api_key`
+- `MAP_CONTROL_DB_DSN`：控制面 PostgreSQL DSN（默认 `postgresql+asyncpg://map:map@127.0.0.1:15432/map`，schema `map_control`）
+- `MAP_CONTROL_MIGRATION_DSN`：迁移专用 DSN（默认同上）
+- `MAP_WORKER_ID` / `MAP_WORKER_LEASE_SECONDS` / `MAP_WORKER_POLL_SECONDS`：worker 参数
 
 ## Data File
 
