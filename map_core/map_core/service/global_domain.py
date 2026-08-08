@@ -681,6 +681,7 @@ class GlobalDomain:
             merge_fallback_scene_agent_configs=not isinstance(
                 request, SceneAgentDebugRequest
             ),
+            engine=getattr(request_config, "engine", None),
         )
 
     def _resolve_scene_agent_config(

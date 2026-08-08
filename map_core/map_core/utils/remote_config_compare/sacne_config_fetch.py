@@ -7,15 +7,11 @@ from typing import Optional
 from pydantic import BaseModel
 from pymilvus import AsyncMilvusClient
 
-
-
-
 from ...service.agent.base import AgentRequest
 from ...service.scene_agent_config_provider import (
     SceneAgentConfigFetchResult,
     SceneAgentConfigProvider,
 )
-
 
 PROCUREMENT: str = "Procurement"
 COMPANY_NEWS: str = "Company_News"

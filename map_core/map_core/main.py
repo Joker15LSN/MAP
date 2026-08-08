@@ -163,6 +163,14 @@ async def lifespan(app: FastAPI):
     cfg = load_config()
     app.state.cfg = cfg
 
+    from .observability import configure_telemetry, shutdown_telemetry
+
+    configure_telemetry(
+        service_name="map-core",
+        service_version=app.version,
+        deployment_environment=env,
+    )
+
     from .database.mongodb import setup_mongodb
     from .database.postgre import setup_postgres
 
@@ -174,8 +182,8 @@ async def lifespan(app: FastAPI):
     app.state.logger = init_logger(path=LOG_DIR)
     logger.info(f"[PID: {os.getpid()}] application start. ENV='{env}'")
 
-    from .routers.global_domain_router import global_domain_router
     from .routers.flow_domain_router import flow_domain_router
+    from .routers.global_domain_router import global_domain_router
     from .routers.master_pipeline_router import master_pipeline_router
     from .routers.openapi_router import openapi_router
     from .routers.system_router import system_router
@@ -196,6 +204,8 @@ async def lifespan(app: FastAPI):
         state_store = GlobalAgentStateStore.maybe_instance()
         if state_store is not None:
             await state_store.close()
+
+        shutdown_telemetry()
 
         # Ensure loguru queued sinks (`enqueue=True`) flush and release IPC resources.
         app_logger = getattr(app.state, "logger", None)
@@ -374,6 +384,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RequestContextMiddleware)
+# OTel SERVER span middleware wraps the whole request lifecycle (outermost).
+from .observability import OpenTelemetryASGIMiddleware  # noqa: E402
+
+app.add_middleware(OpenTelemetryASGIMiddleware)
 
 
 @app.exception_handler(HTTPException)

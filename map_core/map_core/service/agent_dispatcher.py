@@ -20,7 +20,6 @@ from .agent.base import AgentActionEvent, AgentRequest, AgentResult
 from .agent.fallback_agent_configs import get_fallback_scene_agent_configs
 from .agent.tool_call_agent import Tool, ToolCallAgent
 from .agent_runtime import AgentExecutionHooks, AgentExecutionSpec, AgentRuntime
-from .dynamic_tools import build_mcp_tools, build_prompt_skill_tools
 from .state_store import (
     GlobalAgentStateStore,
     fire_and_forget,
@@ -34,6 +33,7 @@ class AgentDispatchConfig(BaseModel):
     mcp_servers: list[dict[str, Any]] = []
     skills: list[dict[str, Any]] = []
     flow_skill_descriptors: list[dict[str, Any]] = []
+    engine: Literal["legacy", "agentscope"] | None = None
 
 
 class AgentDispatcher:
@@ -79,6 +79,11 @@ class AgentDispatcher:
         self.scene_agent_configs[name] = config
 
     def _register_dynamic_tools(self, config: AgentDispatchConfig) -> None:
+        # Imported lazily: dynamic_tools imports service.agent submodules, and
+        # importing it at module level would create a dispatcher <-> dynamic_tools
+        # import cycle when dynamic_tools is imported first.
+        from .dynamic_tools import build_mcp_tools, build_prompt_skill_tools
+
         dynamic_tools = {}
         dynamic_tools.update(build_mcp_tools(config.mcp_servers or []))
         dynamic_tools.update(
@@ -297,6 +302,7 @@ class AgentDispatcher:
                 name,
                 config=configs.get(name),
                 agent_name=agent_name_map.get(name),
+                engine=config.engine,
             )
             for name in configs
         ]
@@ -359,6 +365,7 @@ class AgentDispatcher:
         name: str,
         config: SceneAgentConfig | None = None,
         agent_name: str | None = None,
+        engine: Literal["legacy", "agentscope"] | None = None,
     ) -> ToolCallAgent | None:
         scene_config = config or self.scene_agent_configs.get(name)
         if scene_config is None:
@@ -375,6 +382,7 @@ class AgentDispatcher:
                 llm_config=scene_config.llm_config,
                 scene_post_summary=scene_config.scene_post_summary,
                 agent_name=agent_name,
+                engine=engine,
             )
         )
 
@@ -416,6 +424,7 @@ class AgentDispatcher:
                 name,
                 config=scene_configs.get(name),
                 agent_name=resolved_name_map.get(name),
+                engine=config.engine,
             )
             if agent is None:
                 continue
@@ -535,6 +544,7 @@ class AgentDispatcher:
         state_store: GlobalAgentStateStore | None = None,
         state_id: str | None = None,
         tool_context: dict[str, Any] | None = None,
+        engine: Literal["legacy", "agentscope"] | None = None,
     ) -> AgentResult:
         if state_store and state_id:
             self.set_execution_context(state_store, state_id)
@@ -548,6 +558,7 @@ class AgentDispatcher:
             name,
             config=config,
             agent_name=agent_name_map.get(name),
+            engine=engine,
         )
         if agent is None:
             raise ValueError(f"Unknown scene agent: {name}")

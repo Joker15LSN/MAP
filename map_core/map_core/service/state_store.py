@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -16,6 +17,7 @@ from pymongo.errors import OperationFailure
 
 from .. import config as app_config
 from ..database.mongodb import MongoClient
+from ..observability import current_trace_context
 from ..schema.state_event_schema import AgentEventSchema
 from ..schema.state_store_schema import (
     AgentExecutionDocument,
@@ -269,8 +271,15 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
         ctx = self._get_state_context(state_id)
         seq = await self._next_seq(state_id)
         agent_code, agent_name = self._resolve_agent_identity(payload, ctx)
+        trace_ctx = payload.get("_trace") or {}
         payload_data = payload.get("data")
         resolved_payload = payload_data if isinstance(payload_data, dict) else payload
+        if "_trace" in resolved_payload:
+            # ``_trace`` is an internal envelope field; never persist it inside
+            # the document's payload field.
+            resolved_payload = {
+                k: v for k, v in resolved_payload.items() if k != "_trace"
+            }
         payload_ts = payload.get("timestamp")
         resolved_ts = (
             payload_ts
@@ -302,6 +311,8 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
             status=status if isinstance(status, str) else None,
             payload=resolved_payload,
             ts=resolved_ts,
+            trace_id=trace_ctx.get("trace_id"),
+            span_id=trace_ctx.get("span_id"),
         )
 
         try:
@@ -329,6 +340,7 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
         ctx = self._get_state_context(state_id)
         ts = datetime.now(ZoneInfo("Asia/Shanghai"))
         agent_code, agent_name = self._resolve_agent_identity(payload, ctx)
+        trace_ctx = payload.get("_trace") or {}
         document = ToolCallRecordDocument(
             event_type=event_type,
             state_id=state_id,
@@ -341,6 +353,8 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
             tool=payload.get("tool"),
             tool_id=payload.get("tool_id"),
             step=payload.get("step"),
+            trace_id=trace_ctx.get("trace_id"),
+            span_id=trace_ctx.get("span_id"),
         )
 
         if event_type == "tool_call":
@@ -378,6 +392,7 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
         ctx = self._get_state_context(state_id)
         seq = await self._next_seq(state_id)
         agent_code, agent_name = self._resolve_agent_identity(payload, ctx)
+        trace_ctx = payload.get("_trace") or {}
         raw_meta = ctx.get("meta")
         meta: dict[str, Any] = (
             cast(dict[str, Any], raw_meta) if isinstance(raw_meta, dict) else {}
@@ -407,6 +422,8 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
             finish_reason=payload.get("finish_reason"),
             prompt_summary=payload.get("prompt_summary"),
             tool_names=payload.get("tool_names"),
+            trace_id=payload.get("trace_id") or trace_ctx.get("trace_id"),
+            span_id=payload.get("span_id") or trace_ctx.get("span_id"),
         )
         try:
             collection = await self._get_collection(self._llm_call_col_name)
@@ -437,6 +454,7 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
             return
 
         ts = datetime.now(ZoneInfo("Asia/Shanghai"))
+        trace_ctx = payload.get("_trace") or {}
         try:
             collection = await self._get_collection(self._request_col_name)
             if collection is None:
@@ -451,6 +469,8 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
                     query=payload.get("query"),
                     start_ts=payload.get("start_ts", ts),
                     status="running",
+                    trace_id=trace_ctx.get("trace_id"),
+                    span_id=trace_ctx.get("span_id"),
                 )
                 update_op: dict[str, Any] = {
                     "$setOnInsert": asdict(document),
@@ -480,6 +500,14 @@ class MongoAgentStateHandler(BaseAgentStateHandler):
                         "agents_called": document.agents_called,
                         "token_usage_total": document.token_usage_total,
                         "error": document.error,
+                        **(
+                            {
+                                "trace_id": trace_ctx.get("trace_id"),
+                                "span_id": trace_ctx.get("span_id"),
+                            }
+                            if trace_ctx
+                            else {}
+                        ),
                     },
                 }
 
@@ -510,10 +538,15 @@ class WebHookAgentStateHandler(BaseAgentStateHandler):
         payload: dict[str, Any],
         base_state: dict[str, Any] | None = None,
     ) -> None:
+        # Strip the internal ``_trace`` envelope field: the external webhook
+        # contract must not change shape when OTel is enabled.
+        event_payload = {
+            key: value for key, value in payload.items() if key != "_trace"
+        }
         data = {
             "state_id": state_id,
             "event_type": event_type,
-            "event": payload,
+            "event": event_payload,
             "timestamp": str(datetime.now(ZoneInfo("Asia/Shanghai"))),
         }
 
@@ -532,12 +565,19 @@ class WebHookAgentStateHandler(BaseAgentStateHandler):
 
 
 class EventDispatcher:
-    """Bounded async event queue with a fixed worker pool, providing back-pressure for fire_and_forget."""
+    """Bounded async event queue with a fixed worker pool, providing back-pressure for fire_and_forget.
+
+    Each submitted coroutine is paired with a ``contextvars.Context``
+    snapshot taken at submit time (inside the request task). Workers execute
+    the coroutine inside that snapshot so that OTel trace context captured by
+    ``record_event`` survives the queue hop — coroutine objects alone do not
+    carry ``contextvars``.
+    """
 
     def __init__(self, maxsize: int = 500, n_workers: int = 3) -> None:
-        self._queue: asyncio.Queue[Coroutine[Any, Any, Any] | None] = asyncio.Queue(
-            maxsize=maxsize
-        )
+        self._queue: asyncio.Queue[
+            tuple[Coroutine[Any, Any, Any], contextvars.Context] | None
+        ] = asyncio.Queue(maxsize=maxsize)
         self._n_workers = n_workers
         self._worker_tasks: list[asyncio.Task] = []
 
@@ -557,21 +597,31 @@ class EventDispatcher:
 
     async def _consume(self) -> None:
         while True:
-            coro = await self._queue.get()
-            if coro is None:  # sentinel: exit signal
+            item = await self._queue.get()
+            if item is None:  # sentinel: exit signal
                 self._queue.task_done()
                 break
+            coro, ctx = item
             try:
-                await coro
+                await asyncio.create_task(coro, context=ctx)
             except Exception as exc:
                 logger.error(f"[EventDispatcher] handler error: {exc}")
             finally:
                 self._queue.task_done()
 
-    def submit(self, coro: Coroutine[Any, Any, Any]) -> None:
-        """Non-blocking submit. Drops the coroutine and logs a warning when the queue is full."""
+    def submit(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        context: contextvars.Context | None = None,
+    ) -> None:
+        """Non-blocking submit. Drops the coroutine and logs a warning when the queue is full.
+
+        The request context is snapshotted here (synchronously, inside the
+        caller task) unless an explicit context is provided.
+        """
+        ctx = context or contextvars.copy_context()
         try:
-            self._queue.put_nowait(coro)
+            self._queue.put_nowait((coro, ctx))
         except asyncio.QueueFull:
             logger.warning(
                 f"[EventDispatcher] queue full (maxsize={self._queue.maxsize}), dropping event"
@@ -619,6 +669,39 @@ class GlobalAgentStateStore:
         tasks = [h.ensure_state(state_id, base_state) for h in self.handlers]
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    def _snapshot_trace_payload(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Capture the current OTel trace context synchronously.
+
+        Must run in the caller's task (inside the request context) so that
+        async dispatcher workers can persist trace correlation without a live
+        span context — coroutine objects do not carry ``contextvars``.
+
+        ``_trace`` is an internal envelope field: handlers must strip it
+        before exposing the payload externally (webhook push, Mongo
+        ``payload`` field fallback) so the external event contract stays
+        unchanged.
+        """
+        if "_trace" in payload:
+            return payload
+        trace_ctx = current_trace_context()
+        if not trace_ctx:
+            return payload
+        return {**payload, "_trace": trace_ctx}
+
+    def record_event_nowait(
+        self,
+        state_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        base_state: dict[str, Any] | None = None,
+    ) -> None:
+        """Snapshot trace context now, then dispatch via fire-and-forget."""
+        snapshot = self._snapshot_trace_payload(payload)
+        fire_and_forget(self.record_event(state_id, event_type, snapshot, base_state))
+
     async def record_event(
         self,
         state_id: str,
@@ -629,7 +712,13 @@ class GlobalAgentStateStore:
         """
         Dispatches the event to ALL handlers concurrently.
         Wait for all to finish (or fail) without blocking each other.
+
+        When awaited directly (dispatcher not running), the OTel trace context
+        is captured here as a fallback. When dispatched through
+        ``record_event_nowait``, ``payload["_trace"]`` is already snapshotted
+        in the caller's task and preserved as-is.
         """
+        payload = self._snapshot_trace_payload(payload)
         tasks = [
             h.handle_event(state_id, event_type, payload, base_state)
             for h in self.handlers
@@ -693,14 +782,19 @@ def safe_serialize(value: Any) -> Any:
 def fire_and_forget(coro: Coroutine[Any, Any, Any]) -> None:
     """Submit an event coroutine to the bounded dispatcher queue.
 
+    The caller's ``contextvars.Context`` (including the OTel span) is
+    snapshotted synchronously here and restored around coroutine execution,
+    so trace correlation survives the dispatcher hop.
+
     Falls back to asyncio.create_task when the dispatcher is not yet running
     (e.g. in tests or before application startup).
     """
+    ctx = contextvars.copy_context()
     store = GlobalAgentStateStore.maybe_instance()
     if store is not None and store._dispatcher.started:
-        store._dispatcher.submit(coro)
+        store._dispatcher.submit(coro, context=ctx)
     else:
-        task = asyncio.create_task(coro)
+        task = asyncio.create_task(coro, context=ctx)
         task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
 

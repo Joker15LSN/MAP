@@ -1,4 +1,5 @@
 from typing import Optional
+
 from pydantic import BaseModel, Field
 
 from .rerank_model_schema import RerankModelConfigSchema

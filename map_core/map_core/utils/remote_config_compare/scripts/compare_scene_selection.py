@@ -16,8 +16,8 @@ import json
 from pathlib import Path
 
 from map_core.utils.remote_config_compare.config_compare import (
-    compare_configs,
     ConfigComparator,
+    compare_configs,
 )
 from map_core.utils.remote_config_compare.highlight import auto_highlight
 
@@ -49,7 +49,7 @@ def compare_scene_selection(
     print(f"\n{'='*60}")
     print(f"Comparing: {left_path}")
     print(f"     with: {right_path}")
-    print(f"Focus: scene_selection")
+    print("Focus: scene_selection")
     print(f"{'='*60}")
 
     if not diffs:

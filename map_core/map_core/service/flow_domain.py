@@ -6,7 +6,11 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Request
 from loguru import logger
+from opentelemetry import context as otel_context
+from opentelemetry import trace as otel_trace
+from opentelemetry.trace import StatusCode as OtelStatusCode
 
+from ..observability import get_tracer
 from ..schema.flow_domain_schema import (
     FlowChatRequest,
     FlowConfigSchema,
@@ -16,7 +20,10 @@ from ..schema.flow_domain_schema import (
     NodeExecutionResultSchema,
     StepVerdictSchema,
 )
-from ..schema.global_domain_schema import GlobalDomainChatSchema, GlobalDomainStreamEvent
+from ..schema.global_domain_schema import (
+    GlobalDomainChatSchema,
+    GlobalDomainStreamEvent,
+)
 from .agent.agent_mapping import SCENE_AGENT_CONFIGS
 from .agent.base import AgentRequest, AgentResult
 from .agent_case_miner import AgentCaseMiner
@@ -39,6 +46,8 @@ from .scenario_hub import ScenarioHub
 from .scenario_resolver import ScenarioResolver
 from .skill_hub import SkillHub, SkillMountPlan
 from .state_store import fire_and_forget, safe_serialize
+
+_flow_tracer = get_tracer(__name__)
 
 
 class FlowDomain:
@@ -360,6 +369,7 @@ class FlowDomain:
             state_store=self.state_store,
             state_id=self.state_id,
             tool_context=mount_plan.tool_context_overlay,
+            engine=getattr(getattr(request, "dispatch_config", None), "engine", None),
         )
         return result, runtime_tool_names
 
@@ -553,6 +563,7 @@ class FlowDomain:
             dispatch_results: list[AgentResult] = []
             node_results: list[NodeExecutionResultSchema] = []
             verdicts: list[StepVerdictSchema] = []
+            node_spans: dict[str, Any] = {}
 
             while True:
                 ready_nodes = self._next_ready_nodes(state)
@@ -569,118 +580,179 @@ class FlowDomain:
                     },
                 )
 
-                mount_plan = self.skill_hub.list_by_agent(
-                    agent_code=node.agent_code,
-                    scenarios=scenarios,
-                    base_tool_context=request.tool_context,
-                    user_id=self.global_domain.x_userid,
-                    tenant=self.global_domain.x_username,
+                # First dependency acts as the span parent; remaining
+                # dependencies are expressed as OTel links.
+                dependency_spans = [
+                    node_spans[dependency_id]
+                    for dependency_id in (node.depends_on or [])
+                    if dependency_id in node_spans
+                ]
+                node_span_parent = None
+                node_span_links = None
+                if dependency_spans:
+                    node_span_parent = otel_trace.set_span_in_context(
+                        dependency_spans[0]
+                    )
+                    if len(dependency_spans) > 1:
+                        node_span_links = [
+                            otel_trace.Link(item.get_span_context())
+                            for item in dependency_spans[1:]
+                        ]
+                node_span = _flow_tracer.start_span(
+                    f"flow.node.{node.node_id}",
+                    context=node_span_parent,
+                    links=node_span_links,
+                    attributes={
+                        "openinference.span.kind": "CHAIN",
+                        "map.flow.node_id": node.node_id,
+                        "map.flow.agent_code": node.agent_code,
+                        "map.flow.scenario_id": str(node.scenario_id or ""),
+                        "map.flow.is_repair_node": "_repair_" in node.node_id,
+                    },
                 )
-                node.allowed_capabilities = list(mount_plan.allowed_tools)
-                fire_and_forget(
-                    self.state_store.record_event(
-                        state_id=self.state_id,
-                        event_type="flow.skill_authorization",
-                        payload={
-                            "request_id": self.request_id,
-                            "state_id": self.state_id,
+                node_span_context = otel_trace.set_span_in_context(node_span)
+                node_span_token = otel_context.attach(node_span_context)
+                try:
+                    mount_plan = self.skill_hub.list_by_agent(
+                        agent_code=node.agent_code,
+                        scenarios=scenarios,
+                        base_tool_context=request.tool_context,
+                        user_id=self.global_domain.x_userid,
+                        tenant=self.global_domain.x_username,
+                    )
+                    node.allowed_capabilities = list(mount_plan.allowed_tools)
+                    fire_and_forget(
+                        self.state_store.record_event(
+                            state_id=self.state_id,
+                            event_type="flow.skill_authorization",
+                            payload={
+                                "request_id": self.request_id,
+                                "state_id": self.state_id,
+                                "node_id": node.node_id,
+                                "agent_code": node.agent_code,
+                                "authorized_skills": safe_serialize(
+                                    mount_plan.authorized_skills
+                                ),
+                                "denied_skills": safe_serialize(mount_plan.denied_skills),
+                            },
+                        )
+                    )
+
+                    yield FlowDomainStreamEvent(
+                        event="meta",
+                        data={
+                            "phase": "skill_authorization",
                             "node_id": node.node_id,
                             "agent_code": node.agent_code,
-                            "authorized_skills": safe_serialize(
-                                mount_plan.authorized_skills
-                            ),
+                            "authorized_skills": safe_serialize(mount_plan.authorized_skills),
                             "denied_skills": safe_serialize(mount_plan.denied_skills),
                         },
                     )
-                )
 
-                yield FlowDomainStreamEvent(
-                    event="meta",
-                    data={
-                        "phase": "skill_authorization",
-                        "node_id": node.node_id,
-                        "agent_code": node.agent_code,
-                        "authorized_skills": safe_serialize(mount_plan.authorized_skills),
-                        "denied_skills": safe_serialize(mount_plan.denied_skills),
-                    },
-                )
+                    result, runtime_tool_names = await self._run_graph_node(
+                        request=request,
+                        node=node,
+                        mount_plan=mount_plan,
+                        scenarios=scenarios,
+                    )
+                    dispatch_results.append(result)
 
-                result, runtime_tool_names = await self._run_graph_node(
-                    request=request,
-                    node=node,
-                    mount_plan=mount_plan,
-                    scenarios=scenarios,
-                )
-                dispatch_results.append(result)
+                    node_result, verdict = self._evaluate_node(
+                        node=node,
+                        result=result,
+                        executor_names=runtime_tool_names,
+                    )
+                    repair_candidates = self.scenario_hub.suggest_repair(
+                        node=node,
+                        verdict=verdict,
+                    )
+                    verdict.repair_candidates = repair_candidates
 
-                node_result, verdict = self._evaluate_node(
-                    node=node,
-                    result=result,
-                    executor_names=runtime_tool_names,
-                )
-                repair_candidates = self.scenario_hub.suggest_repair(
-                    node=node,
-                    verdict=verdict,
-                )
-                verdict.repair_candidates = repair_candidates
+                    node_span.add_event(
+                        "flow.verdict",
+                        {
+                            "map.flow.node_id": node.node_id,
+                            "map.flow.verdict": verdict.verdict,
+                            "map.flow.repair_candidate_count": len(repair_candidates),
+                        },
+                    )
 
-                state.record(
-                    node_id=node.node_id,
-                    node_result=node_result,
-                    verdict=verdict,
-                )
-                node_results.append(node_result)
-                verdicts.append(verdict)
+                    state.record(
+                        node_id=node.node_id,
+                        node_result=node_result,
+                        verdict=verdict,
+                    )
+                    node_results.append(node_result)
+                    verdicts.append(verdict)
 
-                yield FlowDomainStreamEvent(
-                    event="meta",
-                    data={
-                        "phase": "flow_node_result",
-                        "node_result": safe_serialize(node_result.model_dump()),
-                        "step_verdict": safe_serialize(verdict.model_dump()),
-                        "graph_state": safe_serialize(state.as_dict()),
-                    },
-                )
+                    yield FlowDomainStreamEvent(
+                        event="meta",
+                        data={
+                            "phase": "flow_node_result",
+                            "node_result": safe_serialize(node_result.model_dump()),
+                            "step_verdict": safe_serialize(verdict.model_dump()),
+                            "graph_state": safe_serialize(state.as_dict()),
+                        },
+                    )
 
-                if verdict.verdict != "pass":
-                    if (
-                        request.flow_config.scenario_policy.allow_graph_repair
-                        and repair_count < repair_budget
-                        and repair_candidates
-                    ):
-                        candidate = repair_candidates[0]
-                        repair_count += 1
-                        repair_node = GraphNodeSchema(
-                            node_id=f"{node.node_id}_repair_{repair_count}",
-                            scenario_id=node.scenario_id,
-                            agent_code=candidate.target_agent,
-                            goal=candidate.reason,
-                            evidence_contract=list(node.evidence_contract),
-                            allowed_capabilities=list(node.allowed_capabilities),
-                            status="pending",
-                            depends_on=[node.node_id],
-                        )
-                        self.graph_store.append_repair_node(
-                            state,
-                            repair_node=repair_node,
-                        )
-                        state.graph.edges.append(
-                            GraphEdgeSchema(
-                                **{
-                                    "from": node.node_id,
-                                    "to": repair_node.node_id,
-                                    "condition": "repair",
-                                }
+                    if verdict.verdict != "pass":
+                        if (
+                            request.flow_config.scenario_policy.allow_graph_repair
+                            and repair_count < repair_budget
+                            and repair_candidates
+                        ):
+                            candidate = repair_candidates[0]
+                            repair_count += 1
+                            repair_node = GraphNodeSchema(
+                                node_id=f"{node.node_id}_repair_{repair_count}",
+                                scenario_id=node.scenario_id,
+                                agent_code=candidate.target_agent,
+                                goal=candidate.reason,
+                                evidence_contract=list(node.evidence_contract),
+                                allowed_capabilities=list(node.allowed_capabilities),
+                                status="pending",
+                                depends_on=[node.node_id],
                             )
-                        )
-                        yield FlowDomainStreamEvent(
-                            event="meta",
-                            data={
-                                "phase": "flow_repair_applied",
-                                "candidate": safe_serialize(candidate.model_dump()),
-                                "repair_node": safe_serialize(repair_node.model_dump()),
-                            },
-                        )
+                            self.graph_store.append_repair_node(
+                                state,
+                                repair_node=repair_node,
+                            )
+                            state.graph.edges.append(
+                                GraphEdgeSchema(
+                                    **{
+                                        "from": node.node_id,
+                                        "to": repair_node.node_id,
+                                        "condition": "repair",
+                                    }
+                                )
+                            )
+                            node_span.add_event(
+                                "flow.repair_applied",
+                                {
+                                    "map.flow.node_id": node.node_id,
+                                    "map.flow.repair_node_id": repair_node.node_id,
+                                    "map.flow.repair_target_agent": candidate.target_agent,
+                                },
+                            )
+                            yield FlowDomainStreamEvent(
+                                event="meta",
+                                data={
+                                    "phase": "flow_repair_applied",
+                                    "candidate": safe_serialize(candidate.model_dump()),
+                                    "repair_node": safe_serialize(repair_node.model_dump()),
+                                },
+                            )
+                except Exception as exc:
+                    node_span.record_exception(exc)
+                    node_span.set_status(
+                        OtelStatusCode.ERROR,
+                        f"flow node {node.node_id} failed: {exc}",
+                    )
+                    raise
+                finally:
+                    node_spans[node.node_id] = node_span
+                    otel_context.detach(node_span_token)
+                    node_span.end()
 
             remaining = [
                 node.node_id

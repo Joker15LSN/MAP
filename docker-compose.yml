@@ -53,6 +53,23 @@ services:
       MAP_LLM_BASE_URL: ${MAP_LLM_BASE_URL:-https://api.deepseek.com}
       MAP_LLM_MODEL: ${MAP_LLM_MODEL:-deepseek-v4-flash}
       MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
+      MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
+      MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
+      # Highest-priority kill switch, always passed through: OTEL_SDK_DISABLED
+      # wins over MAP_OTEL_ENABLED in the SDK (see .env.example priority list).
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${MAP_OTEL_PROTOCOL:-http/protobuf}
+      # OTLP endpoint is intentionally NOT set here: endpoints only configure
+      # the export target and must never implicitly enable OTel. To export to
+      # the bundled Collector/Jaeger, merge docker-compose.otel.yml:
+      #   docker compose -f docker-compose.yml -f docker-compose.otel.yml --profile otel up -d
+      #
+      # MAP_OTEL_PROTOCOL and the OTLP endpoint form one configuration pair:
+      #   http/protobuf -> http://otel-collector:4318
+      #   grpc           -> http://otel-collector:4317
+      # docker-compose.otel.yml maps MAP_OTEL_ENDPOINT to the standard
+      # OTEL_EXPORTER_OTLP_ENDPOINT for BOTH services, so switching the
+      # protocol keeps algorithm-service and backend-service in lockstep.
     depends_on:
       postgres:
         condition: service_healthy
@@ -79,6 +96,16 @@ services:
       MAP_CORE_API_ORIGIN: http://algorithm-service:10000
       MAP_BFF_STATE_FILE: /app/data/admin_state.json
       MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
+      MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
+      MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
+      # Same protocol mapping as algorithm-service: both services must export
+      # with the same protocol, otherwise a MAP_OTEL_PROTOCOL=grpc switch
+      # would split the fleet (BFF stuck on http/protobuf while algorithm
+      # uses gRPC). Endpoint is intentionally left to docker-compose.otel.yml.
+      # OTEL_SDK_DISABLED mirrors algorithm-service so the emergency kill
+      # switch reaches every container regardless of the otel profile.
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${MAP_OTEL_PROTOCOL:-http/protobuf}
     depends_on:
       algorithm-service:
         condition: service_healthy
@@ -179,6 +206,29 @@ services:
       - map_observability_frontend_node_modules:/workspace/map-observability/map-observability-frontend/node_modules
     ports:
       - "${MAP_OBS_FRONTEND_PORT:-15152}:5173"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    container_name: map-otel-collector
+    profiles: ["otel"]
+    command: ["--config", "/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "${MAP_OTEL_GRPC_PORT:-4317}:4317"
+      - "${MAP_OTEL_HTTP_PORT:-4318}:4318"
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    container_name: map-jaeger
+    profiles: ["otel"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${MAP_JAEGER_UI_PORT:-16686}:16686"
+      - "${MAP_JAEGER_OTLP_GRPC_PORT:-14317}:4317"
 
 volumes:
   map_postgres_data:

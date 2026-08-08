@@ -1,6 +1,10 @@
 import asyncio
 
-from map_core.schema.flow_domain_schema import FlowConfigSchema, ScenarioPackSchema, SkillDescriptorSchema
+from map_core.schema.flow_domain_schema import (
+    FlowConfigSchema,
+    ScenarioPackSchema,
+    SkillDescriptorSchema,
+)
 from map_core.service.flow_config_provider import FlowConfigProvider, FlowConfigSnapshot
 
 

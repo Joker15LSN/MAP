@@ -8,6 +8,7 @@ import os
 import re
 import uuid
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
@@ -18,40 +19,41 @@ from fastapi.responses import StreamingResponse
 
 from .core_client import MapCoreClient
 from .schemas import (
-    AdminState,
     AddressConfigItem,
+    AdminState,
     BasicSettingItem,
-    BusinessAgentTestChatRequest,
     BusinessAgentConfig,
+    BusinessAgentTestChatRequest,
     ChatRequest,
     DashboardCardConfig,
     DataAccessItem,
     DataAssetItem,
+    FlowPolicyConfig,
+    FlowSkillDescriptor,
     GlossaryTermItem,
     HomeRecommendationItem,
     KnowledgeBinding,
-    FlowPolicyConfig,
-    FlowSkillDescriptor,
     MasterAgentConfig,
     MasterPromptVersion,
     MasterPublishRequest,
     MasterRollbackRequest,
     McpServerConfig,
     McpToolConfig,
-    ModelRecord,
     ModelCenterConfig,
+    ModelRecord,
     PermissionRule,
-    ScenarioPackConfig,
     ReleaseRecord,
     RolePolicy,
+    ScenarioPackConfig,
     SecurityPolicyItem,
     SessionPolicyItem,
-    SkillUploadRequest,
     SkillPolicy,
+    SkillUploadRequest,
     UploadedSkill,
     UserAccount,
 )
 from .store import AdminStateStore
+from .telemetry import configure_bff_telemetry, shutdown_bff_telemetry
 
 MAP_CORE_API_ORIGIN = os.getenv("MAP_CORE_API_ORIGIN", "http://127.0.0.1:10000")
 STATE_FILE = os.getenv(
@@ -59,11 +61,27 @@ STATE_FILE = os.getenv(
     "/app/data/admin_state.json",
 )
 
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Telemetry is configured once at import time above (idempotent); the
+    # lifespan only owns the process-exit shutdown. OTel's global
+    # TracerProvider and the FastAPI/httpx instrumentation cannot be
+    # reinstalled in-process, so shutdown is a terminal state.
+    yield
+    shutdown_bff_telemetry()
+
+
 app = FastAPI(
     title="MAP Business Backend",
     description="MAP business management BFF. Frontend talks to this service only.",
     version="0.2.0",
+    lifespan=_lifespan,
 )
+
+# SERVER/CLIENT spans + dynamic traceparent injection (no-op unless
+# MAP_OTEL_ENABLED is truthy). Must run before requests are served.
+configure_bff_telemetry(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -460,6 +478,8 @@ def _build_dispatch_config_payload(state: AdminState) -> dict[str, Any]:
 
     payload = {"scene_agent_configs": scene_agent_configs}
     payload.update(_build_runtime_resource_payload(state))
+    if state.agent_engine in ("legacy", "agentscope"):
+        payload["engine"] = state.agent_engine
     return payload
 
 
@@ -488,6 +508,15 @@ def _forward_headers(
         headers["X-UserId"] = request.headers["X-UserId"]
     if request.headers.get("X-UserName"):
         headers["X-UserName"] = request.headers["X-UserName"]
+    # Forward inbound W3C propagation headers so an existing upstream trace
+    # continues even when OTel is disabled. With OTel enabled the httpx
+    # instrumentation additionally injects a dynamic traceparent referencing
+    # the BFF CLIENT span (overwriting these values at send time), so
+    # map_core always joins the trace owned by the BFF SERVER span.
+    for propagation_header in ("traceparent", "tracestate", "baggage"):
+        value = request.headers.get(propagation_header)
+        if value:
+            headers[propagation_header] = value
     return headers
 
 

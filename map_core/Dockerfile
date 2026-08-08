@@ -1,4 +1,4 @@
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12.11
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.13.5
 
 ENV TZ=Asia/Shanghai \
     LANG=C.UTF-8 \

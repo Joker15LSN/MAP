@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -487,6 +487,7 @@ class AdminState(BaseModel):
     flow_skill_descriptors: list[FlowSkillDescriptor] = Field(default_factory=list)
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     skills: list[UploadedSkill] = Field(default_factory=list)
+    agent_engine: Literal["legacy", "agentscope"] | None = None
     release_history: list[ReleaseRecord]
 
     @staticmethod

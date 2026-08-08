@@ -22,6 +22,7 @@ import inspect
 import json
 import time
 from collections.abc import AsyncGenerator, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import (
@@ -38,6 +39,11 @@ from zoneinfo import ZoneInfo
 from loguru import logger as loguru_logger
 from openai import AsyncOpenAI, OpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
+from opentelemetry import context as otel_context
+from opentelemetry import trace as otel_trace
+from opentelemetry.propagate import inject as otel_inject
+from opentelemetry.trace import Span, SpanKind
+from opentelemetry.trace import StatusCode as OtelStatusCode
 from pydantic import BaseModel, Field, PositiveInt, field_validator
 from tenacity import (
     AsyncRetrying,
@@ -325,16 +331,35 @@ class LLMEngine:
             else:
                 params["tool_choice"] = tool_choice
 
+        # The LLM span must cover the full lifecycle (request, response
+        # parsing, event recording) so Mongo events bind the real span id.
+        with self._llm_outbound_span("tool_selection"):
+            return await self._ask_tool_once_traced(
+                msgs=msgs, params=params, started=started
+            )
+
+    async def _ask_tool_once_traced(
+        self,
+        *,
+        msgs: list[ChatCompletionMessageParam],
+        params: dict[str, Any],
+        started: float,
+    ) -> ToolCallResponse:
         try:
+            extra_headers = self._outbound_trace_headers()
             completions = self._async_client.chat.completions
             raw_completions = getattr(completions, "with_raw_response", None)
             if raw_completions is not None:
-                raw_response = await raw_completions.create(messages=msgs, **params)
+                raw_response = await raw_completions.create(
+                    messages=msgs, extra_headers=extra_headers, **params
+                )
                 response = await self._acoerce_raw_chat_completion_response(
                     raw_response
                 )
             else:
-                response = await completions.create(messages=msgs, **params)
+                response = await completions.create(
+                    messages=msgs, extra_headers=extra_headers, **params
+                )
                 response = self._coerce_chat_completion_response(response)
         except Exception as e:  # pragma: no cover
             response = self._coerce_chat_completion_exception(e)
@@ -1141,12 +1166,19 @@ class LLMEngine:
         messages: Sequence[ChatCompletionMessageParam],
         params: dict[str, Any],
     ) -> ChatCompletion:
+        # Owning LLM span is opened by the caller (_invoke_once) so it also
+        # covers response parsing and Mongo event recording.
+        extra_headers = self._outbound_trace_headers()
         completions = self._sync_client.chat.completions
         raw_completions = getattr(completions, "with_raw_response", None)
         if raw_completions is not None:
-            raw_response = raw_completions.create(messages=messages, **params)
+            raw_response = raw_completions.create(
+                messages=messages, extra_headers=extra_headers, **params
+            )
             return self._coerce_raw_chat_completion_response(raw_response)
-        response = completions.create(messages=messages, **params)
+        response = completions.create(
+            messages=messages, extra_headers=extra_headers, **params
+        )
         return self._coerce_chat_completion_response(response)
 
     async def _create_async_chat_completion(
@@ -1155,13 +1187,70 @@ class LLMEngine:
         messages: Sequence[ChatCompletionMessageParam],
         params: dict[str, Any],
     ) -> ChatCompletion:
+        # Owning LLM span is opened by the caller (_ainvoke_once) so it also
+        # covers response parsing and Mongo event recording.
+        extra_headers = self._outbound_trace_headers()
         completions = self._async_client.chat.completions
         raw_completions = getattr(completions, "with_raw_response", None)
         if raw_completions is not None:
-            raw_response = await raw_completions.create(messages=messages, **params)
+            raw_response = await raw_completions.create(
+                messages=messages, extra_headers=extra_headers, **params
+            )
             return await self._acoerce_raw_chat_completion_response(raw_response)
-        response = await completions.create(messages=messages, **params)
+        response = await completions.create(
+            messages=messages, extra_headers=extra_headers, **params
+        )
         return self._coerce_chat_completion_response(response)
+
+    @contextmanager
+    def _llm_outbound_span(self, call_kind: str):
+        """CLIENT span around an outbound LLM call (zero-cost when OTel off)."""
+        tracer = otel_trace.get_tracer("map.llm")
+        with tracer.start_as_current_span(
+            f"{call_kind} {self.config.model}",
+            kind=SpanKind.CLIENT,
+            attributes={
+                "openinference.span.kind": "LLM",
+                "llm.model_name": str(self.config.model or ""),
+                "llm.provider": str(self.config.base_url or ""),
+                "map.llm.call_kind": call_kind,
+            },
+        ) as span:
+            yield span
+
+    @staticmethod
+    def _outbound_trace_headers() -> dict[str, str]:
+        """Inject W3C traceparent into outbound LLM request headers."""
+        headers: dict[str, str] = {}
+        otel_inject(headers)
+        return headers
+
+    def _start_llm_span(self, call_kind: str) -> Span:
+        """Start (without attaching) an LLM span that outlives the caller scope.
+
+        Streaming responses are consumed by generators, so the span must be
+        managed manually across the whole iteration lifecycle instead of a
+        ``with`` block.
+        """
+        tracer = otel_trace.get_tracer("map.llm")
+        return tracer.start_span(
+            f"{call_kind} {self.config.model}",
+            kind=SpanKind.CLIENT,
+            attributes={
+                "openinference.span.kind": "LLM",
+                "llm.model_name": str(self.config.model or ""),
+                "llm.provider": str(self.config.base_url or ""),
+                "map.llm.call_kind": call_kind,
+            },
+        )
+
+    @staticmethod
+    def _fail_llm_span(span: Span | None, exc: BaseException) -> None:
+        if span is None:
+            return
+        span.record_exception(exc)
+        span.set_status(OtelStatusCode.ERROR, str(exc))
+        span.end()
 
     def close(self):
         try:
@@ -1213,6 +1302,7 @@ class LLMEngine:
         response: LLMResponse | ToolCallResponse | None = None,
         error: BaseException | str | None = None,
         usage: dict[str, int] | None = None,
+        otel_span: Span | None = None,
     ) -> None:
         trace_context = get_llm_trace_context()
         state_store = trace_context.get("state_store")
@@ -1257,6 +1347,23 @@ class LLMEngine:
             "prompt_summary": summarize_llm_messages(list(messages)),
             "tool_names": tool_names,
         }
+        from ..observability import current_trace_context
+
+        # Prefer the owning LLM span (streaming spans outlive their `with`
+        # scope); fall back to the live current span context.
+        otel_ctx: dict[str, str] = {}
+        if otel_span is not None:
+            span_ctx = otel_span.get_span_context()
+            if span_ctx is not None and span_ctx.is_valid:
+                otel_ctx = {
+                    "trace_id": format(span_ctx.trace_id, "032x"),
+                    "span_id": format(span_ctx.span_id, "016x"),
+                }
+        if not otel_ctx:
+            otel_ctx = current_trace_context()
+        if otel_ctx:
+            payload["trace_id"] = otel_ctx.get("trace_id")
+            payload["span_id"] = otel_ctx.get("span_id")
         try:
             from ..service.state_store import fire_and_forget
 
@@ -1279,6 +1386,19 @@ class LLMEngine:
         started = time.time()
         msgs = self._prepare_messages(list(messages))
         params = self._prepare_params(stream=False, **kwargs)
+        # The LLM span must cover the full lifecycle (request, response
+        # parsing, json_object fallback, event recording) so Mongo events
+        # bind the real LLM span id instead of the parent request span.
+        with self._llm_outbound_span("chat"):
+            return self._invoke_once_traced(msgs=msgs, params=params, started=started)
+
+    def _invoke_once_traced(
+        self,
+        *,
+        msgs: list[ChatCompletionMessageParam],
+        params: dict[str, Any],
+        started: float,
+    ) -> LLMResponse:
         try:
             response = self._create_sync_chat_completion(messages=msgs, params=params)
             result = self._handle_sync_response(response, started_at=started)
@@ -1372,7 +1492,21 @@ class LLMEngine:
         started = time.time()
         msgs = self._prepare_messages(list(messages))
         params = self._prepare_params(stream=False, **kwargs)
+        # The LLM span must cover the full lifecycle (request, response
+        # parsing, json_object fallback, event recording) so Mongo events
+        # bind the real LLM span id instead of the parent request span.
+        with self._llm_outbound_span("chat"):
+            return await self._ainvoke_once_traced(
+                msgs=msgs, params=params, started=started
+            )
 
+    async def _ainvoke_once_traced(
+        self,
+        *,
+        msgs: list[ChatCompletionMessageParam],
+        params: dict[str, Any],
+        started: float,
+    ) -> LLMResponse:
         try:
             response = await self._create_async_chat_completion(
                 messages=msgs,
@@ -1472,15 +1606,12 @@ class LLMEngine:
         started = time.time()
         msgs = self._prepare_messages(list(messages))
         params = self._prepare_params(stream=True, **kwargs)
+        span = self._start_llm_span("stream")
+        token = otel_context.attach(otel_trace.set_span_in_context(span))
         try:
+            extra_headers = self._outbound_trace_headers()
             response = self._sync_client.chat.completions.create(
-                messages=msgs, **params
-            )
-            return self._trace_sync_stream(
-                self._handle_sync_stream(response),
-                messages=msgs,
-                params=params,
-                started_at=started,
+                messages=msgs, extra_headers=extra_headers, **params
             )
         except Exception as e:
             self.logger.error(f"Sync stream failed: {e}")
@@ -1491,8 +1622,19 @@ class LLMEngine:
                 status="failed",
                 call_kind="stream",
                 error=e,
+                otel_span=span,
             )
+            self._fail_llm_span(span, e)
             raise
+        finally:
+            otel_context.detach(token)
+        return self._trace_sync_stream(
+            self._handle_sync_stream(response),
+            messages=msgs,
+            params=params,
+            started_at=started,
+            span=span,
+        )
 
     async def _astream_once(
         self, messages: Sequence[LLMMessage | dict[str, Any]], **kwargs
@@ -1511,15 +1653,15 @@ class LLMEngine:
         else:
             params.setdefault("stream_options", {"include_usage": True})
         try:
-            response = await self._async_client.chat.completions.create(
-                messages=msgs, **params
-            )
-            return self._trace_async_stream(
-                self._handle_async_stream(response),
-                messages=msgs,
-                params=params,
-                started_at=started,
-            )
+            span = self._start_llm_span("stream")
+            token = otel_context.attach(otel_trace.set_span_in_context(span))
+            try:
+                extra_headers = self._outbound_trace_headers()
+                response = await self._async_client.chat.completions.create(
+                    messages=msgs, extra_headers=extra_headers, **params
+                )
+            finally:
+                otel_context.detach(token)
         except Exception as e:
             self.logger.error(f"Async stream failed: {e}")
             self._record_llm_call(
@@ -1529,8 +1671,17 @@ class LLMEngine:
                 status="failed",
                 call_kind="stream",
                 error=e,
+                otel_span=span,
             )
+            self._fail_llm_span(span, e)
             raise
+        return self._trace_async_stream(
+            self._handle_async_stream(response),
+            messages=msgs,
+            params=params,
+            started_at=started,
+            span=span,
+        )
 
     def _trace_sync_stream(
         self,
@@ -1539,18 +1690,14 @@ class LLMEngine:
         messages: Sequence[ChatCompletionMessageParam],
         params: dict[str, Any],
         started_at: float,
+        span: Span | None = None,
     ) -> Generator[str, None, None]:
         try:
             for chunk in stream:
                 yield chunk
-            self._record_llm_call(
-                messages=messages,
-                params=params,
-                started_at=started_at,
-                status="success",
-                call_kind="stream",
-            )
-        except Exception as exc:
+        except BaseException as exc:
+            # Covers upstream errors AND generator close/cancellation
+            # (GeneratorExit / CancelledError) — the span must always end.
             self._record_llm_call(
                 messages=messages,
                 params=params,
@@ -1558,8 +1705,21 @@ class LLMEngine:
                 status="failed",
                 call_kind="stream",
                 error=exc,
+                otel_span=span,
             )
+            self._fail_llm_span(span, exc)
             raise
+        else:
+            self._record_llm_call(
+                messages=messages,
+                params=params,
+                started_at=started_at,
+                status="success",
+                call_kind="stream",
+                otel_span=span,
+            )
+            if span is not None:
+                span.end()
 
     async def _trace_async_stream(
         self,
@@ -1568,6 +1728,7 @@ class LLMEngine:
         messages: Sequence[ChatCompletionMessageParam],
         params: dict[str, Any],
         started_at: float,
+        span: Span | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         usage: dict[str, int] | None = None
         try:
@@ -1581,15 +1742,9 @@ class LLMEngine:
                             if isinstance(v, int)
                         }
                 yield chunk
-            self._record_llm_call(
-                messages=messages,
-                params=params,
-                started_at=started_at,
-                status="success",
-                call_kind="stream",
-                usage=usage,
-            )
-        except Exception as exc:
+        except BaseException as exc:
+            # Covers upstream errors AND consumer cancellation/disconnect
+            # (CancelledError) — the span must always end.
             self._record_llm_call(
                 messages=messages,
                 params=params,
@@ -1597,8 +1752,27 @@ class LLMEngine:
                 status="failed",
                 call_kind="stream",
                 error=exc,
+                otel_span=span,
             )
+            self._fail_llm_span(span, exc)
             raise
+        else:
+            self._record_llm_call(
+                messages=messages,
+                params=params,
+                started_at=started_at,
+                status="success",
+                call_kind="stream",
+                usage=usage,
+                otel_span=span,
+            )
+            if span is not None:
+                if usage:
+                    span.set_attribute("llm.token_count.prompt", usage.get("prompt_tokens", 0))
+                    span.set_attribute(
+                        "llm.token_count.completion", usage.get("completion_tokens", 0)
+                    )
+                span.end()
 
     # ------------------------------------------------------------------
     # Tenacity hooks

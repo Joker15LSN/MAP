@@ -416,7 +416,7 @@ class MountedKBSearchAgent(TraceableAgent):
             try:
                 _input = SearchKBChunkInput(**part)
                 inputs.append(_input)
-            except:
+            except Exception:
                 logger.warning(f'parsing args: {str(part)} fails')
                 continue
         return inputs

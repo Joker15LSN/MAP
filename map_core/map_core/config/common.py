@@ -226,3 +226,7 @@ METRIC_MILVUS_URI = "http://10.16.11.41:19537"  # prod
 
 # WEB搜索
 WEB_SEARCH_API = "http://10.50.56.46:8001/search"
+
+# OpenTelemetry 的开关与导出参数由 map_core.observability.telemetry /
+# observability.asgi 在运行时直接读取环境变量（见 .env.example 注释），
+# 不在此处定义模块级常量，避免导入期冻结环境变量导致测试/热更新失效。

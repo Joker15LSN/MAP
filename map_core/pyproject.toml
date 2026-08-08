@@ -3,13 +3,21 @@ name = "map-core"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
+    "agentscope==2.0.4",
     "asyncpg>=0.31.0",
     "fastapi[all]>=0.128.0",
+    "json-repair>=0.30.0",
+    "jsonschema>=4.26.0,<5",
     "loguru>=0.7.3",
     "motor>=3.7.1",
     "openai>=2.15.0",
+    "opentelemetry-api>=1.44.0,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.44.0,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0,<2",
+    "opentelemetry-instrumentation-logging>=0.65b0,<1",
+    "opentelemetry-sdk>=1.44.0,<2",
     "openpyxl>=3.1.5",
     "python-docx>=1.1.2",
     "pymilvus>=2.6.6",
@@ -33,6 +41,12 @@ ignore = [
     "F841",  # unused-variable, only for dev
     "F401",  # unused-import, only for dev
 ]
+
+[tool.pytest.ini_options]
+# Only collect the real test suite: legacy manual scripts under
+# map_core/service/agent/{kb_tools,zhiwen_agent}/scripts share duplicate
+# basenames (e.g. two ``single_agent_test.py``) and break collection.
+testpaths = ["tests"]
 
 [dependency-groups]
 dev = [

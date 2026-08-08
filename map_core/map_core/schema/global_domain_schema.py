@@ -31,6 +31,7 @@ class AgentDispatchConfigSchema(BaseModel):
     mcp_servers: list[dict[str, Any]] | None = None
     skills: list[dict[str, Any]] | None = None
     flow_skill_descriptors: list[dict[str, Any]] | None = None
+    engine: Literal["legacy", "agentscope"] | None = None
 
     @model_validator(mode="after")
     def validate_scene_agent_configs_keys(self) -> "AgentDispatchConfigSchema":

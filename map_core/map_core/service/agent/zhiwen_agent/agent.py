@@ -669,7 +669,7 @@ class ZhiwenAgent(TraceableAgent):
                 logger.info(f"[TOOL] ZhiwenAgent finishes disassemble_queries, queries: {all_queries}")
 
                 items = await self._run_queries(request, all_queries)
-                logger.info(f"[TOOL] ZhiwenAgent finishes fetch result by sub queries")
+                logger.info("[TOOL] ZhiwenAgent finishes fetch result by sub queries")
 
 
                 do_mult_summary = False

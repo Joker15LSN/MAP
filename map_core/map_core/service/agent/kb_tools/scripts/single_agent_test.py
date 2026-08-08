@@ -1,6 +1,8 @@
 
 import json
-from httpx import request, HTTPError
+
+from httpx import HTTPError, request
+
 
 def main():
     data = {

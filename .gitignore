@@ -220,5 +220,13 @@ __marimo__/
 # Qoder IDE
 .qoder/
 
+# Reasonix runtime artifacts (task logs, snapshots, one-shot local config)
+#   .reasonix/ holds per-run task logs/locks that may contain prompts,
+#   commands or environment snapshots — never commit them.
+#   reasonix.toml is a machine-local, one-shot permission config (may embed
+#   absolute host paths); do not commit unless made portable.
+.reasonix/
+reasonix.toml
+
 # understand-anything knowledge graph
 .understand-anything/
