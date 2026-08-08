@@ -15,6 +15,17 @@ class ChatRequest(BaseModel):
     dispatch_config: dict[str, Any] | None = None
 
 
+class CreateConversationRequest(BaseModel):
+    mode: str = "global"
+    title: str | None = None
+
+
+class StreamConversationMessageRequest(BaseModel):
+    query: str = Field(min_length=1)
+    request_id: str | None = None
+    mode: str | None = None
+
+
 class ModelRecord(BaseModel):
     model_name: str
     model_type: str = "本地"
