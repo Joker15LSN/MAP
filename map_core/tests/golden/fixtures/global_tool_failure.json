@@ -1,0 +1,112 @@
+{
+  "id": "global_tool_failure",
+  "mode": "global",
+  "engine": "legacy",
+  "description": "工具失败:工具 handler 返回 error,tool_result 事件标记为 failed,Agent 仍给出兜底答案。",
+  "request": {
+    "query": "查一下今天的股票行情",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy",
+      "scene_agent_configs": {
+        "General_Assistant": {
+          "prompt": "你是通用问答助手。",
+          "tool_names": [
+            "general_qa_agent"
+          ],
+          "max_steps": 3,
+          "force_tool_call": true
+        }
+      }
+    }
+  },
+  "runtime_config_hash": "sha256:490682426283eb4e85a39d02da7c92d7",
+  "llm_script": [
+    {
+      "kind": "asimple_chat",
+      "schema_name": "direct_sub_agent_route",
+      "content": "{\"agent_routes\":[{\"agent_code\":\"General_Assistant\",\"confidence\":0.7,\"reason\":\"行情查询\"}]}",
+      "usage": {
+        "prompt_tokens": 22,
+        "completion_tokens": 8
+      }
+    },
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_gqa_fail",
+          "name": "general_qa_agent",
+          "arguments": "{\"query\": \"股票行情\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "行情工具暂时不可用,建议稍后重试。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "asimple_chat_stream",
+      "chunks": [
+        "股票行情工具暂不可用,请稍后重试。"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "general_qa_agent",
+      "fail": true
+    }
+  ],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "content_delta",
+      "meta",
+      "done"
+    ],
+    "meta_phases": [
+      "scene_selected",
+      "agent_action",
+      "agent_result",
+      "post_dispatch"
+    ],
+    "scene_selected_agents": [
+      "General_Assistant"
+    ],
+    "agent_result_agents": [
+      "General_Assistant"
+    ],
+    "tool_result_failed": {
+      "tool": "general_qa_agent",
+      "count": 1
+    },
+    "tool_io": [
+      {
+        "tool": "general_qa_agent",
+        "action": "tool_call",
+        "count": 1
+      }
+    ],
+    "final_content": {
+      "contains": [
+        "不可用"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "request.end"
+      ],
+      "request_end_success": true
+    },
+    "engine_parity": false
+  }
+}

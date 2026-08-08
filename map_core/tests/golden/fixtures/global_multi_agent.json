@@ -1,0 +1,170 @@
+{
+  "id": "global_multi_agent",
+  "mode": "global",
+  "engine": "legacy",
+  "description": "多 Agent:路由选中 General_Assistant 与 Operations 两个场景智能体并发执行。",
+  "request": {
+    "query": "先做经营分析,再给出通用解答",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy",
+      "scene_agent_configs": {
+        "General_Assistant": {
+          "prompt": "你是通用问答助手。",
+          "tool_names": [
+            "general_qa_agent"
+          ],
+          "max_steps": 3,
+          "force_tool_call": true
+        },
+        "Operations": {
+          "prompt": "你是经营分析助手。",
+          "tool_names": [
+            "ask_database_agent"
+          ],
+          "max_steps": 3,
+          "force_tool_call": true
+        }
+      }
+    }
+  },
+  "runtime_config_hash": "sha256:5f62f616d3e04f4a78b1b86e24332519",
+  "llm_script": [
+    {
+      "kind": "asimple_chat",
+      "schema_name": "direct_sub_agent_route",
+      "content": "{\"agent_routes\":[{\"agent_code\":\"General_Assistant\",\"confidence\":0.9,\"reason\":\"通用解答\"},{\"agent_code\":\"Operations\",\"confidence\":0.85,\"reason\":\"经营分析\"}]}",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 14
+      }
+    },
+    {
+      "kind": "ask_tool",
+      "tool_names": [
+        "general_qa_agent"
+      ],
+      "tool_calls": [
+        {
+          "id": "call_gqa_1",
+          "name": "general_qa_agent",
+          "arguments": "{\"query\": \"通用解答\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "tool_names": [
+        "general_qa_agent"
+      ],
+      "content": "通用解答:公司整体运行平稳。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "ask_tool",
+      "tool_names": [
+        "ask_database_agent"
+      ],
+      "tool_calls": [
+        {
+          "id": "call_askdb_1",
+          "name": "ask_database_agent",
+          "arguments": "{\"query\": \"经营分析\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "tool_names": [
+        "ask_database_agent"
+      ],
+      "content": "经营分析:营收增长 12%,成本下降 5%。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "asimple_chat_stream",
+      "chunks": [
+        "综合两位助手结论:经营稳健,整体平稳。"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "general_qa_agent",
+      "returns": [
+        {
+          "content": "通用问答数据。",
+          "data_source": {
+            "source": "fake"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ask_database_agent",
+      "returns": [
+        {
+          "content": "经营表数据:营收+12%。",
+          "data_source": {
+            "source": "fake_db"
+          }
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "content_delta",
+      "meta",
+      "done"
+    ],
+    "meta_phases": [
+      "scene_selected",
+      "agent_action",
+      "agent_result",
+      "post_dispatch"
+    ],
+    "scene_selected_agents": [
+      "General_Assistant",
+      "Operations"
+    ],
+    "agent_result_agents": [
+      "General_Assistant",
+      "Operations"
+    ],
+    "agents_order_independent": true,
+    "tool_io": [
+      {
+        "tool": "general_qa_agent",
+        "action": "tool_call",
+        "count": 1
+      },
+      {
+        "tool": "ask_database_agent",
+        "action": "tool_call",
+        "count": 1
+      }
+    ],
+    "final_content": {
+      "contains": [
+        "经营稳健"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "request.end"
+      ],
+      "request_end_success": true
+    },
+    "engine_parity": false
+  }
+}

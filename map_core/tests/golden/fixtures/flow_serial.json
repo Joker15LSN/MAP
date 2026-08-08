@@ -1,0 +1,165 @@
+{
+  "id": "flow_serial",
+  "mode": "flow",
+  "engine": "legacy",
+  "description": "正常串行:订单确认收入场景,Supply_Chain → Procurement → Operations 三个节点依次执行且全部 pass。",
+  "request": {
+    "query": "订单确认收入流程怎么走",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy"
+    },
+    "flow_config": {
+      "scenario_policy": {
+        "enabled": true,
+        "mode": "auto",
+        "allow_graph_repair": true,
+        "max_graph_cycles": 2
+      },
+      "skill_policy": {
+        "enabled": true,
+        "mount_mode": "agent_scoped",
+        "runtime_auth_check": true
+      },
+      "max_node_budget": 12,
+      "fallback_to_global": true
+    }
+  },
+  "runtime_config_hash": "sha256:fd97e5fce59cab1fb685d1b8efa73fe0",
+  "llm_script": [
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_sc_1",
+          "name": "ask_database_agent",
+          "arguments": "{\"query\": \"订单确认收入\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "delivery_record contract_terms invoice_status 均已核对完成。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_pr_1",
+          "name": "ask_database_agent",
+          "arguments": "{\"query\": \"采购合同条款\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "delivery_record contract_terms invoice_status 证据齐备。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_op_1",
+          "name": "ask_database_agent",
+          "arguments": "{\"query\": \"经营交付记录\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "delivery_record contract_terms invoice_status 全部匹配。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "asimple_chat_stream",
+      "chunks": [
+        "订单确认收入链路完整,证据齐备,可确认收入。"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "ask_database_agent",
+      "returns": [
+        {
+          "content": "delivery_record=1, contract_terms=1, invoice_status=1",
+          "data_source": {
+            "source": "fake_db"
+          }
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "meta",
+      "content_delta",
+      "done"
+    ],
+    "meta_phases": [
+      "flow_mode_initialized",
+      "flow_policy_hit",
+      "scenario_resolved",
+      "flow_graph_built",
+      "flow_node_started",
+      "skill_authorization",
+      "flow_node_result"
+    ],
+    "flow": {
+      "scenarios": [
+        "order_revenue_confirmation"
+      ],
+      "node_verdicts": [
+        {
+          "node_contains": "Supply_Chain",
+          "verdict": "pass"
+        },
+        {
+          "node_contains": "Procurement",
+          "verdict": "pass"
+        },
+        {
+          "node_contains": "Operations",
+          "verdict": "pass"
+        }
+      ],
+      "repair_count": 0,
+      "graph_incomplete": null,
+      "skill_authorization": [
+        {
+          "node_contains": "Supply_Chain",
+          "authorized_tools_contains": [
+            "ask_database_agent"
+          ]
+        }
+      ]
+    },
+    "final_content": {
+      "contains": [
+        "可确认收入"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "flow.policy_hit",
+        "flow.skill_authorization",
+        "flow.agent_case_candidate",
+        "request.end"
+      ],
+      "request_end_success": true
+    },
+    "engine_parity": true
+  }
+}

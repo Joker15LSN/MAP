@@ -1,0 +1,123 @@
+{
+  "id": "global_plain",
+  "mode": "global",
+  "engine": "legacy",
+  "description": "普通问答:General_Assistant 调用一次通用问答工具后给出最终答案。",
+  "request": {
+    "query": "用一句话总结公司年度经营目标",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy",
+      "scene_agent_configs": {
+        "General_Assistant": {
+          "prompt": "你是通用问答助手。",
+          "tool_names": [
+            "general_qa_agent"
+          ],
+          "max_steps": 3,
+          "force_tool_call": true
+        }
+      }
+    }
+  },
+  "runtime_config_hash": "sha256:8734d0782105c8c5c157973fadce3374",
+  "llm_script": [
+    {
+      "kind": "asimple_chat",
+      "schema_name": "direct_sub_agent_route",
+      "content": "{\"agent_routes\":[{\"agent_code\":\"General_Assistant\",\"confidence\":0.98,\"reason\":\"普通问答\"}]}",
+      "usage": {
+        "prompt_tokens": 30,
+        "completion_tokens": 12
+      }
+    },
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_gqa_1",
+          "name": "general_qa_agent",
+          "arguments": "{\"query\": \"公司年度经营目标\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "公司年度经营目标:稳中求进,利润增长15%。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "asimple_chat_stream",
+      "chunks": [
+        "【总结】",
+        "公司年度经营目标为稳中求进、利润增长15%。"
+      ],
+      "usage": {
+        "prompt_tokens": 20,
+        "completion_tokens": 8
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "general_qa_agent",
+      "returns": [
+        {
+          "content": "年度目标数据:利润增长15%,成本下降5%。",
+          "data_source": {
+            "source": "fake"
+          }
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "meta",
+      "content_delta",
+      "meta",
+      "done"
+    ],
+    "meta_phases": [
+      "scene_selected",
+      "agent_action",
+      "agent_result",
+      "post_dispatch",
+      "summarize_finished"
+    ],
+    "scene_selected_agents": [
+      "General_Assistant"
+    ],
+    "agent_result_agents": [
+      "General_Assistant"
+    ],
+    "tool_io": [
+      {
+        "tool": "general_qa_agent",
+        "action": "tool_call",
+        "count": 1
+      }
+    ],
+    "final_content": {
+      "contains": [
+        "公司年度经营目标",
+        "稳中求进"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "request.end"
+      ],
+      "request_end_success": true
+    },
+    "engine_parity": true
+  }
+}
