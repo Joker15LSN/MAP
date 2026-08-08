@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import {
   Alert,
@@ -17,14 +17,15 @@ import {
 
 import { analyticsApi } from './api/client';
 import { FilterBar } from './components/FilterBar';
-import { AgentsToolsPage } from './pages/AgentsToolsPage';
-import { CorrelationPage } from './pages/CorrelationPage';
-import { FridayPage } from './pages/FridayPage';
-import { OverviewPage } from './pages/OverviewPage';
-import { RequestsPage } from './pages/RequestsPage';
-import { UsersPage } from './pages/UsersPage';
 import { FilterState, FridayAction, FridayConfig } from './types';
 import { inferMainFlowContainer, isKnownContainer } from './constants/containers';
+
+const OverviewPage = lazy(() => import('./pages/OverviewPage').then((m) => ({ default: m.OverviewPage })));
+const RequestsPage = lazy(() => import('./pages/RequestsPage').then((m) => ({ default: m.RequestsPage })));
+const UsersPage = lazy(() => import('./pages/UsersPage').then((m) => ({ default: m.UsersPage })));
+const AgentsToolsPage = lazy(() => import('./pages/AgentsToolsPage').then((m) => ({ default: m.AgentsToolsPage })));
+const CorrelationPage = lazy(() => import('./pages/CorrelationPage').then((m) => ({ default: m.CorrelationPage })));
+const FridayPage = lazy(() => import('./pages/FridayPage').then((m) => ({ default: m.FridayPage })));
 
 type SectionKey = 'overview' | 'projects' | 'traces' | 'friday';
 type ProjectSubView = 'requests' | 'users' | 'agents-tools';
@@ -531,26 +532,34 @@ const App = () => {
           ) : null}
 
           <section className="studio-content">
-            {activeSection === 'overview' ? (
-              <OverviewPage filters={filters} refreshToken={refreshToken} isDark={isDark} />
-            ) : null}
-            {activeSection === 'projects' ? (
-              <ProjectsPage
-                filters={filters}
-                refreshToken={refreshToken}
-                isDark={isDark}
-                subView={projectSubView}
-                onSubViewChange={setProjectSubView}
-                openRequestSignal={openRequestSignal}
-                onRequestSignalConsumed={() => setOpenRequestSignal(null)}
-              />
-            ) : null}
-            {activeSection === 'traces' ? (
-              <CorrelationPage filters={filters} refreshToken={refreshToken} />
-            ) : null}
-            {activeSection === 'friday' ? (
-              <FridayPage filters={filters} onRunAction={handleFridayAction} />
-            ) : null}
+            <Suspense
+              fallback={
+                <div className="page-loading">
+                  <div className="page-loading-text">页面加载中...</div>
+                </div>
+              }
+            >
+              {activeSection === 'overview' ? (
+                <OverviewPage filters={filters} refreshToken={refreshToken} isDark={isDark} />
+              ) : null}
+              {activeSection === 'projects' ? (
+                <ProjectsPage
+                  filters={filters}
+                  refreshToken={refreshToken}
+                  isDark={isDark}
+                  subView={projectSubView}
+                  onSubViewChange={setProjectSubView}
+                  openRequestSignal={openRequestSignal}
+                  onRequestSignalConsumed={() => setOpenRequestSignal(null)}
+                />
+              ) : null}
+              {activeSection === 'traces' ? (
+                <CorrelationPage filters={filters} refreshToken={refreshToken} />
+              ) : null}
+              {activeSection === 'friday' ? (
+                <FridayPage filters={filters} onRunAction={handleFridayAction} />
+              ) : null}
+            </Suspense>
           </section>
         </main>
       </div>
