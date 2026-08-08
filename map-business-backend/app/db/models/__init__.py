@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .audit import AuditLog
 from .conversation import Conversation, Message, MessageEvidence
+from .feedback import MessageFeedback
 from .idempotency import IdempotencyRecord
 from .job import Job, JobStatus
 from .outbox import OutboxEvent
@@ -18,6 +19,7 @@ __all__ = [
     "JobStatus",
     "Message",
     "MessageEvidence",
+    "MessageFeedback",
     "OutboxEvent",
     "User",
     "Workspace",

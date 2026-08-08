@@ -24,6 +24,7 @@ from .api.admin_config import router as admin_config_router
 from .api.admin_master import router as admin_master_router
 from .api.chat import router as chat_router
 from .api.conversations import router as conversations_router
+from .api.feedback import router as feedback_router
 from .core.identity import AuthMode, parse_optional_id, parse_request_id
 from .core_client import MapCoreClient
 from .repositories.config import ConfigRepository
@@ -132,6 +133,7 @@ def create_app(
 
     app.include_router(chat_router)
     app.include_router(conversations_router)
+    app.include_router(feedback_router)
     app.include_router(admin_config_router)
     app.include_router(admin_master_router)
     app.include_router(admin_assets_router)
