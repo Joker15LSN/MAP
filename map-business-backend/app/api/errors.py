@@ -60,6 +60,21 @@ def _is_new_api(path: str) -> bool:
     return path.startswith(("/api/v1", "/internal/v1"))
 
 
+def _sanitize_errors(errors: list) -> list:
+    """Make validation errors JSON-safe (exception objects -> str)."""
+
+    def _clean(value):
+        if isinstance(value, Exception):
+            return str(value)
+        if isinstance(value, dict):
+            return {k: _clean(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_clean(v) for v in value]
+        return value
+
+    return [_clean(error) for error in errors]
+
+
 def install_error_handlers(app: FastAPI) -> None:
     """Register envelope handlers for /api/v1 errors (legacy paths untouched)."""
 
@@ -87,6 +102,6 @@ def install_error_handlers(app: FastAPI) -> None:
                 422,
                 "VALIDATION_ERROR",
                 "request validation failed",
-                details=exc.errors(),
+                details=_sanitize_errors(exc.errors()),
             ),
         )
