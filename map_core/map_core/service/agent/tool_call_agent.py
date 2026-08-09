@@ -448,7 +448,7 @@ class ToolCallAgent(TraceableAgent):
         for step in range(self.max_steps):
             # await asyncio.sleep(random.uniform(2, 6))
             formatted_system_prompt = self._format_system_prompt(request, step=step)
-            
+
             await self._emit_action_event(
                 action="step_start",
                 step=step,

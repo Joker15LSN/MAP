@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import mongomock
 
@@ -19,7 +19,7 @@ def _service() -> FridayService:
 
 def test_llm_calls_query_summary() -> None:
     service = _service()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     service.analytics_service.request_collection.insert_one(
         {
             "request_id": "rid-1",
@@ -77,7 +77,7 @@ def test_llm_calls_query_summary() -> None:
 
 def test_friday_report_collects_failures_and_slow_llm() -> None:
     service = _service()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     service.analytics_service.request_collection.insert_one(
         {
             "request_id": "rid-2",

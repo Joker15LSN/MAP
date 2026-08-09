@@ -264,10 +264,14 @@ async def test_reconciler_recovers_pending_and_after_rename_crashes(
     assert recovered == 2
 
     statuses = (
-        await session.execute(
-            text("SELECT status FROM map_control.config_mutations ORDER BY created_at")
+        (
+            await session.execute(
+                text("SELECT status FROM map_control.config_mutations ORDER BY created_at")
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert statuses == ["failed", "applied"]
 
     events = (
@@ -353,9 +357,7 @@ async def test_audit_viewer_and_workspace_scope(app_and_session) -> None:
         for item in listing.json()["items"]:
             assert item["workspace_id"] == WORKSPACE
 
-        filtered = await client.get(
-            "/api/v1/admin/audit-events", params={"actor": "local-admin"}
-        )
+        filtered = await client.get("/api/v1/admin/audit-events", params={"actor": "local-admin"})
         assert filtered.json()["total"] >= 1
 
     # Non-audit-viewer (plain member) cannot read audit events.
@@ -387,9 +389,7 @@ async def test_app_role_cannot_update_delete_audit_events() -> None:
     """DB-level check: a role with only SELECT/INSERT on audit tables cannot
     UPDATE/DELETE audit events (application role separation)."""
     role = "map_audit_test_role"
-    dsn = os.getenv(
-        "MAP_CONTROL_TEST_DSN", "postgresql+asyncpg://map:map@127.0.0.1:15432/map"
-    )
+    dsn = os.getenv("MAP_CONTROL_TEST_DSN", "postgresql+asyncpg://map:map@127.0.0.1:15432/map")
     admin_dsn = dsn.replace("map:map@", "map:map@")  # superuser login
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -401,13 +401,9 @@ async def test_app_role_cannot_update_delete_audit_events() -> None:
             await conn.rollback()
         await conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
         await conn.execute(text(f"CREATE ROLE {role} LOGIN PASSWORD 'x'"))
+        await conn.execute(text(f"GRANT USAGE ON SCHEMA map_control TO {role}"))
         await conn.execute(
-            text(f"GRANT USAGE ON SCHEMA map_control TO {role}")
-        )
-        await conn.execute(
-            text(
-                f"GRANT SELECT, INSERT ON map_control.config_audit_events TO {role}"
-            )
+            text(f"GRANT SELECT, INSERT ON map_control.config_audit_events TO {role}")
         )
         await conn.commit()
     await admin_engine.dispose()

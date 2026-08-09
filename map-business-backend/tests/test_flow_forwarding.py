@@ -8,14 +8,15 @@ os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_test_state.json")
 
 from app.main import app, core_client
 
-
 client = TestClient(app)
 
 
 def test_chat_flow_v1_forwards_to_flow_domain(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
-    async def fake_chat_by_path(path: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+    async def fake_chat_by_path(
+        path: str, payload: dict[str, Any], headers: dict[str, str]
+    ) -> dict[str, Any]:
         captured["path"] = path
         captured["payload"] = payload
         captured["headers"] = headers
@@ -51,7 +52,7 @@ def test_chat_stream_flow_v1_forwards_to_flow_domain(monkeypatch) -> None:
         captured["path"] = path
         captured["payload"] = payload
         captured["headers"] = headers
-        yield b"event: done\ndata: {\"content\": \"ok\"}\n\n"
+        yield b'event: done\ndata: {"content": "ok"}\n\n'
 
     monkeypatch.setattr(core_client, "stream_chat_by_path", fake_stream_chat_by_path)
 

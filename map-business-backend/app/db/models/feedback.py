@@ -63,9 +63,7 @@ class MessageFeedback(Base):
         UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
     )
     workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
-    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     message_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("map_control.messages.id"), nullable=False
     )
@@ -80,12 +78,8 @@ class MessageFeedback(Base):
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="open", server_default="open"
     )
-    version: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=1, server_default="1"
-    )
-    withdrawn_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Legacy fields (read compatibility; new writes use rating fields).
     kind: Mapped[str | None] = mapped_column(String(16), nullable=True)

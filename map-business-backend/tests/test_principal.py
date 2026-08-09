@@ -59,7 +59,13 @@ def test_dev_mode_default_admin_can_write_admin_config() -> None:
 
 
 def test_trusted_header_mode_parses_principal_and_roles() -> None:
-    app = _app(Settings(auth_mode=AuthMode.TRUSTED_HEADER, trusted_proxy_secret="s3cret", trusted_proxy_required=True))
+    app = _app(
+        Settings(
+            auth_mode=AuthMode.TRUSTED_HEADER,
+            trusted_proxy_secret="s3cret",
+            trusted_proxy_required=True,
+        )
+    )
     client = TestClient(app)
     response = client.put(
         "/api/admin/model-center",
@@ -77,7 +83,13 @@ def test_trusted_header_mode_parses_principal_and_roles() -> None:
 
 
 def test_trusted_header_without_admin_role_is_forbidden() -> None:
-    app = _app(Settings(auth_mode=AuthMode.TRUSTED_HEADER, trusted_proxy_secret="s3cret", trusted_proxy_required=True))
+    app = _app(
+        Settings(
+            auth_mode=AuthMode.TRUSTED_HEADER,
+            trusted_proxy_secret="s3cret",
+            trusted_proxy_required=True,
+        )
+    )
     client = TestClient(app)
     response = client.put(
         "/api/admin/model-center",
@@ -114,7 +126,13 @@ def test_trusted_header_requires_secret_when_enabled() -> None:
 
 
 def test_trusted_header_missing_user_is_401() -> None:
-    app = _app(Settings(auth_mode=AuthMode.TRUSTED_HEADER, trusted_proxy_secret="s3cret", trusted_proxy_required=True))
+    app = _app(
+        Settings(
+            auth_mode=AuthMode.TRUSTED_HEADER,
+            trusted_proxy_secret="s3cret",
+            trusted_proxy_required=True,
+        )
+    )
     client = TestClient(app)
     response = client.get("/api/admin/summary")
     assert response.status_code == 401
@@ -147,7 +165,9 @@ def test_request_id_echoed_and_session_workspace_forwarded(monkeypatch) -> None:
     forwarded = core.calls[0]
     assert forwarded["X-Request-ID"] == "req-abc123"
     assert forwarded["X-Session-ID"] == "sess-xyz"
-    assert forwarded["X-Workspace-ID"] == "00000000-0000-0000-0000-000000000001"  # default workspace
+    assert (
+        forwarded["X-Workspace-ID"] == "00000000-0000-0000-0000-000000000001"
+    )  # default workspace
 
 
 def test_invalid_request_id_is_replaced_with_fresh_one() -> None:

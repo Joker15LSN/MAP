@@ -61,10 +61,7 @@ def test_utf8_character_split_across_chunks_no_replacement_char() -> None:
 
 
 def test_crlf_frames_are_supported() -> None:
-    stream = (
-        b"event: start\r\ndata: {\"a\":1}\r\n\r\n"
-        b"event: done\r\ndata: {\"content\":\"x\"}\r\n\r\n"
-    )
+    stream = b'event: start\r\ndata: {"a":1}\r\n\r\nevent: done\r\ndata: {"content":"x"}\r\n\r\n'
     parser = SseStreamParser()
     result = parser.feed(stream)
     assert _events(result) == [
@@ -85,7 +82,7 @@ def test_half_frame_kept_in_remaining() -> None:
     first = parser.feed(b'event: start\ndata: {"a":1}\n\n event: par')
     assert len(first.frames) == 1
     assert "par" in first.remaining
-    second = parser.feed(b'tial\ndata: {}\n\n')
+    second = parser.feed(b"tial\ndata: {}\n\n")
     assert _events(second)[0] == ("message", "{}")  # no event: -> default
     assert second.remaining == ""
 
@@ -109,7 +106,7 @@ def test_invalid_json_data_raises_stable_error() -> None:
     from app.services.sse import frame_data_json
 
     parser = SseStreamParser()
-    result = parser.feed(b'event: done\ndata: {not-json}\n\n')
+    result = parser.feed(b"event: done\ndata: {not-json}\n\n")
     with pytest.raises(SseParseError) as exc_info:
         frame_data_json(result.frames[0])
     assert exc_info.value.code == "STREAM_PARSE_ERROR"
@@ -117,5 +114,5 @@ def test_invalid_json_data_raises_stable_error() -> None:
 
 def test_empty_data_is_tolerated() -> None:
     parser = SseStreamParser()
-    result = parser.feed(b'event: done\ndata:\n\n')
+    result = parser.feed(b"event: done\ndata:\n\n")
     assert result.frames[0].data == ""

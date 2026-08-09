@@ -186,6 +186,6 @@ if __name__ == "__main__":
     ))
 
     '''
-    
+
      python -m map_core.utils.remote_config_compare.scripts.dump_scene_conf
     '''

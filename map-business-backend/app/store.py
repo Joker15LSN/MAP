@@ -77,9 +77,7 @@ class AdminStateStore:
         with self._lock:
             state = self._read_state()
             if state_hash(state) != expected_hash:
-                raise ConcurrentModificationError(
-                    "admin state changed since the request was read"
-                )
+                raise ConcurrentModificationError("admin state changed since the request was read")
             result = updater(state)
             state.updated_at = datetime.now().isoformat()
             self._write_atomic(state)
@@ -184,9 +182,7 @@ class AdminStateStore:
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(
-                    json.dumps(state.model_dump(), ensure_ascii=False, indent=2)
-                )
+                handle.write(json.dumps(state.model_dump(), ensure_ascii=False, indent=2))
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp_path, self._path)

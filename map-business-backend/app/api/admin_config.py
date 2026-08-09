@@ -65,7 +65,6 @@ async def _audited_update(
     )
 
 
-
 @router.get("/api/admin/full-config")
 async def full_config(store: ConfigRepository = Depends(get_store)) -> dict[str, Any]:
     return store.load().model_dump()
@@ -78,9 +77,7 @@ async def flow_runtime_snapshot(store: ConfigRepository = Depends(get_store)) ->
         "updated_at": state.updated_at,
         "flow_policy": state.flow_policy.model_dump(),
         "scenario_packs": [item.model_dump() for item in state.scenario_packs],
-        "flow_skill_descriptors": [
-            item.model_dump() for item in state.flow_skill_descriptors
-        ],
+        "flow_skill_descriptors": [item.model_dump() for item in state.flow_skill_descriptors],
         "mcp_servers": [item.model_dump() for item in state.mcp_servers],
         "skills": [item.model_dump() for item in state.skills],
         "business_agents": [
@@ -146,14 +143,20 @@ async def put_model_center(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> ModelCenterConfig:
     state, _ = await _audited_update(
-        request, session, "admin_config", "model_center", "update",
+        request,
+        session,
+        "admin_config",
+        "model_center",
+        "update",
         lambda draft: setattr(draft, "model_center", payload),
     )
     return state.model_center
 
 
 @router.get("/api/admin/basic-settings")
-async def get_basic_settings(store: ConfigRepository = Depends(get_store)) -> list[BasicSettingItem]:
+async def get_basic_settings(
+    store: ConfigRepository = Depends(get_store),
+) -> list[BasicSettingItem]:
     return store.load().basic_settings
 
 
@@ -165,14 +168,20 @@ async def put_basic_settings(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[BasicSettingItem]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "basic_settings", "update",
+        request,
+        session,
+        "admin_config",
+        "basic_settings",
+        "update",
         lambda draft: setattr(draft, "basic_settings", payload),
     )
     return state.basic_settings
 
 
 @router.get("/api/admin/address-configs")
-async def get_address_configs(store: ConfigRepository = Depends(get_store)) -> list[AddressConfigItem]:
+async def get_address_configs(
+    store: ConfigRepository = Depends(get_store),
+) -> list[AddressConfigItem]:
     return store.load().address_configs
 
 
@@ -184,7 +193,11 @@ async def put_address_configs(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[AddressConfigItem]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "address_configs", "update",
+        request,
+        session,
+        "admin_config",
+        "address_configs",
+        "update",
         lambda draft: setattr(draft, "address_configs", payload),
     )
     return state.address_configs
@@ -203,7 +216,11 @@ async def put_data_connectors(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[DataAccessItem]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "data_access_items", "update",
+        request,
+        session,
+        "admin_config",
+        "data_access_items",
+        "update",
         lambda draft: setattr(draft, "data_access_items", payload),
     )
     return state.data_access_items
@@ -222,14 +239,20 @@ async def put_data_assets(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[DataAssetItem]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "data_assets", "update",
+        request,
+        session,
+        "admin_config",
+        "data_assets",
+        "update",
         lambda draft: setattr(draft, "data_assets", payload),
     )
     return state.data_assets
 
 
 @router.get("/api/admin/session-policies")
-async def get_session_policies(store: ConfigRepository = Depends(get_store)) -> list[SessionPolicyItem]:
+async def get_session_policies(
+    store: ConfigRepository = Depends(get_store),
+) -> list[SessionPolicyItem]:
     return store.load().session_policies
 
 
@@ -241,14 +264,20 @@ async def put_session_policies(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[SessionPolicyItem]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "session_policies", "update",
+        request,
+        session,
+        "admin_config",
+        "session_policies",
+        "update",
         lambda draft: setattr(draft, "session_policies", payload),
     )
     return state.session_policies
 
 
 @router.get("/api/admin/dashboard-cards")
-async def get_dashboard_cards(store: ConfigRepository = Depends(get_store)) -> list[DashboardCardConfig]:
+async def get_dashboard_cards(
+    store: ConfigRepository = Depends(get_store),
+) -> list[DashboardCardConfig]:
     return store.load().dashboard_cards
 
 
@@ -260,14 +289,20 @@ async def put_dashboard_cards(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[DashboardCardConfig]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "dashboard_cards", "update",
+        request,
+        session,
+        "admin_config",
+        "dashboard_cards",
+        "update",
         lambda draft: setattr(draft, "dashboard_cards", payload),
     )
     return state.dashboard_cards
 
 
 @router.get("/api/admin/security-policies")
-async def get_security_policies(store: ConfigRepository = Depends(get_store)) -> list[SecurityPolicyItem]:
+async def get_security_policies(
+    store: ConfigRepository = Depends(get_store),
+) -> list[SecurityPolicyItem]:
     return store.load().security_policies
 
 
@@ -279,14 +314,20 @@ async def put_security_policies(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[SecurityPolicyItem]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "security_policies", "update",
+        request,
+        session,
+        "admin_config",
+        "security_policies",
+        "update",
         lambda draft: setattr(draft, "security_policies", payload),
     )
     return state.security_policies
 
 
 @router.get("/api/admin/glossary-terms")
-async def get_glossary_terms(store: ConfigRepository = Depends(get_store)) -> list[GlossaryTermItem]:
+async def get_glossary_terms(
+    store: ConfigRepository = Depends(get_store),
+) -> list[GlossaryTermItem]:
     return store.load().glossary_terms
 
 
@@ -298,14 +339,20 @@ async def put_glossary_terms(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[GlossaryTermItem]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "glossary_terms", "update",
+        request,
+        session,
+        "admin_config",
+        "glossary_terms",
+        "update",
         lambda draft: setattr(draft, "glossary_terms", payload),
     )
     return state.glossary_terms
 
 
 @router.get("/api/admin/homepage-recommendations")
-async def get_homepage_recommendations(store: ConfigRepository = Depends(get_store)) -> list[HomeRecommendationItem]:
+async def get_homepage_recommendations(
+    store: ConfigRepository = Depends(get_store),
+) -> list[HomeRecommendationItem]:
     return store.load().homepage_recommendations
 
 
@@ -317,14 +364,20 @@ async def put_homepage_recommendations(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[HomeRecommendationItem]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "homepage_recommendations", "update",
+        request,
+        session,
+        "admin_config",
+        "homepage_recommendations",
+        "update",
         lambda draft: setattr(draft, "homepage_recommendations", payload),
     )
     return state.homepage_recommendations
 
 
 @router.get("/api/admin/permission-rules")
-async def get_permission_rules(store: ConfigRepository = Depends(get_store)) -> list[PermissionRule]:
+async def get_permission_rules(
+    store: ConfigRepository = Depends(get_store),
+) -> list[PermissionRule]:
     state = store.load()
     return state.permission_rules
 
@@ -337,7 +390,11 @@ async def put_permission_rules(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[PermissionRule]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "permission_rules", "update",
+        request,
+        session,
+        "admin_config",
+        "permission_rules",
+        "update",
         lambda draft: setattr(draft, "permission_rules", payload),
     )
     return state.permission_rules
@@ -356,7 +413,11 @@ async def put_role_policies(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[RolePolicy]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "role_policies", "update",
+        request,
+        session,
+        "admin_config",
+        "role_policies",
+        "update",
         lambda draft: setattr(draft, "role_policies", payload),
     )
     return state.role_policies
@@ -375,14 +436,20 @@ async def put_user_accounts(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[UserAccount]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "user_accounts", "update",
+        request,
+        session,
+        "admin_config",
+        "user_accounts",
+        "update",
         lambda draft: setattr(draft, "user_accounts", payload),
     )
     return state.user_accounts
 
 
 @router.get("/api/admin/knowledge-bindings")
-async def get_knowledge_bindings(store: ConfigRepository = Depends(get_store)) -> list[KnowledgeBinding]:
+async def get_knowledge_bindings(
+    store: ConfigRepository = Depends(get_store),
+) -> list[KnowledgeBinding]:
     state = store.load()
     return state.knowledge_bindings
 
@@ -395,7 +462,11 @@ async def put_knowledge_bindings(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[KnowledgeBinding]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "knowledge_bindings", "update",
+        request,
+        session,
+        "admin_config",
+        "knowledge_bindings",
+        "update",
         lambda draft: setattr(draft, "knowledge_bindings", payload),
     )
     return state.knowledge_bindings
@@ -415,7 +486,11 @@ async def put_skill_policies(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[SkillPolicy]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "skill_policies", "update",
+        request,
+        session,
+        "admin_config",
+        "skill_policies",
+        "update",
         lambda draft: setattr(draft, "skill_policies", payload),
     )
     return state.skill_policies
@@ -434,14 +509,20 @@ async def put_flow_policy(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> FlowPolicyConfig:
     state, _ = await _audited_update(
-        request, session, "admin_config", "flow_policy", "update",
+        request,
+        session,
+        "admin_config",
+        "flow_policy",
+        "update",
         lambda draft: setattr(draft, "flow_policy", payload),
     )
     return state.flow_policy
 
 
 @router.get("/api/admin/scenario-packs")
-async def get_scenario_packs(store: ConfigRepository = Depends(get_store)) -> list[ScenarioPackConfig]:
+async def get_scenario_packs(
+    store: ConfigRepository = Depends(get_store),
+) -> list[ScenarioPackConfig]:
     return store.load().scenario_packs
 
 
@@ -453,14 +534,20 @@ async def put_scenario_packs(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[ScenarioPackConfig]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "scenario_packs", "update",
+        request,
+        session,
+        "admin_config",
+        "scenario_packs",
+        "update",
         lambda draft: setattr(draft, "scenario_packs", payload),
     )
     return state.scenario_packs
 
 
 @router.get("/api/admin/flow-skill-descriptors")
-async def get_flow_skill_descriptors(store: ConfigRepository = Depends(get_store)) -> list[FlowSkillDescriptor]:
+async def get_flow_skill_descriptors(
+    store: ConfigRepository = Depends(get_store),
+) -> list[FlowSkillDescriptor]:
     return store.load().flow_skill_descriptors
 
 
@@ -472,7 +559,11 @@ async def put_flow_skill_descriptors(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[FlowSkillDescriptor]:
     state, _ = await _audited_update(
-        request, session, "admin_config", "flow_skill_descriptors", "update",
+        request,
+        session,
+        "admin_config",
+        "flow_skill_descriptors",
+        "update",
         lambda draft: setattr(draft, "flow_skill_descriptors", payload),
     )
     return state.flow_skill_descriptors
@@ -539,9 +630,7 @@ async def get_audit_logs(
         conditions.append(AuditLog.resource_type == resource_type)
 
     total = (
-        await session.execute(
-            select(func.count()).select_from(AuditLog).where(*conditions)
-        )
+        await session.execute(select(func.count()).select_from(AuditLog).where(*conditions))
     ).scalar_one()
     result = await session.execute(
         select(AuditLog)

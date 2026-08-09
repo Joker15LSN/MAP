@@ -136,10 +136,7 @@ async def test_minimal_flow(e2e) -> None:
     # DB-level evidence.
     active_feedback = (
         await session.execute(
-            text(
-                "SELECT count(*) FROM map_control.message_feedback "
-                "WHERE status <> 'withdrawn'"
-            )
+            text("SELECT count(*) FROM map_control.message_feedback WHERE status <> 'withdrawn'")
         )
     ).scalar_one()
     assert active_feedback == 0

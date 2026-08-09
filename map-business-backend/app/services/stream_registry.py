@@ -44,6 +44,5 @@ class StreamRegistry:
 
     def active(self) -> list[dict[str, Any]]:
         return [
-            {"message_id": str(mid), "aborted": ev.is_set()}
-            for mid, ev in self._streams.items()
+            {"message_id": str(mid), "aborted": ev.is_set()} for mid, ev in self._streams.items()
         ]

@@ -60,7 +60,6 @@ async def test_rollback_removes_both_domain_and_outbox_rows(session) -> None:
 
 async def test_migrations_upgrade_downgrade_roundtrip(_engine) -> None:
     """Downgrade one revision, then upgrade to head again (empty DB)."""
-    from alembic import command
     from alembic.config import Config
 
     project_root = "/Users/liusongnan/MAP/map-business-backend"

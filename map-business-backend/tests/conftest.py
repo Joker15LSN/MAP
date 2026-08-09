@@ -84,6 +84,8 @@ async def session(_engine) -> AsyncIterator[AsyncSession]:
         await s.commit()
         yield s
         await s.rollback()
+
+
 """Integration test fixtures: real PostgreSQL via docker compose.
 
 The suite expects a PostgreSQL reachable at ``MAP_CONTROL_TEST_DSN``

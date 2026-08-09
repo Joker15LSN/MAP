@@ -32,10 +32,7 @@ class PermissionService:
 
     def require_audit_viewer(self, principal: RequestPrincipal) -> RequestPrincipal:
         """Gate audit reads: platform_admin or audit_viewer."""
-        if not (
-            self.has_role(principal, PLATFORM_ADMIN)
-            or self.has_role(principal, AUDIT_VIEWER)
-        ):
+        if not (self.has_role(principal, PLATFORM_ADMIN) or self.has_role(principal, AUDIT_VIEWER)):
             raise PermissionDenied(AUDIT_VIEWER)
         return principal
 

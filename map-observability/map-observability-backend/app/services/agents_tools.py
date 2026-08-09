@@ -4,12 +4,13 @@ Owns the agent_executions and tool_call_records collections access plus the
 /agents and /tools payload serialization, plus the cross-request aggregates
 used by other domains (request_id resolution and tool call counts).
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.services.filters import FilterOptions, build_agent_match, build_tool_match
 from app.services.math_utils import average, safe_div, to_float
@@ -35,7 +36,7 @@ class AgentToolRepository:
         cursor = self.tool_collection.find(match, {"request_id": 1})
         return {doc.get("request_id") for doc in cursor if doc.get("request_id")}
 
-    def tool_call_count_map(self, request_ids: Iterable[str]) -> Dict[str, int]:
+    def tool_call_count_map(self, request_ids: Iterable[str]) -> dict[str, int]:
         ids = [request_id for request_id in request_ids if request_id]
         if not ids:
             return {}
@@ -44,9 +45,12 @@ class AgentToolRepository:
             {"$match": {"request_id": {"$in": ids}}},
             {"$group": {"_id": "$request_id", "count": {"$sum": 1}}},
         ]
-        return {item["_id"]: int(item.get("count", 0)) for item in self.tool_collection.aggregate(pipeline)}
+        return {
+            item["_id"]: int(item.get("count", 0))
+            for item in self.tool_collection.aggregate(pipeline)
+        }
 
-    def group_agent_executions(self, filters: FilterOptions, request_ids: List[str]) -> List[Dict]:
+    def group_agent_executions(self, filters: FilterOptions, request_ids: list[str]) -> list[dict]:
         if not request_ids:
             return []
 
@@ -89,7 +93,7 @@ class AgentToolRepository:
 
         return list(self.agent_collection.aggregate(pipeline))
 
-    def agent_events_for_request(self, request_id: str) -> List[Dict]:
+    def agent_events_for_request(self, request_id: str) -> list[dict]:
         return list(
             self.agent_collection.find(
                 {"request_id": request_id},
@@ -112,7 +116,7 @@ class AgentToolRepository:
             ).sort("ts", 1)
         )
 
-    def tool_calls_raw_for_request(self, request_id: str) -> List[Dict]:
+    def tool_calls_raw_for_request(self, request_id: str) -> list[dict]:
         return list(
             self.tool_collection.find(
                 {"request_id": request_id},
@@ -139,10 +143,10 @@ class AgentToolRepository:
 
     def find_tools(
         self,
-        match: Dict,
-        projection: Dict,
-        sort: Optional[list] = None,
-    ) -> List[Dict]:
+        match: dict,
+        projection: dict,
+        sort: list | None = None,
+    ) -> list[dict]:
         cursor = self.tool_collection.find(match, projection)
         if sort:
             cursor = cursor.sort(*sort) if len(sort) == 2 else cursor.sort(sort)
@@ -150,10 +154,10 @@ class AgentToolRepository:
 
 
 def build_agents_rows(
-    executions: List[Dict],
-    request_status_map: Dict[str, str],
+    executions: list[dict],
+    request_status_map: dict[str, str],
     slow_threshold_s: float,
-) -> List[Dict]:
+) -> list[dict]:
     """Serialize grouped agent executions into /agents rows."""
     grouped = defaultdict(
         lambda: {
@@ -210,10 +214,10 @@ def build_agents_rows(
 
 
 def build_tools_payload(
-    tool_docs: List[Dict],
-    request_duration_map: Dict[str, float],
+    tool_docs: list[dict],
+    request_duration_map: dict[str, float],
     top_n: int,
-) -> Dict:
+) -> dict:
     """Serialize tool call documents into the /tools response body."""
     grouped = defaultdict(
         lambda: {

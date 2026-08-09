@@ -52,9 +52,7 @@ class JobExecutionContext:
         return not self.lease_lost.is_set() and not self.cancel.is_set()
 
 
-_current_ctx: ContextVar[JobExecutionContext | None] = ContextVar(
-    "map_job_ctx", default=None
-)
+_current_ctx: ContextVar[JobExecutionContext | None] = ContextVar("map_job_ctx", default=None)
 
 
 def get_current_job_context() -> JobExecutionContext | None:
@@ -152,9 +150,7 @@ class JobRunner:
             ctx.cancel.set()
 
         stop_watcher = asyncio.create_task(_watch_stop())
-        heartbeat_task = asyncio.create_task(
-            self._heartbeat_loop(job, attempt, ctx)
-        )
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop(job, attempt, ctx))
         handler = self._handlers[job.job_type]
         try:
             result = await handler(job, session)
@@ -205,9 +201,7 @@ class JobRunner:
             "lease_expires_at": str(job.lease_expires_at),
         }
 
-    async def _heartbeat_loop(
-        self, job: Job, attempt: int, ctx: JobExecutionContext
-    ) -> None:
+    async def _heartbeat_loop(self, job: Job, attempt: int, ctx: JobExecutionContext) -> None:
         while not ctx.lease_lost.is_set() and not ctx.cancel.is_set():
             # Jittered interval, always below lease/3.
             base = self.heartbeat_interval_seconds

@@ -363,10 +363,14 @@ async def reconcile_config_mutations(
     """
     async with session_factory() as session:
         pending = (
-            await session.execute(
-                select(ConfigMutation).where(ConfigMutation.status == "pending")
+            (
+                await session.execute(
+                    select(ConfigMutation).where(ConfigMutation.status == "pending")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not pending:
             return 0
         try:

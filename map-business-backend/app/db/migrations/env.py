@@ -21,11 +21,12 @@ from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from app.db import MAP_CONTROL_SCHEMA
-from app.db.base import Base
-
 # Import models so they register on Base.metadata.
-from app.db import models  # noqa: F401
+from app.db import (
+    MAP_CONTROL_SCHEMA,
+    models,  # noqa: F401
+)
+from app.db.base import Base
 
 config = context.config
 

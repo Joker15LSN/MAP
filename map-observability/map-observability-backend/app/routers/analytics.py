@@ -83,7 +83,9 @@ def export_requests_jsonl(
     context: QueryContext = Depends(get_query_context),
     service: AnalyticsService = Depends(get_analytics_service),
 ) -> StreamingResponse:
-    parsed_request_ids = [item.strip() for item in (request_ids or "").split(",") if item.strip()] or None
+    parsed_request_ids = [
+        item.strip() for item in (request_ids or "").split(",") if item.strip()
+    ] or None
     try:
         stream = service.iter_request_export_jsonl(
             filters=context.filters,

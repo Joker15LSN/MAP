@@ -386,7 +386,7 @@ async def _handle_search_chunks(
     except ValidationError as exc:
         return to_tool_result_wrapper(
                     search_chunk_output = SearchKbChunkOutput(
-                        success=False, 
+                        success=False,
                         error=f"Invalid input parameters: {exc.errors()}"
                     )
         )

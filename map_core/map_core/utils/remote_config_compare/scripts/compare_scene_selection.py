@@ -103,9 +103,9 @@ if __name__ == "__main__":
     main()
     '''
     --ignore enabled_agent_codes.IPD_RD enabled_agent_codes.Financial_Assistant
-    
+
     '''
-    
+
     '''
     python -m map_core.utils.remote_config_compare.scripts.compare_scene_selection --right /Users/ley/work_space/supcon/dev_projects/map-core/map_core/utils/remote_config_compare/dumped_configs/ubddev/scene_selection.json --left /Users/ley/work_space/supcon/dev_projects/map-core/map_core/eval/scene_classify/current_config/update_company_news_20260515.json  --ignore enabled_agent_codes.IPD_RD enabled_agent_codes.Financial_Assistant enabled_agent_codes.MASTER
     '''

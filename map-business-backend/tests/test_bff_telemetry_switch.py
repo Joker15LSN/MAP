@@ -23,9 +23,9 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
     OTLPSpanExporter as HttpOTLPSpanExporter,
 )
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
+from otel_env import OTEL_ENV_VARS as _OTEL_ENV_VARS
 
 from app import telemetry as telemetry_module
-from otel_env import OTEL_ENV_VARS as _OTEL_ENV_VARS
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -87,9 +87,7 @@ def _configure() -> bool:
         ),
     ],
 )
-def test_configure_switch_combinations(
-    monkeypatch, clean_telemetry, env, expected_enabled
-) -> None:
+def test_configure_switch_combinations(monkeypatch, clean_telemetry, env, expected_enabled) -> None:
     for key, value in env.items():
         monkeypatch.setenv(key, value)
 
@@ -113,9 +111,7 @@ def test_configure_switch_combinations(
         ),
     ],
 )
-def test_exporter_protocol_selection(
-    monkeypatch, env, expected_type
-) -> None:
+def test_exporter_protocol_selection(monkeypatch, env, expected_type) -> None:
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     exporter = telemetry_module._build_span_exporter()
@@ -149,9 +145,7 @@ def test_sampling_ratio_bounds_and_invalid(
     assert sampler._root._rate == expected_rate
 
 
-def test_parent_based_honors_inbound_sampling_flag(
-    monkeypatch, clean_telemetry
-) -> None:
+def test_parent_based_honors_inbound_sampling_flag(monkeypatch, clean_telemetry) -> None:
     """A ratio of 0 must still record traces the upstream marked sampled."""
     from opentelemetry import trace as otel_trace
     from opentelemetry.trace import SpanContext, TraceFlags
@@ -198,9 +192,7 @@ def test_configure_is_idempotent(monkeypatch, clean_telemetry) -> None:
     assert telemetry_module._provider is first
 
 
-def test_exporter_tuning_values_reach_processor(
-    monkeypatch, clean_telemetry
-) -> None:
+def test_exporter_tuning_values_reach_processor(monkeypatch, clean_telemetry) -> None:
     """Round 6 P2-4.2: non-default tuning values are consumed by the SDK.
 
     The same input set as the compose tuning test (queue=64, batch=32) must
@@ -224,10 +216,7 @@ def test_exporter_tuning_values_reach_processor(
     monkeypatch.setenv("MAP_OTEL_MAX_EXPORT_BATCH_SIZE", "32")
 
     assert _configure() is True
-    inner = (
-        telemetry_module._provider._active_span_processor._span_processors[0]
-        ._batch_processor
-    )
+    inner = telemetry_module._provider._active_span_processor._span_processors[0]._batch_processor
     assert inner._max_queue_size == 64
     assert inner._max_export_batch_size == 32
 
@@ -259,12 +248,8 @@ def test_exporter_timeout_reaches_exporter(monkeypatch, clean_telemetry) -> None
             captured.append(kwargs)
             super().__init__()
 
-    monkeypatch.setattr(
-        grpc_trace_exporter, "OTLPSpanExporter", _RecordingExporter
-    )
-    monkeypatch.setattr(
-        http_trace_exporter, "OTLPSpanExporter", _RecordingExporter
-    )
+    monkeypatch.setattr(grpc_trace_exporter, "OTLPSpanExporter", _RecordingExporter)
+    monkeypatch.setattr(http_trace_exporter, "OTLPSpanExporter", _RecordingExporter)
 
     monkeypatch.setenv("MAP_OTEL_EXPORT_TIMEOUT_MS", "1234")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
@@ -284,9 +269,7 @@ def test_exporter_timeout_reaches_exporter(monkeypatch, clean_telemetry) -> None
     assert captured[-1] == {"timeout": 10.0}
 
 
-def test_exporter_tuning_rejects_batch_larger_than_queue(
-    monkeypatch, clean_telemetry
-) -> None:
+def test_exporter_tuning_rejects_batch_larger_than_queue(monkeypatch, clean_telemetry) -> None:
     """Round 6 P2-4.2: SDK constraint max_export_batch_size <= max_queue_size.
 
     A violating pair must fail fast at startup with the SDK's diagnostic
@@ -394,8 +377,7 @@ def test_shutdown_is_terminal() -> None:
         check=False,
     )
     assert result.returncode == 0, (
-        "terminal lifecycle probe failed\\n"
-        f"stdout={result.stdout}\\nstderr={result.stderr}"
+        f"terminal lifecycle probe failed\\nstdout={result.stdout}\\nstderr={result.stderr}"
     )
     # even inside the isolated child the real SDK must not warn about
     # provider overriding or duplicate instrumentation

@@ -47,9 +47,7 @@ def json_patch_diff(before: Any, after: Any, path: str = "") -> list[dict]:
             elif key not in after:
                 operations.append({"op": "remove", "path": child_path})
             elif before[key] != after[key]:
-                operations.extend(
-                    json_patch_diff(before[key], after[key], child_path)
-                )
+                operations.extend(json_patch_diff(before[key], after[key], child_path))
         return operations
 
     if isinstance(before, list) and isinstance(after, list):
@@ -58,15 +56,11 @@ def json_patch_diff(before: Any, after: Any, path: str = "") -> list[dict]:
         for key in sorted(set(before_items) | set(after_items)):
             child_path = f"{path}/{key}"
             if key not in before_items:
-                operations.append(
-                    {"op": "add", "path": child_path, "value": after_items[key]}
-                )
+                operations.append({"op": "add", "path": child_path, "value": after_items[key]})
             elif key not in after_items:
                 operations.append({"op": "remove", "path": child_path})
             elif before_items[key] != after_items[key]:
-                operations.extend(
-                    json_patch_diff(before_items[key], after_items[key], child_path)
-                )
+                operations.extend(json_patch_diff(before_items[key], after_items[key], child_path))
         return operations
 
     if before != after:

@@ -73,11 +73,10 @@ async def chat(
             request_payload,
             headers=headers,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return {
             "content": (
-                "MAP 算法服务当前不可用，业务后端已捕获该异常。"
-                "你仍可继续查看前后台页面和管理配置。"
+                "MAP 算法服务当前不可用，业务后端已捕获该异常。你仍可继续查看前后台页面和管理配置。"
             ),
             "meta": {
                 "fallback": True,
@@ -104,7 +103,7 @@ async def chat_stream_v2(
                 headers=headers,
             ):
                 yield chunk
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             error_data = json.dumps(
                 {
                     "error": f"MAP 算法服务不可用: {exc}",
@@ -114,15 +113,13 @@ async def chat_stream_v2(
             )
             done_data = json.dumps(
                 {
-                    "content": (
-                        "MAP 算法服务当前不可用，已自动回退到业务后端兜底响应。"
-                    ),
+                    "content": ("MAP 算法服务当前不可用，已自动回退到业务后端兜底响应。"),
                     "meta": {"fallback": True},
                 },
                 ensure_ascii=False,
             )
-            yield f"event: error\ndata: {error_data}\n\n".encode("utf-8")
-            yield f"event: done\ndata: {done_data}\n\n".encode("utf-8")
+            yield f"event: error\ndata: {error_data}\n\n".encode()
+            yield f"event: done\ndata: {done_data}\n\n".encode()
 
     return StreamingResponse(
         stream(),
@@ -147,11 +144,10 @@ async def chat_flow_v1(
             request_payload,
             headers=headers,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return {
             "content": (
-                "MAP 心流算法服务当前不可用，业务后端已捕获该异常。"
-                "你仍可继续使用全域模式。"
+                "MAP 心流算法服务当前不可用，业务后端已捕获该异常。你仍可继续使用全域模式。"
             ),
             "meta": {
                 "fallback": True,
@@ -180,7 +176,7 @@ async def chat_stream_flow_v1(
                 headers=headers,
             ):
                 yield chunk
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             error_data = json.dumps(
                 {
                     "error": f"MAP 心流算法服务不可用: {exc}",
@@ -191,15 +187,13 @@ async def chat_stream_flow_v1(
             )
             done_data = json.dumps(
                 {
-                    "content": (
-                        "MAP 心流算法服务当前不可用，已自动回退到业务后端兜底响应。"
-                    ),
+                    "content": ("MAP 心流算法服务当前不可用，已自动回退到业务后端兜底响应。"),
                     "meta": {"fallback": True, "mode": "flow"},
                 },
                 ensure_ascii=False,
             )
-            yield f"event: error\ndata: {error_data}\n\n".encode("utf-8")
-            yield f"event: done\ndata: {done_data}\n\n".encode("utf-8")
+            yield f"event: error\ndata: {error_data}\n\n".encode()
+            yield f"event: done\ndata: {done_data}\n\n".encode()
 
     return StreamingResponse(
         stream(),

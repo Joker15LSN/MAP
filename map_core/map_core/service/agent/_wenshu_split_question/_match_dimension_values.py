@@ -27,13 +27,13 @@ async def find_matched_dimension_values(
     query_mode: Literal["publish", "edit"],
 ) -> dict | None:
     """找到和问题匹配的维度值。"""
-    
+
     question_embedding = await aembed_text(question)
     if not question_embedding:
         return None
 
     dimension_collection_name = f"{DIMENSION_DETAIL_COLLECTION_PREFIX}{dimension_code}"
-    
+
     _aclient = milvus_client._client
     if not _aclient:
         return None

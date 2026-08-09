@@ -4,9 +4,10 @@ These tests pin the public JSON contract of every analytics endpoint the
 frontend consumes. They must keep passing as long as response field
 names/types and the query/route semantics stay unchanged.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import mongomock
 
@@ -30,7 +31,7 @@ def _seed_request(
     duration_s: float = 3.0,
     start_ts: datetime | None = None,
 ) -> datetime:
-    now = start_ts or datetime.now(timezone.utc)
+    now = start_ts or datetime.now(UTC)
     service.request_collection.insert_one(
         {
             "request_id": request_id,
@@ -95,7 +96,11 @@ def test_overview_contract() -> None:
         "p95": 2.0,
         "max": 2.0,
     }
-    assert payload["token"] == {"total": 100.0, "avg_per_request": 100.0, "efficiency_per_success_request": 100.0}
+    assert payload["token"] == {
+        "total": 100.0,
+        "avg_per_request": 100.0,
+        "efficiency_per_success_request": 100.0,
+    }
     assert payload["tool_calls"] == {"total": 0, "per_request": 0.0}
     assert payload["scene_confidence_avg"] == {"big_scene": 0.9, "sub_scene": 0.8}
 
@@ -411,7 +416,7 @@ def test_llm_calls_contract() -> None:
 
 def test_llm_calls_empty_payload() -> None:
     service = _make_service()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = service.get_llm_calls(_make_filters(now))
     assert payload == {
         "items": [],
@@ -447,7 +452,9 @@ def test_contract_field_types_are_stable() -> None:
     assert type(overview["tool_calls"]) is dict
     assert type(overview["scene_confidence_avg"]) is dict
 
-    listing = service.list_requests(_make_filters(now), page=1, page_size=10, sort_by="start_ts", sort_order="desc")
+    listing = service.list_requests(
+        _make_filters(now), page=1, page_size=10, sort_by="start_ts", sort_order="desc"
+    )
     assert type(listing["total"]) is int
     assert type(listing["items"]) is list
     for item in listing["items"]:

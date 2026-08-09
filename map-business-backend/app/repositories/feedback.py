@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class FeedbackRepository:
@@ -112,9 +112,7 @@ class FeedbackRepository:
             return row
         raise RuntimeError("feedback upsert lost a race without a row")
 
-    async def get_own(
-        self, message_id: uuid.UUID, user_id: str
-    ) -> MessageFeedback | None:
+    async def get_own(self, message_id: uuid.UUID, user_id: str) -> MessageFeedback | None:
         result = await self._session.execute(
             select(MessageFeedback).where(
                 MessageFeedback.message_id == message_id,
@@ -124,9 +122,7 @@ class FeedbackRepository:
         )
         return result.scalar_one_or_none()
 
-    async def withdraw(
-        self, message_id: uuid.UUID, user_id: str
-    ) -> MessageFeedback | None:
+    async def withdraw(self, message_id: uuid.UUID, user_id: str) -> MessageFeedback | None:
         """Tombstone the current feedback; returns the row or None."""
         now = _utcnow()
         result = await self._session.execute(

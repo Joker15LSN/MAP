@@ -109,10 +109,7 @@ async def test_seed_migration_idempotent_and_downgrade_upgrade(_engine, session)
 
     row = (
         await session.execute(
-            text(
-                "SELECT id, code FROM map_control.workspaces "
-                "WHERE code = :code"
-            ),
+            text("SELECT id, code FROM map_control.workspaces WHERE code = :code"),
             {"code": DEFAULT_WORKSPACE_CODE},
         )
     ).one()

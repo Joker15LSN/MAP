@@ -55,9 +55,7 @@ class _FakeUpstreamPool:
     async def handle_async_request(self, request) -> Any:
         import httpcore
 
-        self._captured["headers"] = {
-            key.decode(): value.decode() for key, value in request.headers
-        }
+        self._captured["headers"] = {key.decode(): value.decode() for key, value in request.headers}
         return httpcore.Response(
             200,
             headers=[(b"content-type", b"application/json")],
@@ -120,9 +118,7 @@ def _parse_traceparent(value: str) -> tuple[str, str]:
     return parts[1], parts[2]
 
 
-def test_request_without_inbound_header_forms_bff_trace(
-    exporter, upstream_capture
-) -> None:
+def test_request_without_inbound_header_forms_bff_trace(exporter, upstream_capture) -> None:
     exporter.clear()
     with TestClient(app) as client:
         response = client.post("/api/chat", json={"query": "hi"})
@@ -155,9 +151,7 @@ def test_request_without_inbound_header_forms_bff_trace(
     assert span_id == format(core_client_span.context.span_id, "016x")
 
 
-def test_request_with_inbound_header_continues_upstream_trace(
-    exporter, upstream_capture
-) -> None:
+def test_request_with_inbound_header_continues_upstream_trace(exporter, upstream_capture) -> None:
     exporter.clear()
     with TestClient(app) as client:
         response = client.post(

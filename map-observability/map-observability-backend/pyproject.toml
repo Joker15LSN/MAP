@@ -22,3 +22,11 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+ignore = ["B008", "RUF001", "RUF003", "UP042"]
+select = ["E", "F", "I", "B", "SIM", "UP", "RUF", "PIE", "BLE"]

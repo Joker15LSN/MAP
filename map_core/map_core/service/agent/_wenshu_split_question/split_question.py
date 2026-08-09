@@ -71,7 +71,7 @@ async def _get_all_metrics_info(
     _aclient = milvus_client._client
     if not _aclient:
         return []
-    
+
     metric_collection_name = (
         METRIC_INFO_PUBLISHED_COLLECTION
         if query_mode == "publish"
@@ -122,7 +122,7 @@ async def _get_all_dimensions_info(
     _aclient = milvus_client._client
     if not _aclient:
         return {}
-    
+
     dimension_collection_name = (
         DIMENSION_INFO_PUBLISHED_COLLECTION
         if query_mode == "publish"
@@ -492,7 +492,7 @@ async def split_question(
 async def _test_split_question() -> None:
     """Test the split_question function with sample questions."""
     from map_core.config.common import DEEPSEEKV3_LOCAL_CONFIG
-    
+
     test_questions = [
         # "2025年各个一级业绩区域的合同额",
         "上个月supos的合同额是多少",
@@ -508,7 +508,7 @@ async def _test_split_question() -> None:
         db_name=MILVUS_DB_NAME,
     )
     await milvus_client.connect()
-    
+
     llm_engine = LLMEngine(config=DEEPSEEKV3_LOCAL_CONFIG)
 
     for question in test_questions:

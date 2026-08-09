@@ -7,7 +7,6 @@ os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_test_state.json")
 
 from app.main import app
 
-
 client = TestClient(app)
 
 

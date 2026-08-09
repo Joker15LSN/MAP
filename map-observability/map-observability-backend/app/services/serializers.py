@@ -3,16 +3,16 @@
 These functions carry no service state (no Mongo / Loki handles) so they can be
 unit-tested in isolation and reused by every domain repository/facade.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from datetime import UTC, datetime
 
 from app.services.log_parser import parse_log_context, resolve_correlation_id
 from app.services.math_utils import compact_confidences, to_float
 
 
-def to_token_total(doc: Dict) -> float:
+def to_token_total(doc: dict) -> float:
     """Extract the total token usage from a request document."""
     usage = doc.get("token_usage_total") or {}
     total = usage.get("total") if isinstance(usage, dict) else {}
@@ -21,7 +21,7 @@ def to_token_total(doc: Dict) -> float:
     return to_float(total.get("total_tokens"), 0.0)
 
 
-def to_scene_confidences(doc: Dict) -> Dict[str, List[float]]:
+def to_scene_confidences(doc: dict) -> dict[str, list[float]]:
     """Extract big-scene / sub-scene confidence lists from a request document."""
     scene_result = doc.get("scene_result") or {}
     big_scenes = scene_result.get("big_scenes") if isinstance(scene_result, dict) else []
@@ -40,7 +40,7 @@ def to_scene_confidences(doc: Dict) -> Dict[str, List[float]]:
     return {"big": big_conf, "sub": sub_conf}
 
 
-def tool_status(raw_status: Optional[str]) -> str:
+def tool_status(raw_status: str | None) -> str:
     """Normalize a tool call status to success / failed / unknown."""
     if raw_status is None:
         return "unknown"
@@ -53,12 +53,12 @@ def tool_status(raw_status: Optional[str]) -> str:
     return "failed"
 
 
-def to_utc_dt(value: object) -> Optional[datetime]:
+def to_utc_dt(value: object) -> datetime | None:
     """Best-effort conversion of a datetime / ISO string to an aware UTC datetime."""
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
     if isinstance(value, str):
         raw = value.strip()
         if not raw:
@@ -66,8 +66,8 @@ def to_utc_dt(value: object) -> Optional[datetime]:
         try:
             parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
             if parsed.tzinfo is None:
-                return parsed.replace(tzinfo=timezone.utc)
-            return parsed.astimezone(timezone.utc)
+                return parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC)
         except ValueError:
             return None
     return None
@@ -75,15 +75,15 @@ def to_utc_dt(value: object) -> Optional[datetime]:
 
 def to_ns(value: datetime) -> int:
     """Convert an aware datetime to nanoseconds since epoch."""
-    dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    return int(dt.astimezone(timezone.utc).timestamp() * 1_000_000_000)
+    dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return int(dt.astimezone(UTC).timestamp() * 1_000_000_000)
 
 
 def json_default(value: object) -> str:
     """JSON default encoder: datetimes become ISO-8601 UTC (Z suffix)."""
     if isinstance(value, datetime):
-        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
     return str(value)
 
 
@@ -102,7 +102,7 @@ def is_retryable_loki_error(exc: RuntimeError) -> bool:
     )
 
 
-def extract_request_ids_from_rows(rows: List[Dict]) -> set[str]:
+def extract_request_ids_from_rows(rows: list[dict]) -> set[str]:
     """Parse request ids (rid/task_id/req_id...) out of raw Loki log rows."""
     result: set[str] = set()
     for row in rows:
@@ -116,7 +116,7 @@ def extract_request_ids_from_rows(rows: List[Dict]) -> set[str]:
     return result
 
 
-def tool_call_identity(row: Dict) -> Tuple[str, str, str, int]:
+def tool_call_identity(row: dict) -> tuple[str, str, str, int]:
     """Identity key used to merge duplicated tool-call rows."""
     agent_code = str(row.get("agent_code") or "unknown_agent")
     tool = str(row.get("tool") or "unknown_tool")
@@ -129,9 +129,9 @@ def tool_call_identity(row: Dict) -> Tuple[str, str, str, int]:
     return agent_code, tool, tool_id, step
 
 
-def merge_tool_call_rows(rows: List[Dict]) -> List[Dict]:
+def merge_tool_call_rows(rows: list[dict]) -> list[dict]:
     """Merge duplicate tool-call rows sharing the same identity into one."""
-    merged: Dict[Tuple[str, str, str, int], Dict] = {}
+    merged: dict[tuple[str, str, str, int], dict] = {}
 
     for row in rows:
         key = tool_call_identity(row)
@@ -164,15 +164,17 @@ def merge_tool_call_rows(rows: List[Dict]) -> List[Dict]:
             current["end_ts"] = row.get("end_ts") or row.get("ts")
 
     merged_rows = list(merged.values())
-    min_utc = datetime.min.replace(tzinfo=timezone.utc)
-    merged_rows.sort(key=lambda item: (to_utc_dt(item.get("ts")) or min_utc, tool_call_identity(item)))
+    min_utc = datetime.min.replace(tzinfo=UTC)
+    merged_rows.sort(
+        key=lambda item: (to_utc_dt(item.get("ts")) or min_utc, tool_call_identity(item))
+    )
     return merged_rows
 
 
-def build_agent_timeline(events: List[Dict]) -> List[Dict]:
+def build_agent_timeline(events: list[dict]) -> list[dict]:
     """Turn agent execution events into a merged start/end timeline."""
-    timeline: List[Dict] = []
-    open_items: Dict[tuple, Dict] = {}
+    timeline: list[dict] = []
+    open_items: dict[tuple, dict] = {}
 
     for event in events:
         key = (
@@ -227,6 +229,8 @@ def build_agent_timeline(events: List[Dict]) -> List[Dict]:
 
         item["duration_s"] = duration_s
 
-    min_utc = datetime.min.replace(tzinfo=timezone.utc)
-    timeline.sort(key=lambda row: ((row.get("start_ts") or row.get("end_ts") or min_utc), row.get("seq", 0)))
+    min_utc = datetime.min.replace(tzinfo=UTC)
+    timeline.sort(
+        key=lambda row: ((row.get("start_ts") or row.get("end_ts") or min_utc), row.get("seq", 0))
+    )
     return timeline

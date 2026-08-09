@@ -93,9 +93,7 @@ def _build_span_exporter() -> Any:
         )
 
         return OTLPSpanExporter(timeout=timeout)
-    raise ValueError(
-        "unsupported OTLP trace protocol; use 'grpc' or 'http/protobuf'"
-    )
+    raise ValueError("unsupported OTLP trace protocol; use 'grpc' or 'http/protobuf'")
 
 
 def instrument_app(app: FastAPI, tracer_provider) -> None:
@@ -155,24 +153,18 @@ def configure_bff_telemetry(app: FastAPI) -> bool:
         resource=Resource.create(
             {
                 "service.name": os.getenv("OTEL_SERVICE_NAME", _SERVICE_NAME),
-                "deployment.environment.name": os.getenv(
-                    "MAP_ENV", "development"
-                ),
+                "deployment.environment.name": os.getenv("MAP_ENV", "development"),
             }
         ),
         # ParentBased first honors the upstream sampled flag; the ratio only
         # decides root spans minted by the BFF itself.
-        sampler=ParentBased(
-            root=TraceIdRatioBased(max(0.0, min(sampling_ratio, 1.0)))
-        ),
+        sampler=ParentBased(root=TraceIdRatioBased(max(0.0, min(sampling_ratio, 1.0)))),
     )
     provider.add_span_processor(
         BatchSpanProcessor(
             _build_span_exporter(),
             max_queue_size=int(os.getenv("MAP_OTEL_MAX_QUEUE_SIZE", "2048")),
-            max_export_batch_size=int(
-                os.getenv("MAP_OTEL_MAX_EXPORT_BATCH_SIZE", "512")
-            ),
+            max_export_batch_size=int(os.getenv("MAP_OTEL_MAX_EXPORT_BATCH_SIZE", "512")),
             # inert in SDK 1.44, but parse via the same helper so a bad
             # MAP_OTEL_EXPORT_TIMEOUT_MS can never crash startup
             export_timeout_millis=int(_export_timeout_seconds() * 1000),

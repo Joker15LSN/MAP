@@ -75,9 +75,7 @@ class FeedbackAggregateRequest(BaseModel):
     message_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
 
 
-async def _owned_message(
-    message_id: uuid.UUID, session, principal: RequestPrincipal
-) -> Any:
+async def _owned_message(message_id: uuid.UUID, session, principal: RequestPrincipal) -> Any:
     """Fetch the message and verify (workspace, owner) ownership; 404 else."""
     repo = ConversationRepository(session)
     workspace_id = _workspace_uuid(principal)
@@ -198,16 +196,20 @@ async def aggregate_feedback(
         raise HTTPException(status_code=404, detail="workspace not found")
     # Scope the messages to this user's conversations inside the SQL.
     visible_ids = (
-        await session.execute(
-            select(Message.id)
-            .join(Conversation, Message.conversation_id == Conversation.id)
-            .where(
-                Message.id.in_(payload.message_ids),
-                Message.workspace_id == workspace_id,
-                Conversation.owner_user_id == principal.user_id,
+        (
+            await session.execute(
+                select(Message.id)
+                .join(Conversation, Message.conversation_id == Conversation.id)
+                .where(
+                    Message.id.in_(payload.message_ids),
+                    Message.workspace_id == workspace_id,
+                    Conversation.owner_user_id == principal.user_id,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     counts = await FeedbackRepository(session).count_by_message_ids(visible_ids)
     # Every requested (visible) message appears; missing ones are zeroed so
     # the helpful rate denominator is explicit.
@@ -227,9 +229,7 @@ async def conversation_feedback_summary(
     workspace_id = _workspace_uuid(principal)
     if workspace_id is None:
         raise HTTPException(status_code=404, detail="conversation not found")
-    conversation = await repo.get_conversation(
-        conversation_id, workspace_id, principal.user_id
-    )
+    conversation = await repo.get_conversation(conversation_id, workspace_id, principal.user_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="conversation not found")
     messages = await repo.list_messages(conversation_id)

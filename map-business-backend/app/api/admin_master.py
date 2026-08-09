@@ -47,7 +47,6 @@ async def _audited_update(request, session, resource_type, resource_id, action, 
     )
 
 
-
 def _now_iso() -> str:
     return datetime.now().isoformat()
 
@@ -132,7 +131,11 @@ async def put_master_agent(
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> MasterAgentConfig:
     state, _ = await _audited_update(
-        request, session, "admin_master", "master_agent", "update",
+        request,
+        session,
+        "admin_master",
+        "master_agent",
+        "update",
         lambda draft: setattr(draft, "master_agent", payload),
     )
     return state.master_agent
@@ -148,11 +151,7 @@ async def publish_master_agent(
     def _publish(draft: AdminState) -> dict[str, Any]:
         master = draft.master_agent
         previous = next(
-            (
-                item
-                for item in master.prompt_versions
-                if item.version == master.current_version
-            ),
+            (item for item in master.prompt_versions if item.version == master.current_version),
             None,
         )
         version = (payload.version or "").strip()
@@ -185,11 +184,7 @@ async def publish_master_agent(
             created_at=_now_iso(),
         )
         draft.release_history.insert(0, record)
-        previous_snapshot = (
-            _master_prompt_snapshot(previous)
-            if previous is not None
-            else ""
-        )
+        previous_snapshot = _master_prompt_snapshot(previous) if previous is not None else ""
         return {
             "version": created.model_dump(),
             "release": record.model_dump(),
@@ -208,7 +203,9 @@ async def publish_master_agent(
 
 
 @router.get("/api/admin/master-agent/versions")
-async def list_master_versions(store: ConfigRepository = Depends(get_store)) -> list[MasterPromptVersion]:
+async def list_master_versions(
+    store: ConfigRepository = Depends(get_store),
+) -> list[MasterPromptVersion]:
     return store.load().master_agent.prompt_versions
 
 

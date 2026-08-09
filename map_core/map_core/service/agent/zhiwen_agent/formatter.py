@@ -26,7 +26,7 @@ def format_search_item(item_data: Union[dict, RetrieveItemSchema]) -> Optional[s
         contents = item_data.get("contents")
         source = item_data.get("source")
         create_time = item_data.get("create_time") if item_data.get("create_time")  else 'unknown'
-        create_time = create_time[:10] # type: ignore #仅保留yyyy-mm-dd 
+        create_time = create_time[:10] # type: ignore #仅保留yyyy-mm-dd
         if contents:
             return ITEM_TEMPLATE.format(
                 title=title,

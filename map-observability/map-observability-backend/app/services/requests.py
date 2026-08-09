@@ -4,9 +4,10 @@ Keeps the analytics facades thin by owning the request_records collection
 access and every request-level payload serialization. No service coupling:
 inject the raw pymongo/mongomock collection.
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.services.math_utils import average, percentile, safe_div, to_float
 from app.services.serializers import to_scene_confidences, to_token_total
@@ -20,12 +21,12 @@ class RequestRepository:
 
     def find(
         self,
-        match: Dict,
-        projection: Dict,
-        sort: Optional[list] = None,
-        skip: Optional[int] = None,
-        limit: Optional[int] = None,
-    ) -> List[Dict]:
+        match: dict,
+        projection: dict,
+        sort: list | None = None,
+        skip: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
         cursor = self.collection.find(match, projection)
         if sort:
             cursor = cursor.sort(*sort) if len(sort) == 2 else cursor.sort(sort)
@@ -35,23 +36,25 @@ class RequestRepository:
             cursor = cursor.limit(limit)
         return list(cursor)
 
-    def find_one(self, match: Dict, projection: Optional[Dict] = None) -> Optional[Dict]:
+    def find_one(self, match: dict, projection: dict | None = None) -> dict | None:
         return self.collection.find_one(match, projection)
 
-    def count(self, match: Dict) -> int:
+    def count(self, match: dict) -> int:
         return self.collection.count_documents(match)
 
-    def aggregate(self, pipeline: List[Dict]) -> List[Dict]:
+    def aggregate(self, pipeline: list[dict]) -> list[dict]:
         return list(self.collection.aggregate(pipeline))
 
 
-def build_overview_payload(docs: List[Dict], tool_count_map: Dict[str, int]) -> Dict:
+def build_overview_payload(docs: list[dict], tool_count_map: dict[str, int]) -> dict:
     """Serialize request documents into the /overview response body."""
     total_requests = len(docs)
     success_requests = sum(1 for doc in docs if str(doc.get("status", "")).lower() == "success")
     error_requests = total_requests - success_requests
 
-    durations = [to_float(doc.get("duration_s"), 0.0) for doc in docs if doc.get("duration_s") is not None]
+    durations = [
+        to_float(doc.get("duration_s"), 0.0) for doc in docs if doc.get("duration_s") is not None
+    ]
     token_totals = [to_token_total(doc) for doc in docs]
 
     total_tool_calls = sum(tool_count_map.values())
@@ -91,7 +94,7 @@ def build_overview_payload(docs: List[Dict], tool_count_map: Dict[str, int]) -> 
     }
 
 
-def build_trends_rows(items: List[Dict]) -> List[Dict]:
+def build_trends_rows(items: list[dict]) -> list[dict]:
     """Serialize aggregate rows into the /trends response body."""
     rows = []
     for item in items:
@@ -109,7 +112,7 @@ def build_trends_rows(items: List[Dict]) -> List[Dict]:
     return rows
 
 
-def build_users_rows(docs: List[Dict], tool_count_map: Dict[str, int], top_n: int) -> List[Dict]:
+def build_users_rows(docs: list[dict], tool_count_map: dict[str, int], top_n: int) -> list[dict]:
     """Serialize request documents into the /users response body."""
     from collections import defaultdict
 
@@ -154,7 +157,7 @@ def build_users_rows(docs: List[Dict], tool_count_map: Dict[str, int], top_n: in
     return rows[:top_n]
 
 
-def build_request_items(docs: List[Dict], tool_count_map: Dict[str, int]) -> List[Dict]:
+def build_request_items(docs: list[dict], tool_count_map: dict[str, int]) -> list[dict]:
     """Serialize request documents into /requests list items."""
     items = []
     for doc in docs:
@@ -177,7 +180,7 @@ def build_request_items(docs: List[Dict], tool_count_map: Dict[str, int]) -> Lis
     return items
 
 
-def build_request_payload(request_doc: Dict) -> Dict:
+def build_request_payload(request_doc: dict) -> dict:
     """Serialize a single request document for /requests/{id} detail."""
     return {
         **request_doc,

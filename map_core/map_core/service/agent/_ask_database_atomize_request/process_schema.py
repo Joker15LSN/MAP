@@ -128,7 +128,7 @@ async def _hybrid_search_prune(
     retrieved_names = set()
     allowed_columns = {c.get("name") for c in data_model.columns}
     logger.debug(f"Allowed columns from Selection: {allowed_columns}")
-    
+
     for hit in hits:
         entity = hit.entity if hasattr(hit, "entity") else hit.get("entity", hit)
         col_name = entity.get("column_name", "")
@@ -138,14 +138,14 @@ async def _hybrid_search_prune(
         examples = [e for e in examples_text.split(" ") if e] if examples_text else []
 
         alias = col_desc or col_name
-        
+
         if col_name in retrieved_names:
             continue
-            
+
         if col_name not in allowed_columns:
             logger.debug(f"Hybrid search hit '{col_name}' ({alias}) is NOT in allowed_columns, discarding.")
             continue
-            
+
         retrieved_names.add(col_name)
 
         relevant_columns.append({

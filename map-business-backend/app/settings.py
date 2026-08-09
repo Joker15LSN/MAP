@@ -32,9 +32,7 @@ class Settings:
     state_file: str = field(
         default_factory=lambda: _env_or("MAP_BFF_STATE_FILE", "/app/data/admin_state.json")
     )
-    auth_mode: AuthMode = field(
-        default_factory=lambda: AuthMode(_env_or("MAP_AUTH_MODE", "dev"))
-    )
+    auth_mode: AuthMode = field(default_factory=lambda: AuthMode(_env_or("MAP_AUTH_MODE", "dev")))
     env: str = field(default_factory=lambda: _env_or("MAP_ENV", "dev").strip().lower())
     default_workspace_id: str = field(
         default_factory=lambda: _env_or("MAP_DEFAULT_WORKSPACE_ID", DEFAULT_WORKSPACE_ID)
@@ -45,8 +43,9 @@ class Settings:
         default_factory=lambda: _env_or("MAP_TRUSTED_PROXY_SECRET", "")
     )
     trusted_proxy_required: bool = field(
-        default_factory=lambda: _env_or("MAP_TRUSTED_PROXY_REQUIRED", "true").lower()
-        in {"1", "true", "yes"}
+        default_factory=lambda: (
+            _env_or("MAP_TRUSTED_PROXY_REQUIRED", "true").lower() in {"1", "true", "yes"}
+        )
     )
     # Comma-separated shared secrets for service-to-service bearer tokens
     # (rotation: all values stay valid until removed).

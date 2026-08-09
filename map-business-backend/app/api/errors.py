@@ -90,9 +90,7 @@ def install_error_handlers(app: FastAPI) -> None:
         return http_exception_response(request, exc)
 
     @app.exception_handler(RequestValidationError)
-    async def _validation_exception(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
+    async def _validation_exception(request: Request, exc: RequestValidationError) -> JSONResponse:
         if not _is_new_api(request.url.path):
             return JSONResponse(status_code=422, content={"detail": exc.errors()})
         return JSONResponse(

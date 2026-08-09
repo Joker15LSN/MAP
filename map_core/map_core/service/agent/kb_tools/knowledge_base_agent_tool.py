@@ -279,7 +279,7 @@ class MountedKBSearchAgent(TraceableAgent):
             return f"{type(exc).__name__}: {detail}; request={method} {url}"
 
         return f"{type(exc).__name__}: {detail}"
-    
+
     def _build_disassembly_json_schema(self, max_sub_query: int):
         adapter = TypeAdapter(list[SearchKBChunkInput])
         schema = adapter.json_schema()

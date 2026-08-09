@@ -125,9 +125,7 @@ async def test_like_dislike_reason_withdraw_single_row(app_and_session) -> None:
         assert count == 0  # at most one current row, tombstone excluded
         total = (
             await session.execute(
-                text(
-                    "SELECT count(*) FROM map_control.message_feedback WHERE message_id = :mid"
-                ),
+                text("SELECT count(*) FROM map_control.message_feedback WHERE message_id = :mid"),
                 {"mid": uuid.UUID(message_id)},
             )
         ).scalar_one()
@@ -138,9 +136,7 @@ async def test_put_replay_and_concurrent_puts(app_and_session) -> None:
     app, _ = app_and_session
     _, message_id = await _conversation_with_assistant_message(app)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        await client.put(
-            f"/api/v1/messages/{message_id}/feedback", json={"rating": "helpful"}
-        )
+        await client.put(f"/api/v1/messages/{message_id}/feedback", json={"rating": "helpful"})
         replay = await client.put(
             f"/api/v1/messages/{message_id}/feedback", json={"rating": "helpful"}
         )
@@ -184,9 +180,7 @@ async def test_two_users_independent_feedback(app_and_session) -> None:
 
     headers = {"X-UserId": "user-B", "X-Trusted-Proxy-Secret": "s3cret"}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        await client.put(
-            f"/api/v1/messages/{message_id}/feedback", json={"rating": "helpful"}
-        )
+        await client.put(f"/api/v1/messages/{message_id}/feedback", json={"rating": "helpful"})
     async with AsyncClient(transport=ASGITransport(app=other_app), base_url="http://test") as other:
         # B cannot see A's conversation -> 404, no cross-user write.
         response = await other.put(
@@ -368,9 +362,7 @@ async def test_legacy_delete_facade_still_works(app_and_session) -> None:
             json={"rating": "helpful"},
         )
         # Legacy delete targets legacy rows only; new-format rows are untouched.
-        response = await client.delete(
-            f"/api/v1/messages/{message_id}/feedback/thumbs_up"
-        )
+        response = await client.delete(f"/api/v1/messages/{message_id}/feedback/thumbs_up")
         assert response.status_code == 200
         current = await client.get(f"/api/v1/messages/{message_id}/feedback")
         assert current.json()["rating"] == "helpful"

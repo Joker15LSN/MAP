@@ -66,9 +66,7 @@ async def ready(request: Request) -> JSONResponse:
         try:
             async with engine.connect() as conn:
                 current = (
-                    await conn.execute(
-                        text("SELECT version_num FROM map_control.alembic_version")
-                    )
+                    await conn.execute(text("SELECT version_num FROM map_control.alembic_version"))
                 ).scalar_one_or_none()
             checks["migration"] = {
                 "current": current,
@@ -86,10 +84,7 @@ async def ready(request: Request) -> JSONResponse:
             async with engine.connect() as conn:
                 seeded = (
                     await conn.execute(
-                        text(
-                            "SELECT 1 FROM map_control.workspaces "
-                            "WHERE code = :code LIMIT 1"
-                        ),
+                        text("SELECT 1 FROM map_control.workspaces WHERE code = :code LIMIT 1"),
                         {"code": DEFAULT_WORKSPACE_CODE},
                     )
                 ).scalar_one_or_none()

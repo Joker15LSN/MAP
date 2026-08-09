@@ -19,8 +19,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-logger = logging.getLogger(__name__)
-
 from .api.admin_assets import router as admin_assets_router
 from .api.admin_config import router as admin_config_router
 from .api.admin_master import router as admin_master_router
@@ -40,6 +38,8 @@ from .services.stream_registry import StreamRegistry
 from .settings import Settings, load_settings
 from .store import AdminStateStore
 from .telemetry import configure_bff_telemetry, shutdown_bff_telemetry
+
+logger = logging.getLogger(__name__)
 
 
 def validate_settings(settings: Settings) -> None:
@@ -91,7 +91,7 @@ def create_app(
             from .services.config_mutation import reconcile_config_mutations
 
             await reconcile_config_mutations(get_session_factory(), store)
-        except Exception:  # noqa: BLE001 - reconciler must not block startup
+        except Exception:
             logger.exception("config mutation reconciler failed at startup")
         yield
         shutdown_bff_telemetry()
@@ -152,9 +152,10 @@ def create_app(
         # one when the client did not provide one.
         request.state.request_id = parse_request_id(request.headers.get("X-Request-ID"))
         request.state.session_id = parse_optional_id(request.headers.get("X-Session-ID"))
-        request.state.workspace_id = parse_optional_id(
-            request.headers.get("X-Workspace-ID")
-        ) or settings.default_workspace_id
+        request.state.workspace_id = (
+            parse_optional_id(request.headers.get("X-Workspace-ID"))
+            or settings.default_workspace_id
+        )
         response = await call_next(request)
         response.headers["X-Request-ID"] = request.state.request_id
         return response

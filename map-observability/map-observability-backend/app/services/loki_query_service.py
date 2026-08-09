@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timezone
-from typing import Dict, List
+from datetime import UTC, datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -31,7 +30,7 @@ class LokiQueryService:
         raw = f"{self.grafana_user}:{self.grafana_password}".encode()
         return f"Basic {base64.b64encode(raw).decode('utf-8')}"
 
-    def _request_json(self, path: str, params: Dict[str, str]) -> Dict:
+    def _request_json(self, path: str, params: dict[str, str]) -> dict:
         if not self.is_enabled():
             raise RuntimeError("Grafana/Loki integration is not configured")
 
@@ -62,7 +61,7 @@ class LokiQueryService:
         end_ns: int,
         limit: int = 200,
         direction: str = "backward",
-    ) -> List[Dict]:
+    ) -> list[dict]:
         path = f"/api/datasources/proxy/uid/{self.loki_ds_uid}/loki/api/v1/query_range"
         response = self._request_json(
             path=path,
@@ -79,7 +78,7 @@ class LokiQueryService:
         if not isinstance(result, list):
             return []
 
-        rows: List[Dict] = []
+        rows: list[dict] = []
         for stream in result:
             stream_labels = stream.get("stream") if isinstance(stream, dict) else {}
             values = stream.get("values") if isinstance(stream, dict) else []
@@ -93,7 +92,7 @@ class LokiQueryService:
                 line = str(raw_item[1])
                 try:
                     ts_int = int(ts_ns)
-                    ts_utc = datetime.fromtimestamp(ts_int / 1_000_000_000, tz=timezone.utc).isoformat()
+                    ts_utc = datetime.fromtimestamp(ts_int / 1_000_000_000, tz=UTC).isoformat()
                 except (ValueError, OSError):
                     ts_utc = None
                 rows.append(

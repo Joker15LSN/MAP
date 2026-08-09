@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.dependencies import get_correlation_service
@@ -14,7 +12,7 @@ router = APIRouter(tags=["correlation"])
 def time_align(
     start_local: str = Query(...),
     end_local: str = Query(...),
-    tz: Optional[str] = Query(default=None),
+    tz: str | None = Query(default=None),
     buffer_seconds: int = Query(default=120, ge=0, le=3600),
     service: CorrelationService = Depends(get_correlation_service),
 ) -> dict:
@@ -33,7 +31,7 @@ def time_align(
 def correlation_by_rid(
     request_id: str,
     container: str = Query(...),
-    levels: Optional[str] = Query(default=None),
+    levels: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=10),
     window_sec: int = Query(default=120, ge=0, le=3600),
@@ -62,12 +60,12 @@ def correlation_errors(
     container: str = Query(...),
     start_local: str = Query(...),
     end_local: str = Query(...),
-    tz: Optional[str] = Query(default=None),
-    keywords: Optional[str] = Query(default=None),
-    levels: Optional[str] = Query(default=None),
-    staff_code: Optional[str] = Query(default=None),
-    session_id: Optional[str] = Query(default=None),
-    request_id: Optional[str] = Query(default=None),
+    tz: str | None = Query(default=None),
+    keywords: str | None = Query(default=None),
+    levels: str | None = Query(default=None),
+    staff_code: str | None = Query(default=None),
+    session_id: str | None = Query(default=None),
+    request_id: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=10),
     buffer_seconds: int = Query(default=120, ge=0, le=3600),
@@ -102,9 +100,9 @@ def correlation_tool_call(
     request_id: str = Query(...),
     container: str = Query(...),
     tool: str = Query(...),
-    tool_id: Optional[str] = Query(default=None),
-    step: Optional[int] = Query(default=None, ge=0),
-    levels: Optional[str] = Query(default=None),
+    tool_id: str | None = Query(default=None),
+    step: int | None = Query(default=None, ge=0),
+    levels: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=10),
     window_sec: int = Query(default=120, ge=0, le=3600),

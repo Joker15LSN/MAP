@@ -4,7 +4,6 @@ import json
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import replace
 from datetime import datetime
-from typing import Dict, List, Optional
 
 from pymongo.database import Database
 
@@ -115,9 +114,9 @@ class AnalyticsService:
         self,
         database: Database,
         settings: Settings,
-        collections: Optional[MongoCollections] = None,
-        loki_query_service: Optional[LokiQueryService] = None,
-        trusted_container_filters: Optional[Iterable[str]] = None,
+        collections: MongoCollections | None = None,
+        loki_query_service: LokiQueryService | None = None,
+        trusted_container_filters: Iterable[str] | None = None,
     ) -> None:
         self.database = database
         self.settings = settings
@@ -184,7 +183,9 @@ class AnalyticsService:
             cursor = chunk_end + 1
         return collected_ids
 
-    def _request_id_set_from_container_fallback(self, filters: FilterOptions, container: str) -> set[str]:
+    def _request_id_set_from_container_fallback(
+        self, filters: FilterOptions, container: str
+    ) -> set[str]:
         match = build_request_match(filters)
         candidate_count = self.request_collection.count_documents(match)
         cursor = self.request_collection.find(
@@ -203,7 +204,11 @@ class AnalyticsService:
         matched: set[str] = set()
         for doc in candidates:
             request_id = str(doc.get("request_id"))
-            raw_start = doc.get("start_ts") if isinstance(doc.get("start_ts"), datetime) else filters.start_ts
+            raw_start = (
+                doc.get("start_ts")
+                if isinstance(doc.get("start_ts"), datetime)
+                else filters.start_ts
+            )
             raw_end = doc.get("end_ts") if isinstance(doc.get("end_ts"), datetime) else raw_start
             start_ns = max(0, to_ns(raw_start) - verify_window_ns)
             end_ns = max(start_ns, to_ns(raw_end) + verify_window_ns)
@@ -293,9 +298,9 @@ class AnalyticsService:
                 raise
             return self._request_id_set_from_container_fallback(filters, normalized_container)
 
-    def _build_request_match(self, filters: FilterOptions, include_container: bool = False) -> Dict:
+    def _build_request_match(self, filters: FilterOptions, include_container: bool = False) -> dict:
         match = build_request_match(filters)
-        normalized_container: Optional[str] = None
+        normalized_container: str | None = None
         effective_tool = str(filters.tool or "").strip() or None
 
         if include_container and filters.container:
@@ -308,13 +313,19 @@ class AnalyticsService:
         if filters.agent_code:
             request_id_sets.append(self._request_id_set_from_agents(filters))
         if effective_tool:
-            request_id_sets.append(self._request_id_set_from_tools(replace(filters, tool=effective_tool)))
+            request_id_sets.append(
+                self._request_id_set_from_tools(replace(filters, tool=effective_tool))
+            )
         if (
             include_container
             and normalized_container
             and self._should_filter_container_with_loki(normalized_container)
         ):
-            request_id_sets.append(self._request_id_set_from_container(replace(filters, container=normalized_container)))
+            request_id_sets.append(
+                self._request_id_set_from_container(
+                    replace(filters, container=normalized_container)
+                )
+            )
             mapped_tool = mapped_tool_for_container(normalized_container)
             if mapped_tool and mapped_tool != effective_tool:
                 request_id_sets.append(
@@ -334,7 +345,7 @@ class AnalyticsService:
 
         return match
 
-    def _tool_call_count_map(self, request_ids: Iterable[str]) -> Dict[str, int]:
+    def _tool_call_count_map(self, request_ids: Iterable[str]) -> dict[str, int]:
         ids = [request_id for request_id in request_ids if request_id]
         if not ids:
             return {}
@@ -343,15 +354,19 @@ class AnalyticsService:
             {"$match": {"request_id": {"$in": ids}}},
             {"$group": {"_id": "$request_id", "count": {"$sum": 1}}},
         ]
-        return {item["_id"]: int(item.get("count", 0)) for item in self.tool_collection.aggregate(pipeline)}
+        return {
+            item["_id"]: int(item.get("count", 0))
+            for item in self.tool_collection.aggregate(pipeline)
+        }
 
-    def get_overview(self, filters: FilterOptions) -> Dict:
+    def get_overview(self, filters: FilterOptions) -> dict:
         match = self._build_request_match(filters)
         docs = self.request_repo.find(match, OVERVIEW_PROJECTION)
         request_ids = [doc.get("request_id") for doc in docs if doc.get("request_id")]
         tool_count_map = self._tool_call_count_map(request_ids)
         return build_overview_payload(docs, tool_count_map)
-    def get_trends(self, filters: FilterOptions, granularity: str) -> List[Dict]:
+
+    def get_trends(self, filters: FilterOptions, granularity: str) -> list[dict]:
         match = self._build_request_match(filters)
         unit = "day" if granularity == "day" else "hour"
 
@@ -376,9 +391,7 @@ class AnalyticsService:
                     "_id": "$bucket",
                     "total_requests": {"$sum": 1},
                     "success_requests": {
-                        "$sum": {
-                            "$cond": [{"$eq": [{"$toLower": "$status"}, "success"]}, 1, 0]
-                        }
+                        "$sum": {"$cond": [{"$eq": [{"$toLower": "$status"}, "success"]}, 1, 0]}
                     },
                     "avg_duration_s": {"$avg": "$duration_s"},
                     "token_total": {"$sum": "$token_total"},
@@ -389,13 +402,15 @@ class AnalyticsService:
 
         items = self.request_repo.aggregate(pipeline)
         return build_trends_rows(items)
-    def get_users(self, filters: FilterOptions, top_n: int) -> List[Dict]:
+
+    def get_users(self, filters: FilterOptions, top_n: int) -> list[dict]:
         match = self._build_request_match(filters)
         docs = self.request_repo.find(match, USERS_PROJECTION)
         request_ids = [doc.get("request_id") for doc in docs if doc.get("request_id")]
         tool_count_map = self._tool_call_count_map(request_ids)
         return build_users_rows(docs, tool_count_map, top_n)
-    def _group_agent_executions(self, filters: FilterOptions, request_ids: List[str]) -> List[Dict]:
+
+    def _group_agent_executions(self, filters: FilterOptions, request_ids: list[str]) -> list[dict]:
         if not request_ids:
             return []
 
@@ -438,7 +453,7 @@ class AnalyticsService:
 
         return list(self.agent_collection.aggregate(pipeline))
 
-    def get_agents(self, filters: FilterOptions, top_n: int) -> List[Dict]:
+    def get_agents(self, filters: FilterOptions, top_n: int) -> list[dict]:
         request_match = self._build_request_match(filters)
         request_docs = self.request_repo.find(
             request_match, {"_id": 0, "request_id": 1, "status": 1}
@@ -450,9 +465,12 @@ class AnalyticsService:
         }
 
         executions = self._group_agent_executions(filters, list(request_status_map.keys()))
-        rows = build_agents_rows(executions, request_status_map, self.settings.slow_call_threshold_s)
+        rows = build_agents_rows(
+            executions, request_status_map, self.settings.slow_call_threshold_s
+        )
         return rows[:top_n]
-    def get_tools(self, filters: FilterOptions, top_n: int) -> Dict:
+
+    def get_tools(self, filters: FilterOptions, top_n: int) -> dict:
         request_match = self._build_request_match(filters)
         request_docs = self.request_repo.find(
             request_match, {"_id": 0, "request_id": 1, "duration_s": 1}
@@ -475,7 +493,8 @@ class AnalyticsService:
             {"_id": 0, "tool": 1, "status": 1, "request_id": 1, "duration_s": 1},
         )
         return build_tools_payload(tool_docs, request_duration_map, top_n)
-    def get_llm_calls(self, filters: FilterOptions, top_n: int = 200) -> Dict:
+
+    def get_llm_calls(self, filters: FilterOptions, top_n: int = 200) -> dict:
         request_match = self._build_request_match(filters)
         request_ids = [
             doc.get("request_id")
@@ -487,6 +506,7 @@ class AnalyticsService:
 
         items = self.llm_repo.find_for_request_ids(request_ids, filters.agent_code, top_n)
         return build_llm_calls_payload(items)
+
     def list_requests(
         self,
         filters: FilterOptions,
@@ -494,7 +514,7 @@ class AnalyticsService:
         page_size: int,
         sort_by: str,
         sort_order: str,
-    ) -> Dict:
+    ) -> dict:
         match = self._build_request_match(filters, include_container=True)
         total = self.request_repo.count(match)
 
@@ -520,10 +540,11 @@ class AnalyticsService:
             "page_size": page_size,
             "items": items,
         }
+
     def iter_request_export_jsonl(
         self,
         filters: FilterOptions,
-        request_ids: Optional[Sequence[str]] = None,
+        request_ids: Sequence[str] | None = None,
         sort_by: str = "start_ts",
         sort_order: str = "desc",
     ) -> Iterator[str]:
@@ -533,7 +554,9 @@ class AnalyticsService:
             selected_set = set(selected_ids)
             request_filter = match.get("request_id")
             if isinstance(request_filter, dict) and "$in" in request_filter:
-                selected_set = selected_set.intersection({str(item) for item in request_filter.get("$in", [])})
+                selected_set = selected_set.intersection(
+                    {str(item) for item in request_filter.get("$in", [])}
+                )
             elif request_filter:
                 selected_set = selected_set.intersection({str(request_filter)})
             match["request_id"] = {"$in": sorted(selected_set)}
@@ -559,9 +582,7 @@ class AnalyticsService:
 
         return generate()
 
-
-
-    def get_request_detail(self, request_id: str) -> Dict:
+    def get_request_detail(self, request_id: str) -> dict:
         request_doc = self.request_repo.find_one({"request_id": request_id}, DETAIL_PROJECTION)
         if not request_doc:
             raise KeyError(f"request_id={request_id} not found")

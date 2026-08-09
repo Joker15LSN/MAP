@@ -86,9 +86,7 @@ def resolve_principal(request: Request) -> RequestPrincipal:
             if not settings.trusted_proxy_secret or not constant_time_equal(
                 secret, settings.trusted_proxy_secret
             ):
-                raise _unauthorized(
-                    message="untrusted proxy identity"
-                ) from None
+                raise _unauthorized(message="untrusted proxy identity") from None
         subject = (request.headers.get("X-UserId") or "").strip()
         if not subject:
             raise _unauthorized(message="missing X-UserId") from None

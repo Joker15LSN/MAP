@@ -188,7 +188,7 @@ async def test_error_then_done_keeps_error_fact(app_and_core, session) -> None:
 async def test_bad_json_frame_marks_failed(app_and_core, session) -> None:
     app, _ = app_and_core
     app.state.core_client = FakeStreamCoreClient(
-        stream=b'event: content_delta\ndata: {not-json}\n\nevent: done\ndata: {}\n\n'
+        stream=b"event: content_delta\ndata: {not-json}\n\nevent: done\ndata: {}\n\n"
     )
     async with await _client(app) as client:
         conversation_id = await _new_conversation(client)
@@ -208,8 +208,7 @@ async def test_duplicate_done_is_idempotent(app_and_core, session) -> None:
     app, _ = app_and_core
     app.state.core_client = FakeStreamCoreClient(
         stream=(
-            b'event: done\ndata: {"content":"once"}\n\n'
-            b'event: done\ndata: {"content":"twice"}\n\n'
+            b'event: done\ndata: {"content":"once"}\n\nevent: done\ndata: {"content":"twice"}\n\n'
         )
     )
     async with await _client(app) as client:

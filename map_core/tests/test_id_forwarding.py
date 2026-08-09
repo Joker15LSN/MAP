@@ -20,7 +20,11 @@ import pytest
 from fastapi import Request
 from starlette.datastructures import Headers
 
-from map_core.routers import flow_domain_router, global_domain_router, master_pipeline_router
+from map_core.routers import (
+    flow_domain_router,
+    global_domain_router,
+    master_pipeline_router,
+)
 from map_core.service.master_pipeline import MasterPipeline
 
 UUID4_HEX = re.compile(r"^[0-9a-f]{32}$")

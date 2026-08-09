@@ -117,17 +117,15 @@ def normalize_tool_name(raw_tool_name: str) -> str | None:
     if not cleaned:
         return None
     mapped = TOOL_NAME_ALIASES.get(cleaned, cleaned)
-    if (
-        mapped in KNOWN_TOOL_NAMES
-        or mapped.startswith("mcp__")
-        or mapped.startswith("skill__")
-    ):
+    if mapped in KNOWN_TOOL_NAMES or mapped.startswith(("mcp__", "skill__")):
         return mapped
     return None
 
 
 def mcp_tool_runtime_name(server_id: str, tool_name: str) -> str:
-    return f"mcp__{slugify(server_id, prefix='server').replace('-', '_')}__{slugify(tool_name, prefix='tool').replace('-', '_')}"
+    server = slugify(server_id, prefix="server").replace("-", "_")
+    tool = slugify(tool_name, prefix="tool").replace("-", "_")
+    return f"mcp__{server}__{tool}"
 
 
 def skill_runtime_tool_name(skill_id: str) -> str:
@@ -197,9 +195,7 @@ def build_scene_selection_payload(state: AdminState) -> dict[str, Any]:
 def derive_agent_tool_names(state: AdminState, agent: BusinessAgentConfig) -> list[str]:
     tool_names: list[str] = [
         normalized
-        for normalized in (
-            normalize_tool_name(tool_name) for tool_name in (agent.tools or [])
-        )
+        for normalized in (normalize_tool_name(tool_name) for tool_name in (agent.tools or []))
         if normalized is not None
     ]
     mcp_by_id = {server.server_id: server for server in state.mcp_servers}
@@ -266,15 +262,14 @@ def build_dispatch_config_payload(state: AdminState) -> dict[str, Any]:
             or "你是业务智能体，请根据用户问题给出准确、简洁、可执行的回答。"
         )
         additional_user_prompt = (
-            (agent.prompt_config.user_prompt if agent.prompt_config else "").strip()
-        )
+            agent.prompt_config.user_prompt if agent.prompt_config else ""
+        ).strip()
         if additional_user_prompt in {"", "{query}"}:
             additional_user_prompt = ""
 
         model_row = resolve_large_model_row(
             state,
-            (agent.prompt_config.base_model if agent.prompt_config else None)
-            or agent.model,
+            (agent.prompt_config.base_model if agent.prompt_config else None) or agent.model,
         )
         llm_config = None
         if model_row is not None:
@@ -291,11 +286,16 @@ def build_dispatch_config_payload(state: AdminState) -> dict[str, Any]:
             "additional_user_prompt": additional_user_prompt,
             "tool_names": normalized_tools,
             "max_steps": 1 if agent_code == "General_Assistant" else 2,
-            "description": agent.description.strip() or agent.scene_name.strip() or agent.display_name.strip() or agent_code,
+            "description": agent.description.strip()
+            or agent.scene_name.strip()
+            or agent.display_name.strip()
+            or agent_code,
             "force_tool_call": True,
             "tool_internal_prompts": [
                 item.model_dump()
-                for item in (agent.prompt_config.tool_internal_prompts if agent.prompt_config else [])
+                for item in (
+                    agent.prompt_config.tool_internal_prompts if agent.prompt_config else []
+                )
                 if item.enabled
             ],
             "resource_mounts": [item.model_dump() for item in agent.resource_mounts],

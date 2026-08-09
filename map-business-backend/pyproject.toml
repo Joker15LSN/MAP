@@ -39,5 +39,5 @@ line-length = 100
 [tool.ruff.lint]
 # B008: FastAPI idiom (Depends() in argument defaults); RUF001/RUF003:
 # Chinese product copy legitimately uses fullwidth punctuation.
-ignore = ["B008", "RUF001", "RUF003"]
+ignore = ["B008", "RUF001", "RUF003", "UP042"]  # UP042: str+Enum 既有设计
 select = ["E", "F", "I", "B", "SIM", "UP", "RUF", "PIE", "BLE"]

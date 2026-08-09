@@ -75,7 +75,7 @@ async def extract_intent(question: str, llm: LLMEngine) -> CalculationIntent:
     """
     prompt = f"""--- Task ---
 请分析以下问题，提取出需要计算的指标名称、基础计算大类(base_calculation)以及时间粒度(time_granularity)。
-    
+
 --- 问题 ---
 {question}
 
@@ -125,8 +125,8 @@ NOTE: 只有问题中明确提到季度，比如说：第一季度、Q1这样的
         )
 
     calc_type = ext.base_calculation
-    
-    
+
+
     # 根据基础计算类型和时间粒度推导最终类型
     if calc_type == "yoy":
         if ext.time_granularity == "month":

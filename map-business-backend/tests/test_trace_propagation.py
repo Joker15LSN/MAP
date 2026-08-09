@@ -16,7 +16,6 @@ os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_test_state.json")
 from app.core_client import _ensure_traceparent
 from app.main import app, core_client
 
-
 client = TestClient(app)
 
 VALID_TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"

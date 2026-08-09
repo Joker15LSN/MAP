@@ -91,9 +91,7 @@ class JobRepository:
         return None
 
     @staticmethod
-    def _take_lease(
-        job: Job, worker_id: str, now: datetime, lease_expires: datetime
-    ) -> None:
+    def _take_lease(job: Job, worker_id: str, now: datetime, lease_expires: datetime) -> None:
         job.status = JobStatus.RUNNING
         job.attempt = (job.attempt or 0) + 1
         job.lease_owner = worker_id
@@ -205,9 +203,7 @@ class JobRepository:
             .values(
                 status=JobStatus.QUEUED if retry_now else JobStatus.FAILED,
                 next_run_at=(
-                    now + timedelta(seconds=2 ** (counters.attempt or 0))
-                    if retry_now
-                    else None
+                    now + timedelta(seconds=2 ** (counters.attempt or 0)) if retry_now else None
                 ),
                 finished_at=None if retry_now else now,
             )

@@ -102,7 +102,7 @@ async def test_noop_write_produces_no_audit_row(app_and_session) -> None:
 
 
 async def test_audit_query_api_filters(app_and_session) -> None:
-    app, session = app_and_session
+    app, _session = app_and_session
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         await client.put("/api/admin/model-center", json={"large_models": []})
@@ -139,7 +139,11 @@ async def test_non_admin_write_is_403_and_not_audited(app_and_session) -> None:
         response = await client.put(
             "/api/admin/model-center",
             json={"large_models": []},
-            headers={"X-UserId": "u-noadmin", "X-User-Roles": "member", "X-Trusted-Proxy-Secret": "s3cret"},
+            headers={
+                "X-UserId": "u-noadmin",
+                "X-User-Roles": "member",
+                "X-Trusted-Proxy-Secret": "s3cret",
+            },
         )
         assert response.status_code == 403
 

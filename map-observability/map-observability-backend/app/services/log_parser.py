@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from typing import Dict, Optional
 
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 RID_PATTERN = re.compile(r"\brid\s*[:=]\s*([A-Za-z0-9_-]{1,128})", re.IGNORECASE)
@@ -23,7 +22,7 @@ def strip_ansi(value: str) -> str:
     return ANSI_ESCAPE_PATTERN.sub("", value or "")
 
 
-def normalize_level(value: Optional[str]) -> str:
+def normalize_level(value: str | None) -> str:
     if not value:
         return "UNKNOWN"
 
@@ -48,17 +47,17 @@ def extract_level_from_text(line: str) -> str:
     return "UNKNOWN"
 
 
-def _normalize_token(value: Optional[str]) -> Optional[str]:
+def _normalize_token(value: str | None) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
 
 
-def _is_unknown_task_id(value: Optional[str]) -> bool:
+def _is_unknown_task_id(value: str | None) -> bool:
     normalized = str(value or "").strip().upper()
     return not normalized or normalized in UNKNOWN_TASK_ID_VALUES
 
 
-def resolve_correlation_id(parsed: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
+def resolve_correlation_id(parsed: dict[str, str | None]) -> dict[str, str | None]:
     rid = _normalize_token(parsed.get("rid"))
     task_id = _normalize_token(parsed.get("task_id"))
     request_id = _normalize_token(parsed.get("request_id"))
@@ -75,7 +74,7 @@ def resolve_correlation_id(parsed: Dict[str, Optional[str]]) -> Dict[str, Option
     return {"id_value": None, "id_source": None}
 
 
-def parse_log_context(line: str, stream: Optional[Dict] = None) -> Dict[str, Optional[str]]:
+def parse_log_context(line: str, stream: dict | None = None) -> dict[str, str | None]:
     cleaned = strip_ansi(line)
 
     rid_match = RID_PATTERN.search(cleaned)
@@ -86,7 +85,9 @@ def parse_log_context(line: str, stream: Optional[Dict] = None) -> Dict[str, Opt
     aid_match = AID_PATTERN.search(cleaned)
     parid_match = PARID_PATTERN.search(cleaned)
 
-    stream_level = normalize_level((stream or {}).get("detected_level") if isinstance(stream, dict) else None)
+    stream_level = normalize_level(
+        (stream or {}).get("detected_level") if isinstance(stream, dict) else None
+    )
     text_level = extract_level_from_text(cleaned)
     final_level = stream_level if stream_level != "UNKNOWN" else text_level
 
@@ -110,7 +111,7 @@ def parse_log_context(line: str, stream: Optional[Dict] = None) -> Dict[str, Opt
     }
 
 
-def normalize_levels(levels: Optional[Iterable[str]]) -> list[str]:
+def normalize_levels(levels: Iterable[str] | None) -> list[str]:
     if not levels:
         return []
 

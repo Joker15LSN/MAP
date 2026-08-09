@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from typing import Any
 
 os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_conv_test_state.json")
 
@@ -33,10 +32,10 @@ class FakeStreamCoreClient:
 
     def __init__(self, chunks: list[bytes] | None = None, fail: bool = False) -> None:
         self.chunks = chunks or [
-            'event: start\ndata: {"request_id":"r1"}\n\n'.encode("utf-8"),
-            'event: content_delta\ndata: {"content":"你"}\n\n'.encode("utf-8"),
-            'event: content_delta\ndata: {"content":"好"}\n\n'.encode("utf-8"),
-            'event: done\ndata: {"content":"你好","task_id":"t-1"}\n\n'.encode("utf-8"),
+            b'event: start\ndata: {"request_id":"r1"}\n\n',
+            'event: content_delta\ndata: {"content":"你"}\n\n'.encode(),
+            'event: content_delta\ndata: {"content":"好"}\n\n'.encode(),
+            'event: done\ndata: {"content":"你好","task_id":"t-1"}\n\n'.encode(),
         ]
         self.fail = fail
         self.forwarded: dict[str, str] = {}
@@ -177,7 +176,7 @@ async def test_same_request_id_replays_without_duplicate(app_and_core, session) 
 
 
 async def test_cross_user_conversation_is_404(app_and_core, session) -> None:
-    app, core = app_and_core
+    app, _core = app_and_core
     async with await _client(app) as client:
         created = (await client.post("/api/v1/conversations", json={"mode": "global"})).json()
         conversation_id = created["id"]

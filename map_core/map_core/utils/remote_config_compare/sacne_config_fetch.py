@@ -69,7 +69,7 @@ class MetricMeta(BaseModel):
 
 class DataModelMeta(BaseModel):
     '''
-    
+
                 "data_origin_id": item.get("data_origin_id"),
             "data_model_name": item.get("data_model_name"),
             "data_model_description": item.get("data_model_description"),
@@ -85,7 +85,7 @@ async def afetch_agent_configs_by_refs(scene_codes: list[str], env='ubddev') -> 
     '''
     return example:
     {"scene_agent_configs":{"Procurement":{"prompt":"你是采购管理专家，请协助用户进行采购流程与供应商管理。","additional_user_prompt":"用户提示词","tool_names":["search_mounted_kb_agent","ask_database_agent"],"max_steps":1,"description":"采购场景：采购寻源、比价招投标、合同与交付验收、供应商绩效。该场景可以查询 财务付款发票明细报表、库存成本报表、合同台账按月表、财务付款明细报表等数据表","force_tool_call":true,"stop_on_no_tool_call":true,"llm_config":{"base_url":"http://10.50.56.243/v1","api_key":"gpustack_de6adf356d53ae9f_c803a9395068e4879708f267852629cb","model":"Qwen3-Next","temperature":0.7,"logprobs":null,"top_logprobs":null,"max_tokens":4096,"timeout":120.0,"stream_timeout":300.0,"chunk_timeout":30.0,"max_retries":2,"top_p":1.0,"top_k":20,"frequency_penalty":0.0,"presence_penalty":0.0,"extra_headers":{},"chat_template_kwargs":{}},"scene_post_summary":{"enabled":true,"system_prompt":null,"user_prompt_template":null,"llm_config":null}}},"tool_context":{"Procurement":{"ask_database_agent":{"disassembly_system_prompt":"你是数据库数据模型专家，请协助用户进行数据查询和分析。","selected_data_model_ids":[6439589137508752,6433466611329472,6433465874147776,6433465187789248,6433464515848640],"agent_id":8,"user_id":null,"business_domain":8,"description":{"6450487336397200":"按月+行项目维度展开，含物料编码/名称/型号、品牌、询价单号、项目、供应商、含税单价/数量/金额、已付款/未付款/到货金额等明细字段","6450487336561040":"含付款金额、付款日期、供应商、付款状态等","6450487336724880":"含供应商、发票金额、税额、直供标识等","6450487336692112":"含物料编码、仓库、库存数量/金额等","6450487336659344":"含合同金额、订单金额、核算月份等"},"disassembly_user_prompt":"查询数据库中的数据","userName":"missing"},"search_mounted_kb_agent":{"disassembly_system_prompt":"你是一个知识库助手，请根据用户的问题提供准确的知识库信息。","description":{},"disassembly_user_prompt":"请帮我解答这个问题","kb_configs":[]}}}}
-    
+
     '''
     """通过 refs 获取 agent 实际配置，参数全部写死。"""
     backend_env_base_url = ENV_2_BACKEND_URL.get(env, None)

@@ -9,9 +9,7 @@ import httpx
 TRACEPARENT_HEADER = "traceparent"
 
 # W3C trace-context: version 00, 32-hex trace id, 16-hex span id, 2-hex flags.
-_TRACEPARENT_PATTERN = re.compile(
-    r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
-)
+_TRACEPARENT_PATTERN = re.compile(r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
 
 
 def _ensure_traceparent(headers: dict[str, str]) -> dict[str, str]:

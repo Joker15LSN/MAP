@@ -9,18 +9,19 @@ Revision ID: 4c9e1f2a8b3d
 Revises: 8ef8739dcb7c
 Create Date: 2026-08-09 02:00:00.000000
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = '4c9e1f2a8b3d'
-down_revision = '8ef8739dcb7c'
+revision = "4c9e1f2a8b3d"
+down_revision = "8ef8739dcb7c"
 branch_labels = None
 depends_on = None
 
-DEFAULT_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001'
-DEFAULT_WORKSPACE_CODE = 'default'
+DEFAULT_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001"
+DEFAULT_WORKSPACE_CODE = "default"
 
 
 def upgrade() -> None:
@@ -42,7 +43,8 @@ def upgrade() -> None:
         sa.text(
             "UPDATE map_control.workspaces SET id = CAST(:wid AS uuid) "
             "WHERE code = :code AND id <> CAST(:wid AS uuid) AND NOT EXISTS ("
-            "  SELECT 1 FROM map_control.conversations c WHERE c.workspace_id = map_control.workspaces.id"
+            "  SELECT 1 FROM map_control.conversations c "
+            "  WHERE c.workspace_id = map_control.workspaces.id"
             ")"
         ).bindparams(wid=DEFAULT_WORKSPACE_ID, code=DEFAULT_WORKSPACE_CODE)
     )

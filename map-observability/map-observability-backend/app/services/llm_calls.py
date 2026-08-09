@@ -4,9 +4,10 @@ Owns the llm_call_records collection access and the /llm-calls payload
 serialization. Kept independent so new LLM-focused metrics can be added
 without touching the analytics facade.
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.services.math_utils import average, percentile, to_float
 
@@ -59,20 +60,24 @@ class LlmRepository:
 
     def find_for_request_ids(
         self,
-        request_ids: List[str],
-        agent_code: Optional[str] = None,
+        request_ids: list[str],
+        agent_code: str | None = None,
         top_n: int = 200,
-    ) -> List[Dict]:
-        match: Dict[str, Any] = {"request_id": {"$in": request_ids}}
+    ) -> list[dict]:
+        match: dict[str, Any] = {"request_id": {"$in": request_ids}}
         if agent_code:
             match["agent_code"] = agent_code
-        cursor = self.llm_collection.find(
-            match,
-            LLM_PROJECTION,
-        ).sort([("start_ts", -1), ("seq", -1)]).limit(top_n)
+        cursor = (
+            self.llm_collection.find(
+                match,
+                LLM_PROJECTION,
+            )
+            .sort([("start_ts", -1), ("seq", -1)])
+            .limit(top_n)
+        )
         return list(cursor)
 
-    def find_for_request(self, request_id: str) -> List[Dict]:
+    def find_for_request(self, request_id: str) -> list[dict]:
         return list(
             self.llm_collection.find(
                 {"request_id": request_id},
@@ -81,7 +86,7 @@ class LlmRepository:
         )
 
 
-def build_llm_calls_payload(items: List[Dict]) -> Dict:
+def build_llm_calls_payload(items: list[dict]) -> dict:
     """Serialize raw LLM documents into the /llm-calls response body."""
     failed_count = sum(1 for item in items if str(item.get("status")) != "success")
     durations = [

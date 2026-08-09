@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from dateutil import parser
@@ -60,7 +59,7 @@ class TimeAlignService:
         self,
         start_local: str,
         end_local: str,
-        tz_name: Optional[str] = None,
+        tz_name: str | None = None,
         buffer_seconds: int = 120,
     ) -> AlignedRange:
         timezone_name = tz_name or self.default_tz
@@ -72,8 +71,8 @@ class TimeAlignService:
         if end_local_dt < start_local_dt:
             raise ValueError("end_local must be greater than or equal to start_local")
 
-        start_utc = start_local_dt.astimezone(timezone.utc)
-        end_utc = end_local_dt.astimezone(timezone.utc)
+        start_utc = start_local_dt.astimezone(UTC)
+        end_utc = end_local_dt.astimezone(UTC)
 
         delta = timedelta(seconds=max(buffer_seconds, 0))
         buffered_start_utc = start_utc - delta

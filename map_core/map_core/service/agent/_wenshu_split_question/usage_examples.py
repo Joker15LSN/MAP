@@ -30,7 +30,7 @@ async def milvus_client_usage():
     assert _aclient is not None
     collections = await _aclient.list_collections()
     print(collections)
-    
+
     await milvus_client.close()
 
 async def achat_usage():
@@ -42,7 +42,7 @@ async def achat_usage():
         ]
     )
     print(type(response), response)
-    
+
 async def get_embedding():
     text = "test"
     embedding = await aembed_text(text)

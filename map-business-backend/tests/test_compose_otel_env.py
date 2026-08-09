@@ -61,9 +61,7 @@ _OTEL_ENV_KEYS = (
 )
 
 
-def _compose_config(
-    *extra_args: str, env_override: dict[str, str] | None = None
-) -> dict:
+def _compose_config(*extra_args: str, env_override: dict[str, str] | None = None) -> dict:
     """Resolve ``docker compose config`` with a hermetic environment.
 
     Two layers of isolation so the result cannot depend on the developer's
@@ -95,9 +93,7 @@ def _compose_config(
         env=env,
         check=False,
     )
-    assert result.returncode == 0, (
-        f"docker compose config failed: {result.stderr.strip()}"
-    )
+    assert result.returncode == 0, f"docker compose config failed: {result.stderr.strip()}"
     return json.loads(result.stdout)
 
 

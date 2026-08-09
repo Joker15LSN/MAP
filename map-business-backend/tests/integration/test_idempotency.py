@@ -24,9 +24,12 @@ async def test_same_key_same_body_replays_stored_response(session) -> None:
     key = "k-1"
     request_hash = hash_request(body)
 
-    assert await service.lookup(
-        key=key, workspace_id=WORKSPACE, principal_id="u1", request_hash=request_hash
-    ) is None
+    assert (
+        await service.lookup(
+            key=key, workspace_id=WORKSPACE, principal_id="u1", request_hash=request_hash
+        )
+        is None
+    )
 
     await service.store(
         key=key,

@@ -58,9 +58,9 @@ def _extract_frames(buffer: str) -> tuple[list[SseFrame], str]:
         data_lines: list[str] = []
         for line in frame_text.splitlines():
             if line.startswith("event:"):
-                event = line[len("event:"):].strip()
+                event = line[len("event:") :].strip()
             elif line.startswith("data:"):
-                data_lines.append(line[len("data:"):].strip())
+                data_lines.append(line[len("data:") :].strip())
         data = "\n".join(data_lines)
         frames.append(SseFrame(event=event, data=data))
     return frames, remaining

@@ -187,7 +187,7 @@ async def _build_candidate(raw: dict, context: AtomizeContext) -> FilteredDataMo
             "type": f.get("type", ""),
             "examples": f.get("examples", []),
         })
-        
+
     if not transformed_fields:
         logger.warning(f"No columns were available for {unique_id}!")
 
@@ -224,12 +224,12 @@ async def _llm_select(
         formatted_candidates.append(desc)
 
     candidates_str = "\n\n".join(formatted_candidates)
-    
+
     # Inject system prompt
     system_prompt_str = ""
     if context.system_prompt:
         system_prompt_str = f"[后台系统提示词]\n{context.system_prompt}\n"
-    
+
     prompt = SELECTING_PROMPT_TEMPLATE.format(
         system_prompt=system_prompt_str,
         question=context.question,

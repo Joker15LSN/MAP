@@ -111,7 +111,7 @@ def setup_postgres(
     app.add_event_handler("startup", _verify_connection)
     app.add_event_handler("shutdown", client.close)
 
-    
+
 
     logger.info("PostgresClient setup complete")
 

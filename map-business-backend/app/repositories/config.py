@@ -8,7 +8,8 @@ PostgreSQL adapter behind the same protocol.
 
 from __future__ import annotations
 
-from typing import Callable, Protocol, TypeVar
+from collections.abc import Callable
+from typing import Protocol, TypeVar
 
 from ..schemas import AdminState
 

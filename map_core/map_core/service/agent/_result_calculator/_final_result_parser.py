@@ -125,7 +125,7 @@ async def parse_final_results(
                     value = v
                 else:
                     extra[k] = v
-            
+
             _results.append(
                 {
                     "time": time,
@@ -255,7 +255,7 @@ async def test_parse_final_results():
         query_mode=query_mode,
     )
     print("\n", parsed_results)
-    
+
     await milvus_client.close()
 
 if __name__ == "__main__":

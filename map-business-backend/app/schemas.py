@@ -102,7 +102,7 @@ class MasterAgentConfig(BaseModel):
     summary_prompt: str = "请整合各业务智能体结果，优先给出结论、证据来源和下一步建议。"
     current_version: str = "v1"
     draft_version: str = "v1-draft"
-    prompt_versions: list["MasterPromptVersion"] = Field(default_factory=list)
+    prompt_versions: list[MasterPromptVersion] = Field(default_factory=list)
     policies: list[str] = Field(
         default_factory=lambda: [
             "先进行场景识别，再触发业务智能体并行调用",
@@ -209,9 +209,7 @@ class AgentResourceMount(BaseModel):
             "builtin_tool",
         }
         if normalized not in allowed:
-            raise ValueError(
-                f"resource_type must be one of: {', '.join(sorted(allowed))}"
-            )
+            raise ValueError(f"resource_type must be one of: {', '.join(sorted(allowed))}")
         return normalized
 
 
@@ -502,7 +500,7 @@ class AdminState(BaseModel):
     release_history: list[ReleaseRecord]
 
     @staticmethod
-    def default() -> "AdminState":
+    def default() -> AdminState:
         now = datetime.now().isoformat()
         return AdminState(
             updated_at=now,
@@ -575,8 +573,10 @@ class AdminState(BaseModel):
                         operator="system",
                         note="初始化 Master 提示词配置",
                         route_prompt=(
-                            "你是 MAP Master 路由智能体。请根据用户问题、历史上下文和可用业务智能体，"
-                            "直接判断应调用哪些 sub-agent，输出候选 agent_code、confidence 与 reason。"
+                            "你是 MAP Master 路由智能体。请根据用户问题、历史上下文和可用业务智"
+                            "能体，"
+                            "直接判断应调用哪些 sub-agent，输出候选 agent_code、confidence 与"
+                            " reason。"
                         ),
                         summary_prompt="请整合各业务智能体结果，优先给出结论、证据来源和下一步建议。",
                         route_model="deepseek-v4-flash",

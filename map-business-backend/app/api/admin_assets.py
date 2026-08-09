@@ -29,13 +29,13 @@ from ..schemas import (
     SkillUploadRequest,
     UploadedSkill,
 )
+from ..services.audit import admin_write_guard
 from ..services.runtime_payloads import (
     build_dispatch_config_payload,
     build_scene_selection_payload,
     skill_runtime_tool_name,
     slugify,
 )
-from ..services.audit import admin_write_guard
 from .deps import get_core_client, get_store
 
 router = APIRouter()
@@ -70,7 +70,9 @@ def _forward_headers(
 
 
 @router.get("/api/admin/business-agents")
-async def get_business_agents(store: ConfigRepository = Depends(get_store)) -> list[BusinessAgentConfig]:
+async def get_business_agents(
+    store: ConfigRepository = Depends(get_store),
+) -> list[BusinessAgentConfig]:
     state = store.load()
     return state.business_agents
 
@@ -86,7 +88,9 @@ async def post_business_agent(
     def _append(draft: Any) -> BusinessAgentConfig:
         exists = any(item.agent_code == payload.agent_code for item in draft.business_agents)
         if exists:
-            raise HTTPException(status_code=409, detail=f"agent {payload.agent_code} already exists")
+            raise HTTPException(
+                status_code=409, detail=f"agent {payload.agent_code} already exists"
+            )
         created = payload.model_copy(update={"last_updated": now})
         draft.business_agents.append(created)
         return created
@@ -132,7 +136,9 @@ async def test_business_agent(
     state = store.load()
     agent = payload.agent
     if agent is None:
-        agent = next((item for item in state.business_agents if item.agent_code == agent_code), None)
+        agent = next(
+            (item for item in state.business_agents if item.agent_code == agent_code), None
+        )
     if agent is None:
         raise HTTPException(status_code=404, detail=f"agent {agent_code} not found")
     if agent.agent_code != agent_code:
@@ -159,7 +165,7 @@ async def test_business_agent(
             debug_payload,
             headers=headers,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return {
             "request_id": "bff-fallback",
             "state_id": "bff-fallback",
@@ -212,10 +218,7 @@ async def _probe_mcp_tools(server: McpServerConfig) -> tuple[list[McpToolConfig]
     if server.transport == "stdio":
         # Backend config should not launch arbitrary local commands just to render admin UI.
         return (
-            [
-                tool.model_copy(update={"last_seen_at": now})
-                for tool in server.tools
-            ],
+            [tool.model_copy(update={"last_seen_at": now}) for tool in server.tools],
             "stdio_configured",
         )
 
@@ -227,9 +230,7 @@ async def _probe_mcp_tools(server: McpServerConfig) -> tuple[list[McpToolConfig]
         {"method": "tools/list", "params": {}},
     ]
     headers = {
-        key: value
-        for key, value in server.headers.items()
-        if isinstance(value, str) and value
+        key: value for key, value in server.headers.items() if isinstance(value, str) and value
     }
     timeout = httpx.Timeout(timeout=max(5, server.timeout_s), connect=5.0)
     try:
@@ -261,15 +262,14 @@ async def _probe_mcp_tools(server: McpServerConfig) -> tuple[list[McpToolConfig]
                                 last_seen_at=now,
                             )
                             for item in raw_tools
-                            if isinstance(item, dict)
-                            and str(item.get("name") or "").strip()
+                            if isinstance(item, dict) and str(item.get("name") or "").strip()
                         ],
                         "ok",
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     last_error = str(exc)
             return (server.tools, f"refresh_failed: {last_error or 'invalid tools/list response'}")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return (server.tools, f"refresh_failed: {exc}")
 
 
@@ -319,7 +319,7 @@ async def put_uploaded_skills(
         _sync_uploaded_skills_to_skillhub(draft)
         return draft.skills
 
-    state, skills = store.update(_replace)
+    _, skills = store.update(_replace)
     return skills
 
 
@@ -344,7 +344,9 @@ def _decode_skill_upload(payload: SkillUploadRequest) -> tuple[str, dict[str, An
                     if isinstance(manifest, dict):
                         metadata.update(manifest)
                 except json.JSONDecodeError as exc:
-                    raise HTTPException(status_code=400, detail=f"invalid skill.json: {exc}") from exc
+                    raise HTTPException(
+                        status_code=400, detail=f"invalid skill.json: {exc}"
+                    ) from exc
             return skill_content, metadata
 
     return raw_content.decode("utf-8"), dict(payload.metadata)

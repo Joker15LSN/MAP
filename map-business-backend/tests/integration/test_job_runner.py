@@ -7,7 +7,7 @@ retryable failures return to queued, cancellation works.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -69,7 +69,7 @@ async def test_expired_lease_is_reclaimed(_engine) -> None:
         repo = JobRepository(s)
         claimed = await repo.claim_next(worker_id="dead-worker", lease_seconds=60)
         assert claimed is not None
-        claimed.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+        claimed.lease_expires_at = datetime.now(UTC) - timedelta(seconds=5)
         await s.commit()
 
     ran: list[str] = []
@@ -109,9 +109,9 @@ async def test_retryable_failure_returns_to_queued_then_succeeds(_engine) -> Non
         assert stored.error_code == "HANDLER_ERROR"
         assert stored.attempt == 1
         # Backoff: wait until the job's next_run_at becomes due.
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        delay = (stored.next_run_at - datetime.now(timezone.utc)).total_seconds()
+        delay = (stored.next_run_at - datetime.now(UTC)).total_seconds()
         await asyncio.sleep(max(0.0, delay + 0.1))
 
     # Second run picks it up again and succeeds.

@@ -80,9 +80,7 @@ async def list_audit_events(
         sql += " AND request_id = :req"
         params["req"] = request_id
     count_sql = f"SELECT count(*) FROM ({sql}) AS sub"
-    total = (
-        await session.execute(text(count_sql), params)
-    ).scalar_one()
+    total = (await session.execute(text(count_sql), params)).scalar_one()
     rows = (
         await session.execute(
             text(sql + " ORDER BY created_at DESC, id DESC LIMIT :lim OFFSET :off"),
@@ -102,12 +100,16 @@ async def verify_audit_chain(
 ) -> dict[str, Any]:
     """Verify the entry_hash chain; report the first broken link."""
     rows = (
-        await session.execute(
-            select(ConfigAuditEvent).order_by(
-                ConfigAuditEvent.created_at.asc(), ConfigAuditEvent.id.asc()
+        (
+            await session.execute(
+                select(ConfigAuditEvent).order_by(
+                    ConfigAuditEvent.created_at.asc(), ConfigAuditEvent.id.asc()
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     prev = ""
     broken_at: str | None = None
     for index, row in enumerate(rows):

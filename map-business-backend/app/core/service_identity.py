@@ -36,9 +36,7 @@ class ServiceAuthenticationError(Exception):
     """Token invalid / audience mismatch / missing service identity."""
 
 
-def authenticate_service(
-    request: Request, *, secrets: tuple[str, ...]
-) -> ServicePrincipal:
+def authenticate_service(request: Request, *, secrets: tuple[str, ...]) -> ServicePrincipal:
     """Validate the request as a service call, else raise 401/403-worthy error.
 
     Raises :class:`ServiceAuthenticationError` with a stable error code in

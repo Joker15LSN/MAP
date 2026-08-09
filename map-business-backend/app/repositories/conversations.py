@@ -205,9 +205,7 @@ class ConversationRepository:
         )
         return result.scalar_one_or_none()
 
-    async def add_evidence(
-        self, message_id: uuid.UUID, evidence: list[dict]
-    ) -> None:
+    async def add_evidence(self, message_id: uuid.UUID, evidence: list[dict]) -> None:
         for ordinal, item in enumerate(evidence):
             self._session.add(
                 MessageEvidence(

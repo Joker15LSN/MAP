@@ -59,7 +59,7 @@ async def test_long_handler_with_two_workers_single_side_effect(
     factory = _factory(_engine)
     async with factory() as s:
         await _create_job(s)
-        job_id = (await _first_job_id(factory))
+        job_id = await _first_job_id(factory)
 
     effects: list[str] = []
 
@@ -131,9 +131,7 @@ async def test_heartbeat_committed_and_visible_to_other_session(_engine, session
         assert claimed is not None
         await s.commit()
         first_expiry = claimed.lease_expires_at
-        ok = await repo.heartbeat(
-            claimed.id, lease_seconds=60, owner="w1", attempt=claimed.attempt
-        )
+        ok = await repo.heartbeat(claimed.id, lease_seconds=60, owner="w1", attempt=claimed.attempt)
         await s.commit()
         assert ok is True
 
