@@ -40,12 +40,26 @@ class Settings:
         default_factory=lambda: _env_or("MAP_DEFAULT_WORKSPACE_ID", DEFAULT_WORKSPACE_ID)
     )
     # trusted_header 模式下要求请求携带共享代理 secret,否则 401。
+    # fail-closed: 未显式关闭验证时视为开启 (默认 true)。
     trusted_proxy_secret: str = field(
         default_factory=lambda: _env_or("MAP_TRUSTED_PROXY_SECRET", "")
     )
     trusted_proxy_required: bool = field(
-        default_factory=lambda: _env_or("MAP_TRUSTED_PROXY_REQUIRED", "false").lower()
+        default_factory=lambda: _env_or("MAP_TRUSTED_PROXY_REQUIRED", "true").lower()
         in {"1", "true", "yes"}
+    )
+    # Comma-separated shared secrets for service-to-service bearer tokens
+    # (rotation: all values stay valid until removed).
+    service_tokens: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            item.strip()
+            for item in _env_or("MAP_SERVICE_TOKEN_SECRET", "").split(",")
+            if item.strip()
+        )
+    )
+    # Expected audience for service tokens targeting this BFF.
+    service_audience: str = field(
+        default_factory=lambda: _env_or("MAP_SERVICE_AUDIENCE", "map-bff")
     )
 
 
@@ -58,6 +72,12 @@ def load_settings() -> Settings:
         env=_env_or("MAP_ENV", "dev").strip().lower(),
         default_workspace_id=_env_or("MAP_DEFAULT_WORKSPACE_ID", DEFAULT_WORKSPACE_ID),
         trusted_proxy_secret=_env_or("MAP_TRUSTED_PROXY_SECRET", ""),
-        trusted_proxy_required=_env_or("MAP_TRUSTED_PROXY_REQUIRED", "false").lower()
+        trusted_proxy_required=_env_or("MAP_TRUSTED_PROXY_REQUIRED", "true").lower()
         in {"1", "true", "yes"},
+        service_tokens=tuple(
+            item.strip()
+            for item in _env_or("MAP_SERVICE_TOKEN_SECRET", "").split(",")
+            if item.strip()
+        ),
+        service_audience=_env_or("MAP_SERVICE_AUDIENCE", "map-bff"),
     )

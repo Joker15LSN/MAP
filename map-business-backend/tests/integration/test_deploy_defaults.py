@@ -14,7 +14,6 @@ import uuid
 os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_deploy_test_state.json")
 
 import pytest
-import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient

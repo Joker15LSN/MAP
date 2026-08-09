@@ -129,6 +129,8 @@ async def test_non_admin_write_is_403_and_not_audited(app_and_session) -> None:
             auth_mode=AuthMode.TRUSTED_HEADER,
             state_file="/tmp/map_bff_audit_state.json",
             default_workspace_id=WORKSPACE,
+            trusted_proxy_secret="s3cret",
+            trusted_proxy_required=True,
         ),
     )
     other_app.dependency_overrides[get_db_session] = app.dependency_overrides[get_db_session]
@@ -137,7 +139,7 @@ async def test_non_admin_write_is_403_and_not_audited(app_and_session) -> None:
         response = await client.put(
             "/api/admin/model-center",
             json={"large_models": []},
-            headers={"X-UserId": "u-noadmin", "X-User-Roles": "member"},
+            headers={"X-UserId": "u-noadmin", "X-User-Roles": "member", "X-Trusted-Proxy-Secret": "s3cret"},
         )
         assert response.status_code == 403
 

@@ -59,7 +59,7 @@ def test_dev_mode_default_admin_can_write_admin_config() -> None:
 
 
 def test_trusted_header_mode_parses_principal_and_roles() -> None:
-    app = _app(Settings(auth_mode=AuthMode.TRUSTED_HEADER))
+    app = _app(Settings(auth_mode=AuthMode.TRUSTED_HEADER, trusted_proxy_secret="s3cret", trusted_proxy_required=True))
     client = TestClient(app)
     response = client.put(
         "/api/admin/model-center",
@@ -69,6 +69,7 @@ def test_trusted_header_mode_parses_principal_and_roles() -> None:
             "X-User-Roles": "platform_admin,evaluator",
             "X-User-Department": "R&D",
             "X-Workspace-ID": "ws-1",
+            "X-Trusted-Proxy-Secret": "s3cret",
         },
         json={"large_models": []},
     )
@@ -76,11 +77,11 @@ def test_trusted_header_mode_parses_principal_and_roles() -> None:
 
 
 def test_trusted_header_without_admin_role_is_forbidden() -> None:
-    app = _app(Settings(auth_mode=AuthMode.TRUSTED_HEADER))
+    app = _app(Settings(auth_mode=AuthMode.TRUSTED_HEADER, trusted_proxy_secret="s3cret", trusted_proxy_required=True))
     client = TestClient(app)
     response = client.put(
         "/api/admin/model-center",
-        headers={"X-UserId": "u-2", "X-User-Roles": "member"},
+        headers={"X-UserId": "u-2", "X-User-Roles": "member", "X-Trusted-Proxy-Secret": "s3cret"},
         json={"large_models": []},
     )
     assert response.status_code == 403
@@ -113,7 +114,7 @@ def test_trusted_header_requires_secret_when_enabled() -> None:
 
 
 def test_trusted_header_missing_user_is_401() -> None:
-    app = _app(Settings(auth_mode=AuthMode.TRUSTED_HEADER))
+    app = _app(Settings(auth_mode=AuthMode.TRUSTED_HEADER, trusted_proxy_secret="s3cret", trusted_proxy_required=True))
     client = TestClient(app)
     response = client.get("/api/admin/summary")
     assert response.status_code == 401

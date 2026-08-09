@@ -4,9 +4,10 @@ F-01: routers receive ``store`` / ``core_client`` through ``app.state`` so
 that ``create_app(store=..., core_client=...)`` overrides work for tests,
 instead of closing over module-level singletons.
 
-F-04: ``get_principal`` resolves the trusted :class:`RequestPrincipal` from
-the request context; business services must depend on it instead of reading
-arbitrary headers. ``require_admin`` gates admin write routes.
+F-04 / FIX-P0-AUTH-01: ``get_principal`` resolves the trusted
+:class:`RequestPrincipal` once per request (cached on ``request.state``);
+business services depend on it instead of reading arbitrary headers.
+``require_admin`` funnels through :class:`PermissionService`.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from ..core.identity import (
     RequestPrincipal,
     parse_optional_id,
 )
+from ..core.permissions import PermissionDenied, PermissionService
+from ..core.service_identity import constant_time_equal
 from ..core_client import MapCoreClient
 from ..repositories.config import ConfigRepository
 from ..settings import Settings
@@ -35,10 +38,24 @@ def get_core_client(request: Request) -> MapCoreClient:
     return request.app.state.core_client
 
 
+def get_permissions(request: Request) -> PermissionService:
+    return request.app.state.permissions
+
+
 def _parse_roles(raw: str | None) -> tuple[str, ...]:
     if not raw:
         return ()
     return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def _unauthorized(
+    code: str = "AUTHENTICATION_REQUIRED", message: str | None = None
+) -> HTTPException:
+    return HTTPException(
+        status_code=401,
+        detail=message or "authentication required",
+        headers={"X-MAP-Error-Code": code},
+    )
 
 
 def resolve_principal(request: Request) -> RequestPrincipal:
@@ -46,7 +63,8 @@ def resolve_principal(request: Request) -> RequestPrincipal:
 
     - ``dev``: fixed local administrator (non-prod only; enforced at startup).
     - ``trusted_header``: read identity from headers, requiring the shared
-      proxy secret when ``MAP_TRUSTED_PROXY_REQUIRED`` is set.
+      proxy secret (constant-time compare). The verification is mandatory:
+      startup fails when the mode is enabled without a secret.
     - ``oidc``: not implemented in R1/R2 (R3-ID); fail closed with 501.
     """
     settings: Settings = request.app.state.settings
@@ -65,11 +83,15 @@ def resolve_principal(request: Request) -> RequestPrincipal:
     if settings.auth_mode == AuthMode.TRUSTED_HEADER:
         if settings.trusted_proxy_required:
             secret = request.headers.get("X-Trusted-Proxy-Secret", "")
-            if not settings.trusted_proxy_secret or secret != settings.trusted_proxy_secret:
-                raise HTTPException(status_code=401, detail="untrusted proxy identity")
+            if not settings.trusted_proxy_secret or not constant_time_equal(
+                secret, settings.trusted_proxy_secret
+            ):
+                raise _unauthorized(
+                    message="untrusted proxy identity"
+                ) from None
         subject = (request.headers.get("X-UserId") or "").strip()
         if not subject:
-            raise HTTPException(status_code=401, detail="missing X-UserId")
+            raise _unauthorized(message="missing X-UserId") from None
         workspace = parse_optional_id(request.headers.get("X-Workspace-ID")) or (
             settings.default_workspace_id
         )
@@ -94,12 +116,31 @@ def get_principal(request: Request) -> RequestPrincipal:
     return request.state.principal
 
 
-def require_admin(principal: RequestPrincipal = Depends(get_principal)) -> RequestPrincipal:
-    """Admin write gate: platform_admin role (or a workspace scope in R3)."""
-    if "platform_admin" not in principal.roles:
+def require_admin(
+    principal: RequestPrincipal = Depends(get_principal),
+    permissions: PermissionService = Depends(get_permissions),
+) -> RequestPrincipal:
+    """Admin write gate via the unified permission service."""
+    try:
+        return permissions.require_admin(principal)
+    except PermissionDenied:
         raise HTTPException(
             status_code=403,
             detail="platform_admin role required",
             headers={"X-MAP-Error-Code": "FORBIDDEN"},
-        )
-    return principal
+        ) from None
+
+
+def require_audit_viewer(
+    principal: RequestPrincipal = Depends(get_principal),
+    permissions: PermissionService = Depends(get_permissions),
+) -> RequestPrincipal:
+    """Read-only audit access gate (platform_admin or audit_viewer)."""
+    try:
+        return permissions.require_audit_viewer(principal)
+    except PermissionDenied:
+        raise HTTPException(
+            status_code=403,
+            detail="audit_viewer role required",
+            headers={"X-MAP-Error-Code": "FORBIDDEN"},
+        ) from None

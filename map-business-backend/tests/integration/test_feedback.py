@@ -168,6 +168,8 @@ async def test_cross_user_feedback_is_404(app_and_session) -> None:
             auth_mode=AuthMode.TRUSTED_HEADER,
             state_file="/tmp/map_bff_feedback_state_other.json",
             default_workspace_id=WORKSPACE,
+            trusted_proxy_secret="s3cret",
+            trusted_proxy_required=True,
         ),
         store=None,
         core_client=FakeStreamCoreClient(),
@@ -178,6 +180,6 @@ async def test_cross_user_feedback_is_404(app_and_session) -> None:
         response = await client.put(
             f"/api/v1/messages/{message_id}/feedback",
             json={"kind": "thumbs_up"},
-            headers={"X-UserId": "other-user"},
+            headers={"X-UserId": "other-user", "X-Trusted-Proxy-Secret": "s3cret"},
         )
         assert response.status_code == 404

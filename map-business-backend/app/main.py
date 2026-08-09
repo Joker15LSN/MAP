@@ -23,14 +23,38 @@ from .api.admin_config import router as admin_config_router
 from .api.admin_master import router as admin_master_router
 from .api.chat import router as chat_router
 from .api.conversations import router as conversations_router
+from .api.deps import get_principal
+from .api.errors import install_error_handlers
 from .api.feedback import router as feedback_router
+from .api.internal import router as internal_router
 from .api.readiness import router as readiness_router
 from .core.identity import AuthMode, parse_optional_id, parse_request_id
+from .core.permissions import PermissionService
 from .core_client import MapCoreClient
 from .repositories.config import ConfigRepository
 from .settings import Settings, load_settings
 from .store import AdminStateStore
 from .telemetry import configure_bff_telemetry, shutdown_bff_telemetry
+
+
+def validate_settings(settings: Settings) -> None:
+    """Fail fast on unsafe identity configurations (FIX-P0-AUTH-01)."""
+    if settings.auth_mode == AuthMode.DEV and settings.env in {"prod", "production"}:
+        raise RuntimeError(
+            "MAP_AUTH_MODE=dev is forbidden in production; "
+            "set MAP_AUTH_MODE=trusted_header and MAP_TRUSTED_PROXY_REQUIRED=true"
+        )
+    if settings.auth_mode == AuthMode.TRUSTED_HEADER:
+        if not settings.trusted_proxy_required:
+            raise RuntimeError(
+                "MAP_TRUSTED_PROXY_REQUIRED=true is mandatory when "
+                "MAP_AUTH_MODE=trusted_header (fail-closed)"
+            )
+        if not settings.trusted_proxy_secret:
+            raise RuntimeError(
+                "MAP_TRUSTED_PROXY_SECRET is required when "
+                "MAP_AUTH_MODE=trusted_header (fail-closed)"
+            )
 
 
 def create_app(
@@ -49,14 +73,9 @@ def create_app(
             at ``settings.map_core_api_origin``.
     """
     settings = settings or load_settings()
+    validate_settings(settings)
     store = store or AdminStateStore(settings.state_file)
     core_client = core_client or MapCoreClient(settings.map_core_api_origin)
-
-    if settings.auth_mode == AuthMode.DEV and settings.env in {"prod", "production"}:
-        raise RuntimeError(
-            "MAP_AUTH_MODE=dev is forbidden in production; "
-            "set MAP_AUTH_MODE=trusted_header and MAP_TRUSTED_PROXY_REQUIRED=true"
-        )
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
@@ -89,6 +108,29 @@ def create_app(
     app.state.settings = settings
     app.state.store = store
     app.state.core_client = core_client
+    app.state.permissions = PermissionService()
+
+    install_error_handlers(app)
+
+    # Identity gate (F-04 / FIX-P0-AUTH-01): resolve the trusted principal
+    # once per request and cache it on request.state; any later service only
+    # reads the cached principal. dev mode uses the fixed local admin;
+    # trusted_header requires the proxy secret (constant-time compare);
+    # oidc fails closed with 501. Registered BEFORE request_context so the
+    # request/session/workspace IDs are populated when the 401/501 envelope
+    # is built.
+    @app.middleware("http")
+    async def identity_gate(request: Request, call_next):
+        if settings.auth_mode != AuthMode.DEV:
+            from fastapi import HTTPException
+
+            from .api.errors import http_exception_response
+
+            try:
+                get_principal(request)
+            except HTTPException as exc:
+                return http_exception_response(request, exc)
+        return await call_next(request)
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):
@@ -106,34 +148,10 @@ def create_app(
         response.headers["X-Request-ID"] = request.state.request_id
         return response
 
-    # Global identity gate (F-04): OIDC is not implemented before R3 and must
-    # fail closed; trusted_header mode requires the proxy secret / X-UserId on
-    # every request, not only on admin writes.
-    @app.middleware("http")
-    async def identity_gate(request: Request, call_next):
-        if settings.auth_mode == AuthMode.OIDC:
-            from fastapi.responses import JSONResponse
-
-            return JSONResponse(
-                status_code=501,
-                content={"code": "NOT_IMPLEMENTED", "message": "auth_mode=oidc not implemented yet"},
-            )
-        if settings.auth_mode == AuthMode.TRUSTED_HEADER:
-            if settings.trusted_proxy_required:
-                secret = request.headers.get("X-Trusted-Proxy-Secret", "")
-                if not settings.trusted_proxy_secret or secret != settings.trusted_proxy_secret:
-                    from fastapi.responses import JSONResponse
-
-                    return JSONResponse(status_code=401, content={"code": "AUTHENTICATION_REQUIRED"})
-            if not (request.headers.get("X-UserId") or "").strip():
-                from fastapi.responses import JSONResponse
-
-                return JSONResponse(status_code=401, content={"code": "AUTHENTICATION_REQUIRED"})
-        return await call_next(request)
-
     app.include_router(chat_router)
     app.include_router(readiness_router)
     app.include_router(conversations_router)
+    app.include_router(internal_router)
     app.include_router(feedback_router)
     app.include_router(admin_config_router)
     app.include_router(admin_master_router)

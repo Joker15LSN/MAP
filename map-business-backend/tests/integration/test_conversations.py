@@ -188,6 +188,8 @@ async def test_cross_user_conversation_is_404(app_and_core, session) -> None:
             auth_mode=AuthMode.TRUSTED_HEADER,
             state_file="/tmp/map_bff_conv_test_state.json",
             default_workspace_id="another-workspace",
+            trusted_proxy_secret="s3cret",
+            trusted_proxy_required=True,
         ),
         store=None,
         core_client=FakeStreamCoreClient(),
@@ -196,7 +198,7 @@ async def test_cross_user_conversation_is_404(app_and_core, session) -> None:
     async with await _client(other_app) as other_client:
         response = await other_client.get(
             f"/api/v1/conversations/{conversation_id}",
-            headers={"X-UserId": "other-user"},
+            headers={"X-UserId": "other-user", "X-Trusted-Proxy-Secret": "s3cret"},
         )
         assert response.status_code == 404
 

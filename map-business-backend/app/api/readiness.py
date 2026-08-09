@@ -30,7 +30,7 @@ def current_head_revision() -> str | None:
     try:
         scripts = ScriptDirectory(str(MIGRATIONS_DIR))
         return scripts.get_current_head()
-    except Exception:  # noqa: BLE001 - readiness must degrade to "not ready"
+    except Exception:  # readiness must degrade to "not ready"
         logger.exception("failed to resolve alembic head revision")
         return None
 
