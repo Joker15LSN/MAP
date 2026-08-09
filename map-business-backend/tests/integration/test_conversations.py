@@ -131,7 +131,7 @@ async def test_stream_persists_user_and_assistant_pair(app_and_core, session) ->
         assert response.status_code == 200
         events = _parse_sse(response.content)
         event_names = [event for event, _ in events]
-        assert "message.started" in event_names
+        assert "start" in event_names
         assert "content_delta" in event_names
         assert event_names[-1] == "done"
 

@@ -48,13 +48,8 @@ async def _owned_message(
     workspace_id = _workspace_uuid(principal)
     if workspace_id is None:
         raise HTTPException(status_code=404, detail="message not found")
-    message = await repo.get_message(message_id, workspace_id)
+    message = await repo.get_owned_message(message_id, workspace_id, principal.user_id)
     if message is None:
-        raise HTTPException(status_code=404, detail="message not found")
-    conversation = await repo.get_conversation(
-        message.conversation_id, workspace_id, principal.user_id
-    )
-    if conversation is None:
         raise HTTPException(status_code=404, detail="message not found")
     return message
 

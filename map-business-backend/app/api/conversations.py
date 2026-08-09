@@ -1,13 +1,14 @@
-"""Conversation REST API (R1-CONV-01).
+"""Conversation REST API (R1-CONV-01 / FIX-P1-CONV-01).
 
-- POST /api/v1/conversations            create (idempotent-friendly)
+- POST /api/v1/conversations            create (Idempotency-Key aware)
 - GET  /api/v1/conversations            list own conversations
 - GET  /api/v1/conversations/{id}       restore detail + messages
 - POST /api/v1/conversations/{id}/messages:stream   stream one turn (SSE)
-- POST /api/v1/messages/{id}:stop       mark streaming message stopped
+- POST /api/v1/messages/{id}:stop       stop a running stream
 
 Ownership: a conversation belongs to (workspace_id, owner_user_id); any
-other principal sees 404.
+other principal sees 404. SSE uses the frozen event set
+start/meta/content_delta/done/error.
 """
 
 from __future__ import annotations
@@ -23,7 +24,11 @@ from ..core.identity import RequestPrincipal
 from ..db.session import DbSession
 from ..repositories.conversations import ConversationRepository
 from ..schemas import CreateConversationRequest, StreamConversationMessageRequest
-from ..services.conversation_service import stream_conversation_message
+from ..services.conversation_service import (
+    STREAM_ABORTED,
+    stream_conversation_message,
+)
+from ..services.idempotency import IdempotencyConflictError, IdempotencyService, hash_request
 from .chat import _forward_headers
 from .deps import get_core_client, get_principal
 
@@ -60,6 +65,9 @@ def _to_message_view(m: Any) -> dict[str, Any]:
         "request_id": m.request_id,
         "task_id": m.task_id,
         "decision": m.decision_json,
+        "stream_error": m.stream_error,
+        "error_message": m.error_message,
+        "fallback_used": m.fallback_used,
         "created_at": m.created_at.isoformat() if m.created_at else None,
         "completed_at": m.completed_at.isoformat() if m.completed_at else None,
     }
@@ -69,11 +77,34 @@ def _to_message_view(m: Any) -> dict[str, Any]:
 async def create_conversation(
     payload: CreateConversationRequest,
     session: DbSession,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     principal: RequestPrincipal = Depends(get_principal),
 ) -> dict[str, Any]:
     workspace_id = _workspace_uuid(principal)
     if workspace_id is None:
         raise HTTPException(status_code=404, detail="workspace not found")
+    body = {"mode": payload.mode, "title": payload.title}
+    request_hash = hash_request(body)
+
+    if idempotency_key:
+        idempotency = IdempotencyService(session)
+        try:
+            stored = await idempotency.lookup(
+                key=idempotency_key,
+                workspace_id=workspace_id,
+                principal_id=principal.user_id,
+                request_hash=request_hash,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=str(exc),
+                headers={"X-MAP-Error-Code": "IDEMPOTENCY_CONFLICT"},
+            ) from exc
+        if stored is not None and stored.replayed:
+            return stored.response_body or {}
+
     repo = ConversationRepository(session)
     conversation = await repo.create_conversation(
         workspace_id=workspace_id,
@@ -82,7 +113,19 @@ async def create_conversation(
         title=payload.title or "新会话",
     )
     await session.commit()
-    return _to_conversation_view(conversation)
+    view = _to_conversation_view(conversation)
+
+    if idempotency_key:
+        await idempotency.store(
+            key=idempotency_key,
+            workspace_id=workspace_id,
+            principal_id=principal.user_id,
+            request_hash=request_hash,
+            response_status=201,
+            response_body=view,
+        )
+        await session.commit()
+    return view
 
 
 @router.get("/conversations")
@@ -153,8 +196,8 @@ async def stream_message(
         request_id = request.state.request_id
 
     headers = _forward_headers(request_token, request)
-
     store = request.app.state.store
+    registry = request.app.state.stream_registry
 
     async def sse_stream():
         try:
@@ -167,16 +210,18 @@ async def stream_message(
                 store=store,
                 core_client=core_client,
                 headers=headers,
+                registry=registry,
             ):
-                yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n".encode(
-                    "utf-8"
-                )
-        except Exception as exc:  # surface unexpected failures as SSE error
+                yield (
+                    f"event: {event['event']}\n"
+                    f"data: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+                ).encode()
+        except Exception as exc:  # noqa: BLE001 - stream boundary
             error_data = json.dumps(
                 {"error": str(exc), "conversation_id": str(conversation_id)},
                 ensure_ascii=False,
             )
-            yield f"event: error\ndata: {error_data}\n\n".encode("utf-8")
+            yield f"event: error\ndata: {error_data}\n\n".encode()
 
     return StreamingResponse(
         sse_stream(),
@@ -189,16 +234,31 @@ async def stream_message(
 async def stop_message(
     message_id: uuid.UUID,
     session: DbSession,
+    request: Request,
     principal: RequestPrincipal = Depends(get_principal),
 ) -> dict[str, Any]:
     repo = ConversationRepository(session)
     workspace_id = _workspace_uuid(principal)
     if workspace_id is None:
         raise HTTPException(status_code=404, detail="message not found")
-    message = await repo.get_message(message_id, workspace_id)
+    message = await repo.get_owned_message(message_id, workspace_id, principal.user_id)
     if message is None:
         raise HTTPException(status_code=404, detail="message not found")
+
+    # 1) Signal the in-flight stream (cancels the downstream request at its
+    #    next chunk boundary).
+    registry = request.app.state.stream_registry
+    registry.abort(message_id)
+
+    # 2) Conditional terminal write: only a still-streaming message flips to
+    #    stopped. If done already won the race, the status stays completed.
     if message.status == "streaming":
-        message = await repo.finalize_message(message_id, status="stopped")
+        await repo.finalize_message(
+            message_id,
+            status="stopped",
+            stream_error=STREAM_ABORTED,
+            error_message="stopped by user",
+        )
         await session.commit()
+    message = await repo.get_owned_message(message_id, workspace_id, principal.user_id)
     return _to_message_view(message)

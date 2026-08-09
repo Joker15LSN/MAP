@@ -32,6 +32,7 @@ from .core.identity import AuthMode, parse_optional_id, parse_request_id
 from .core.permissions import PermissionService
 from .core_client import MapCoreClient
 from .repositories.config import ConfigRepository
+from .services.stream_registry import StreamRegistry
 from .settings import Settings, load_settings
 from .store import AdminStateStore
 from .telemetry import configure_bff_telemetry, shutdown_bff_telemetry
@@ -109,6 +110,7 @@ def create_app(
     app.state.store = store
     app.state.core_client = core_client
     app.state.permissions = PermissionService()
+    app.state.stream_registry = StreamRegistry()
 
     install_error_handlers(app)
 

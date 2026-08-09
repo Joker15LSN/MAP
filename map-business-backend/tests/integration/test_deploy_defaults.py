@@ -96,7 +96,8 @@ async def test_seed_migration_idempotent_and_downgrade_upgrade(_engine, session)
         ).scalar_one()
 
     # Fixture truncated the seeded row and upgrade is already at head.
-    await asyncio.to_thread(command.downgrade, cfg, "-1")
+    # Downgrade two revisions (back before the seed migration) removes it.
+    await asyncio.to_thread(command.downgrade, cfg, "-2")
     assert await _count() == 0
 
     await asyncio.to_thread(command.upgrade, cfg, "head")

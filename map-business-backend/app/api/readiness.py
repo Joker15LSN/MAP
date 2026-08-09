@@ -8,14 +8,17 @@ migrated to head, and carrying the default workspace seed. ``/health``
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from alembic.script import ScriptDirectory
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
-from ..db.session import get_engine
+from ..db.session import DEFAULT_DSN
 from ..settings import DEFAULT_WORKSPACE_CODE
 
 logger = logging.getLogger(__name__)
@@ -37,11 +40,19 @@ def current_head_revision() -> str | None:
 
 @router.get("/ready")
 async def ready(request: Request) -> JSONResponse:
-    """Return 200 only when DB is reachable, migrated to head and seeded."""
+    """Return 200 only when DB is reachable, migrated to head and seeded.
+
+    Uses its own short-lived connection (NullPool) so readiness never
+    depends on or pollutes the shared engine pool.
+    """
     checks: dict[str, object] = {}
     ok = True
 
-    engine = get_engine()
+    engine = create_async_engine(
+        os.getenv("MAP_CONTROL_DB_DSN", DEFAULT_DSN),
+        poolclass=NullPool,
+        pool_pre_ping=True,
+    )
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -89,6 +100,7 @@ async def ready(request: Request) -> JSONResponse:
             ok = False
             checks["seed"] = {"ok": False, "error": str(exc)[:200]}
 
+    await engine.dispose()
     status_code = 200 if ok else 503
     return JSONResponse(
         status_code=status_code,
