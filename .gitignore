@@ -230,3 +230,6 @@ reasonix.toml
 
 # understand-anything knowledge graph
 .understand-anything/
+
+# macOS
+.DS_Store
