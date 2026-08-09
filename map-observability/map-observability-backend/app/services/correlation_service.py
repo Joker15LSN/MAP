@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pymongo.database import Database
 
@@ -14,7 +15,11 @@ from app.services.container_mapping import (
     infer_cbb_container_by_tool,
     infer_main_flow_container,
 )
-from app.services.log_parser import normalize_levels, parse_log_context, resolve_correlation_id
+from app.services.log_parser import (
+    normalize_levels,
+    parse_log_context,
+    resolve_correlation_id,
+)
 from app.services.loki_query_service import LokiQueryService
 from app.services.math_utils import to_float
 from app.services.time_align_service import AlignedRange, TimeAlignService

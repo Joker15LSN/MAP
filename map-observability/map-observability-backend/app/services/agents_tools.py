@@ -7,11 +7,12 @@ used by other domains (request_id resolution and tool call counts).
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.services.filters import FilterOptions, build_agent_match, build_tool_match
-from app.services.math_utils import average, percentile, safe_div, to_float
+from app.services.math_utils import average, safe_div, to_float
 from app.services.serializers import tool_status
 
 EXCLUDED_AGENT_CODES_FOR_DURATION = {"globaldomainorchestrator"}

@@ -28,7 +28,7 @@ class LokiQueryService:
         return all([self.grafana_url, self.grafana_user, self.grafana_password, self.loki_ds_uid])
 
     def _auth_header(self) -> str:
-        raw = f"{self.grafana_user}:{self.grafana_password}".encode("utf-8")
+        raw = f"{self.grafana_user}:{self.grafana_password}".encode()
         return f"Basic {base64.b64encode(raw).decode('utf-8')}"
 
     def _request_json(self, path: str, params: Dict[str, str]) -> Dict:

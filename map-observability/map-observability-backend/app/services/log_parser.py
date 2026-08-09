@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, Optional
+from collections.abc import Iterable
+from typing import Dict, Optional
 
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 RID_PATTERN = re.compile(r"\brid\s*[:=]\s*([A-Za-z0-9_-]{1,128})", re.IGNORECASE)

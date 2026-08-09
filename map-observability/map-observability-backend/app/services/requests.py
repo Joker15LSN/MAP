@@ -6,7 +6,7 @@ inject the raw pymongo/mongomock collection.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.services.math_utils import average, percentile, safe_div, to_float
 from app.services.serializers import to_scene_confidences, to_token_total

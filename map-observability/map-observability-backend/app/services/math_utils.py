@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
+from typing import List, Optional
 
 
 def safe_div(numerator: float, denominator: float) -> float:

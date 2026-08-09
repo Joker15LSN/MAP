@@ -6,8 +6,8 @@ import mongomock
 
 from app.core.config import Settings
 from app.services.analytics_service import AnalyticsService
-from app.services.friday_service import FridayService
 from app.services.filters import FilterOptions
+from app.services.friday_service import FridayService
 
 
 def _service() -> FridayService:

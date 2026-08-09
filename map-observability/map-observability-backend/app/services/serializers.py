@@ -32,10 +32,10 @@ def to_scene_confidences(doc: Dict) -> Dict[str, List[float]]:
         sub_scenes = []
 
     big_conf = compact_confidences(
-        (item.get("confidence") for item in big_scenes if isinstance(item, dict))
+        item.get("confidence") for item in big_scenes if isinstance(item, dict)
     )
     sub_conf = compact_confidences(
-        (item.get("confidence") for item in sub_scenes if isinstance(item, dict))
+        item.get("confidence") for item in sub_scenes if isinstance(item, dict)
     )
     return {"big": big_conf, "sub": sub_conf}
 

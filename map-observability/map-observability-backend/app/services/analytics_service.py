@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import replace
-from datetime import datetime, timezone
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from datetime import datetime
+from typing import Dict, List, Optional
 
 from pymongo.database import Database
 
 from app.core.config import Settings
 from app.core.database import MongoCollections
+from app.services.agents_tools import (
+    AgentToolRepository,
+    build_agents_rows,
+    build_tools_payload,
+)
 from app.services.container_mapping import (
     MAIN_FLOW_CONTAINERS,
     assert_container_supported,
@@ -22,11 +27,21 @@ from app.services.filters import (
     build_request_match,
     build_tool_match,
 )
+from app.services.llm_calls import (
+    EMPTY_LLM_CALLS_PAYLOAD,
+    LlmRepository,
+    build_llm_calls_payload,
+)
 from app.services.loki_query_service import LokiQueryService
-from app.services.llm_calls import EMPTY_LLM_CALLS_PAYLOAD, LlmRepository, build_llm_calls_payload
 from app.services.math_utils import to_float
-from app.services.agents_tools import AgentToolRepository, build_agents_rows, build_tools_payload
-from app.services.requests import RequestRepository, build_overview_payload, build_request_items, build_request_payload, build_trends_rows, build_users_rows
+from app.services.requests import (
+    RequestRepository,
+    build_overview_payload,
+    build_request_items,
+    build_request_payload,
+    build_trends_rows,
+    build_users_rows,
+)
 from app.services.serializers import (
     build_agent_timeline,
     extract_request_ids_from_rows,
@@ -34,11 +49,6 @@ from app.services.serializers import (
     json_default,
     merge_tool_call_rows,
     to_ns,
-    to_scene_confidences,
-    to_token_total,
-    to_utc_dt,
-    tool_call_identity,
-    tool_status,
 )
 
 EXCLUDED_AGENT_CODES_FOR_DURATION = {"globaldomainorchestrator"}

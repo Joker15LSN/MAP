@@ -58,3 +58,9 @@ npm run test
 
 - 观测后端：[`../map-observability-backend/README.md`](../map-observability-backend/README.md)
 - 观测系统总览：[`../README.md`](../README.md)
+
+## Bundle 尺寸基线（FIX-P2-OBSERVABILITY-01）
+
+拆分后主入口 `index-*.js` ≈ 250 kB（gzip ≈ 76 kB），最大懒加载页 FridayPage ≈ 167 kB
+（gzip ≈ 51 kB）；RequestDetail 相关 panel 均按路由懒加载。主 chunk 后续不得
+超过该值 10% 浮动（CI 预算见 FIX-P2-QUALITY-01）。

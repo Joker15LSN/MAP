@@ -426,3 +426,61 @@ def test_llm_calls_empty_payload() -> None:
             "token_total": 0,
         },
     }
+
+
+def test_contract_field_types_are_stable() -> None:
+    """FIX-P2-OBSERVABILITY-01:pin field NAMES and TYPES, not just values.
+
+    Every endpoint listed in the F-05 plan (overview/requests/detail/users/
+    agents/tools/llm-calls) must keep its field names and value types; a
+    type drift (e.g. duration_s str->int) breaks the frontend contract.
+    """
+    service = _make_service()
+    now = _seed_request(service, request_id="rid-types", duration_s=2.0)
+
+    overview = service.get_overview(_make_filters(now))
+    assert type(overview["total_requests"]) is int
+    assert type(overview["success_rate"]) is float
+    assert type(overview["duration_s"]) is dict
+    assert type(overview["duration_s"]["avg"]) is float
+    assert type(overview["token"]) is dict
+    assert type(overview["tool_calls"]) is dict
+    assert type(overview["scene_confidence_avg"]) is dict
+
+    listing = service.list_requests(_make_filters(now), page=1, page_size=10, sort_by="start_ts", sort_order="desc")
+    assert type(listing["total"]) is int
+    assert type(listing["items"]) is list
+    for item in listing["items"]:
+        assert type(item["request_id"]) is str
+        assert type(item["duration_s"]) is float
+
+    detail = service.get_request_detail("rid-types")
+    assert type(detail["request"]) is dict
+    assert type(detail["request"]["request_id"]) is str
+    assert type(detail["tool_calls"]) is list
+    assert type(detail["llm_calls"]) is list
+    assert type(detail["agent_timeline"]) is list
+    assert type(detail["summary"]) is dict
+
+    users = service.get_users(_make_filters(now), top_n=10)
+    assert type(users) is list
+    for item in users:
+        assert type(item["staff_code"]) is str
+        assert type(item["request_count"]) is int
+        assert type(item["success_rate"]) is float
+
+    agents = service.get_agents(_make_filters(now), top_n=10)
+    assert type(agents) is list
+    for item in agents:
+        assert type(item["agent_code"]) is str
+        assert type(item["call_count"]) is int
+        assert type(item["success_rate"]) is float
+
+    tools = service.get_tools(_make_filters(now), top_n=10)
+    assert type(tools) is dict
+    assert type(tools["items"]) is list
+    assert type(tools["failure_top"]) is list
+
+    llms = service.get_llm_calls(_make_filters(now))
+    assert type(llms["summary"]) is dict
+    assert type(llms["summary"]["call_count"]) is int

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
+from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -14,7 +14,10 @@ from zoneinfo import ZoneInfo
 
 from app.core.config import Settings
 from app.services.analytics_service import AnalyticsService
-from app.services.container_mapping import MAIN_FLOW_CONTAINERS, assert_container_supported
+from app.services.container_mapping import (
+    MAIN_FLOW_CONTAINERS,
+    assert_container_supported,
+)
 from app.services.correlation_service import CorrelationService
 from app.services.filters import FilterOptions
 

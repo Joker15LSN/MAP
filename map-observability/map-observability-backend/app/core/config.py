@@ -55,7 +55,7 @@ class Settings:
         return "auto"
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         mongo_uri = os.getenv("MONGO_URI", "")
         mongo_db = os.getenv("MONGO_DB", "map_db_dev")
         mongo_uri_ubddev = os.getenv("MONGO_URI_UBDDEV", "")
