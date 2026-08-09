@@ -37,6 +37,7 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-# B008: FastAPI idiom (Depends() in argument defaults) — ignored project-wide.
-ignore = ["B008"]
+# B008: FastAPI idiom (Depends() in argument defaults); RUF001/RUF003:
+# Chinese product copy legitimately uses fullwidth punctuation.
+ignore = ["B008", "RUF001", "RUF003"]
 select = ["E", "F", "I", "B", "SIM", "UP", "RUF", "PIE", "BLE"]

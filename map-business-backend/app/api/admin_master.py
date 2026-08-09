@@ -12,9 +12,10 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..core.identity import RequestPrincipal
+from ..db.session import DbSession
 from ..repositories.config import ConfigRepository
 from ..schemas import (
     AdminState,
@@ -25,9 +26,26 @@ from ..schemas import (
     ReleaseRecord,
 )
 from ..services.audit import admin_write_guard
-from .deps import get_store
+from ..services.config_mutation import ConfigMutationService
+from .deps import get_principal, get_store
 
 router = APIRouter()
+
+
+async def _audited_update(request, session, resource_type, resource_id, action, updater):
+    """Route all AdminState writes through the ConfigMutationService."""
+    store = request.app.state.store
+    service = ConfigMutationService(store)
+    return await service.apply_mutation(
+        session=session,
+        request=request,
+        principal=get_principal(request),
+        resource_type=resource_type,
+        resource_id=resource_id,
+        action=action,
+        updater=updater,
+    )
+
 
 
 def _now_iso() -> str:
@@ -109,17 +127,22 @@ async def get_master_agent(store: ConfigRepository = Depends(get_store)) -> Mast
 @router.put("/api/admin/master-agent")
 async def put_master_agent(
     payload: MasterAgentConfig,
-    store: ConfigRepository = Depends(get_store),
+    request: Request,
+    session: DbSession,
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> MasterAgentConfig:
-    state, _ = store.update(lambda draft: setattr(draft, "master_agent", payload))
+    state, _ = await _audited_update(
+        request, session, "admin_master", "master_agent", "update",
+        lambda draft: setattr(draft, "master_agent", payload),
+    )
     return state.master_agent
 
 
 @router.post("/api/admin/master-agent/publish")
 async def publish_master_agent(
     payload: MasterPublishRequest,
-    store: ConfigRepository = Depends(get_store),
+    request: Request,
+    session: DbSession,
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> dict[str, Any]:
     def _publish(draft: AdminState) -> dict[str, Any]:
@@ -178,7 +201,9 @@ async def publish_master_agent(
             ),
         }
 
-    _, result = store.update(_publish)
+    _, result = await _audited_update(
+        request, session, "admin_master", "master-agent", "publish", _publish
+    )
     return result
 
 
@@ -234,7 +259,8 @@ async def diff_master_versions(
 @router.post("/api/admin/master-agent/rollback")
 async def rollback_master_agent(
     payload: MasterRollbackRequest,
-    store: ConfigRepository = Depends(get_store),
+    request: Request,
+    session: DbSession,
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> MasterAgentConfig:
     def _rollback(draft: AdminState) -> MasterAgentConfig:
@@ -263,5 +289,7 @@ async def rollback_master_agent(
         )
         return draft.master_agent
 
-    _, updated = store.update(_rollback)
+    _, updated = await _audited_update(
+        request, session, "admin_master", "master-agent", "rollback", _rollback
+    )
     return updated

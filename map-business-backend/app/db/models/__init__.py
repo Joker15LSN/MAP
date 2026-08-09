@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .audit import AuditLog
+from .audit import AuditLog, ConfigAuditEvent, ConfigMutation
 from .conversation import Conversation, Message, MessageEvidence
 from .feedback import MessageFeedback
 from .idempotency import IdempotencyRecord
@@ -13,6 +13,8 @@ from .workspace import Workspace
 
 __all__ = [
     "AuditLog",
+    "ConfigAuditEvent",
+    "ConfigMutation",
     "Conversation",
     "IdempotencyRecord",
     "Job",

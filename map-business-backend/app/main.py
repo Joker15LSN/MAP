@@ -13,14 +13,18 @@ re-exports for existing tests and uvicorn entry points.
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+logger = logging.getLogger(__name__)
+
 from .api.admin_assets import router as admin_assets_router
 from .api.admin_config import router as admin_config_router
 from .api.admin_master import router as admin_master_router
+from .api.audit_events import router as audit_events_router
 from .api.chat import router as chat_router
 from .api.conversations import router as conversations_router
 from .api.deps import get_principal
@@ -80,10 +84,15 @@ def create_app(
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
-        # Telemetry is configured once at import time above (idempotent); the
-        # lifespan only owns the process-exit shutdown. OTel's global
-        # TracerProvider and the FastAPI/httpx instrumentation cannot be
-        # reinstalled in-process, so shutdown is a terminal state.
+        # Crash recovery: finish pending config mutations and append
+        # recovered audit events (best effort; never blocks startup).
+        try:
+            from .db.session import get_session_factory
+            from .services.config_mutation import reconcile_config_mutations
+
+            await reconcile_config_mutations(get_session_factory(), store)
+        except Exception:  # noqa: BLE001 - reconciler must not block startup
+            logger.exception("config mutation reconciler failed at startup")
         yield
         shutdown_bff_telemetry()
 
@@ -152,6 +161,7 @@ def create_app(
 
     app.include_router(chat_router)
     app.include_router(readiness_router)
+    app.include_router(audit_events_router)
     app.include_router(conversations_router)
     app.include_router(internal_router)
     app.include_router(feedback_router)

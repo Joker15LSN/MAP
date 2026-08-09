@@ -14,13 +14,14 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 
-from ..api.deps import get_principal, get_store, require_admin
+from ..api.deps import get_store, require_admin
 from ..core.identity import RequestPrincipal
 from ..db.models import AuditLog
 from ..db.session import DbSession
 from ..repositories.config import ConfigRepository
+from ..store import BadStateFileError
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,39 @@ async def admin_write_guard(
     row per state-changing write, actor from the principal. Uses the
     request-scoped DB session so the write happens on the request's event
     loop."""
-    before = store.load()
+    try:
+        before = store.load()
+    except BadStateFileError as exc:
+        # Fail closed AND leave a failed audit event (audit must never
+        # disappear because the product write failed).
+        try:
+            from ..services.config_mutation import ConfigMutationService
+
+            service = ConfigMutationService(store)  # type: ignore[arg-type]
+            await service._append_event(  # private helper of the service
+                session,
+                workspace_id=uuid.UUID(principal.workspace_id)
+                if _is_uuid(principal.workspace_id)
+                else None,
+                resource_type=_resource_type(request.url.path),
+                resource_id=request.url.path,
+                action="config.update",
+                principal=principal,
+                request=request,
+                status="failed",
+                failure_code="BAD_STATE_FILE",
+                before_hash=None,
+                after_hash=None,
+                json_patch=None,
+            )
+            await session.commit()
+        except Exception:  # never mask the original failure
+            logger.exception("failed audit append during bad-state guard")
+        raise HTTPException(
+            status_code=500,
+            detail=f"admin state file is corrupt and kept untouched: {exc}",
+            headers={"X-MAP-Error-Code": "BAD_STATE_FILE"},
+        ) from exc
     yield principal
     try:
         after = store.load()
