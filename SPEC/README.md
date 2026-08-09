@@ -13,6 +13,12 @@
   - 接口规范
   - 配置规范
   - 容器与文档规范
+- [`contracts/`](contracts/)（R1 整改后新增的权威契约）
+  - [`identity.md`](contracts/identity.md)：认证模式、可信代理身份、权限矩阵、服务身份、错误 envelope
+  - [`conversation.md`](contracts/conversation.md)：会话/消息模型、冻结 SSE 事件集、状态机、幂等
+  - [`feedback.md`](contracts/feedback.md)：反馈当前事实模型、API、脱敏、迁移
+  - [`audit.md`](contracts/audit.md)：config_audit_events/config_mutations、写流程、hash chain、JSON Patch
+  - [`job-outbox.md`](contracts/job-outbox.md)：job 状态机、lease/fencing、outbox、worker 运维
 
 ## When To Update
 
