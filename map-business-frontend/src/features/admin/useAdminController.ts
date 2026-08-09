@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { fetchJson } from '../../api/client';
+import { apiRequest, fetchJson } from '../../api/client';
 import type {
   AddressConfigItem,
   AdminFullConfig,
@@ -187,7 +187,7 @@ export function useAdminController(flow: FlowStrategyController): AdminApi {
 
   const saveSection = async (url: string, body: unknown, successText: string, failText: string) => {
     setSaveStatus('保存中...');
-    const response = await fetch(url, {
+    const response = await apiRequest(url, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -214,7 +214,7 @@ export function useAdminController(flow: FlowStrategyController): AdminApi {
     const isNewAgent = !businessAgents.some((item) => item.agent_code === editingAgent.agent_code);
     const url = isNewAgent ? '/api/admin/business-agents' : `/api/admin/business-agents/${editingAgent.agent_code}`;
     const method = isNewAgent ? 'POST' : 'PUT';
-    const response = await fetch(url, {
+    const response = await apiRequest(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(editingAgent),
@@ -274,7 +274,7 @@ export function useAdminController(flow: FlowStrategyController): AdminApi {
   };
 
   const publishMasterPrompt = async () => {
-    const response = await fetch('/api/admin/master-agent/publish', {
+    const response = await apiRequest('/api/admin/master-agent/publish', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ operator: 'admin', note: releaseNote || 'Master 提示词发布', version: releaseVersion || undefined }),
@@ -292,7 +292,7 @@ export function useAdminController(flow: FlowStrategyController): AdminApi {
 
   const diffMasterPrompt = async (version?: string) => {
     const target = version || masterConfig?.current_version || 'current';
-    const response = await fetch(`/api/admin/master-agent/diff?from=${encodeURIComponent(target)}&to=current`);
+    const response = await apiRequest(`/api/admin/master-agent/diff?from=${encodeURIComponent(target)}&to=current`);
     if (response.ok) {
       const payload = await response.json();
       setMasterDiff(payload.diff || '');
@@ -300,7 +300,7 @@ export function useAdminController(flow: FlowStrategyController): AdminApi {
   };
 
   const rollbackMasterPrompt = async (version: string) => {
-    const response = await fetch('/api/admin/master-agent/rollback', {
+    const response = await apiRequest('/api/admin/master-agent/rollback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ version, operator: 'admin', note: `切换到 ${version}` }),
@@ -322,7 +322,7 @@ export function useAdminController(flow: FlowStrategyController): AdminApi {
     setAgentTestMessages((prev) => [...prev, { role: 'user', content: question }]);
     setAgentTestLoading(true);
     try {
-      const response = await fetch(`/api/admin/business-agents/${editingAgent.agent_code}/test-chat`, {
+      const response = await apiRequest(`/api/admin/business-agents/${editingAgent.agent_code}/test-chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -355,7 +355,7 @@ export function useAdminController(flow: FlowStrategyController): AdminApi {
       version: releaseVersion,
       risk_level: releaseRiskLevel,
     }).toString();
-    const response = await fetch(`/api/admin/release-history?${query}`, { method: 'POST' });
+    const response = await apiRequest(`/api/admin/release-history?${query}`, { method: 'POST' });
     if (response.ok) {
       setReleaseNote('');
       setSaveStatus('配置发布记录已新增');

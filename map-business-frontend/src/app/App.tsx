@@ -7,8 +7,14 @@ import { ViewRouter } from './router';
 import { useChatController } from '../features/chat/useChatController';
 import { useAdminController } from '../features/admin/useAdminController';
 import { useFlowStrategyController } from '../features/admin/useFlowStrategyController';
+import { useConversationController } from '../features/conversation/useConversationController';
+import { ConversationView } from '../features/conversation/ConversationView';
 
 const THEME_STORAGE_KEY = 'map_theme_mode';
+
+/** 新 conversation API 灰度开关（FIX-P1-CONV-01 / FIX-P2-FRONTEND-01） */
+const CONVERSATIONS_ENABLED =
+  import.meta.env.VITE_MAP_CONVERSATIONS_ENABLED === 'true';
 
 /**
  * 应用外壳(Application Shell)。
@@ -41,6 +47,7 @@ export default function App() {
   const flow = useFlowStrategyController();
   const chat = useChatController(flow);
   const admin = useAdminController(flow);
+  const conversation = useConversationController({});
 
   useEffect(() => {
     document.body.classList.toggle('theme-dark', isDark);
@@ -88,7 +95,11 @@ export default function App() {
             </div>
           </header>
 
-          <ViewRouter viewMode={viewMode} chatProps={chat.chatProps} adminProps={{ api: admin }} />
+          {viewMode === 'chat' && CONVERSATIONS_ENABLED ? (
+            <ConversationView controller={conversation} />
+          ) : (
+            <ViewRouter viewMode={viewMode} chatProps={chat.chatProps} adminProps={{ api: admin }} />
+          )}
         </main>
       </div>
     </ConfigProvider>

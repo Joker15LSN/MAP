@@ -40,12 +40,55 @@ export const buildIdHeaders = (): Record<string, string> => ({
 export const apiRequest = (url: string, init?: RequestInit): Promise<Response> =>
   fetch(url, mergeIdHeaders(init));
 
+/** 标准错误 envelope（FIX-P2-FRONTEND-01）: {code,message,details,request_id} */
+export interface ApiErrorBody {
+  code?: string;
+  message?: string;
+  details?: unknown;
+  request_id?: string | null;
+}
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly requestId?: string | null;
+
+  constructor(status: number, body: ApiErrorBody | string) {
+    if (typeof body === 'string') {
+      super(body);
+      this.code = 'HTTP_ERROR';
+    } else {
+      super(body.message || `request failed: ${status}`);
+      this.code = body.code || 'HTTP_ERROR';
+      this.requestId = body.request_id;
+    }
+    this.status = status;
+    this.name = 'ApiError';
+  }
+}
+
+/** 解析响应:2xx 返回 JSON;否则抛 ApiError(标准 envelope 或原始文本) */
+export const parseResponse = async <T>(response: Response): Promise<T> => {
+  if (response.ok) {
+    return (await response.json()) as T;
+  }
+  let body: ApiErrorBody | string;
+  const contentType = response.headers.get('content-type') || '';
+  try {
+    if (contentType.includes('json')) {
+      body = (await response.json()) as ApiErrorBody;
+    } else {
+      body = await response.text();
+    }
+  } catch {
+    body = `request failed: ${response.status}`;
+  }
+  throw new ApiError(response.status, body);
+};
+
 export const fetchJson = async <T>(url: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(url, mergeIdHeaders(init));
-  if (!response.ok) {
-    throw new Error(`request failed: ${response.status}`);
-  }
-  return (await response.json()) as T;
+  return parseResponse<T>(response);
 };
 
 export const postJson = <T>(url: string, body: unknown, init?: RequestInit): Promise<T> =>
@@ -63,6 +106,9 @@ export const putJson = <T>(url: string, body: unknown, init?: RequestInit): Prom
     body: JSON.stringify(body),
     ...init,
   });
+
+export const deleteJson = <T>(url: string, init?: RequestInit): Promise<T> =>
+  fetchJson<T>(url, { method: 'DELETE', ...init });
 
 const mergeIdHeaders = (init?: RequestInit): RequestInit | undefined => {
   if (!init) {

@@ -20,7 +20,6 @@ export default defineConfig({
     css: false,
     include: ['src/**/*.test.{ts,tsx}'],
     testTimeout: 10000,
-    css: true,
     server: {
       deps: {
         // @agentscope-ai/design 仅声明 module 字段,需显式内联其 ESM 依赖图
