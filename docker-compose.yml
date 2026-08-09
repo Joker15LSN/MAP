@@ -10,6 +10,10 @@ services:
       POSTGRES_DB: map
     volumes:
       - map_postgres_data:/var/lib/postgresql/data
+      # One-time init (fresh volumes only): create the dedicated migration
+      # role so business (map) and migration (map_migrator) roles stay
+      # separate. Idempotent; existing volumes are untouched.
+      - ./map-business-backend/db/init:/docker-entrypoint-initdb.d:ro
     ports:
       - "${MAP_POSTGRES_PORT:-15432}:5432"
     healthcheck:
@@ -87,6 +91,21 @@ services:
       timeout: 8s
       retries: 10
 
+  # One-shot migration service: applies Alembic revisions to head using the
+  # dedicated migration role (MAP_CONTROL_MIGRATION_DSN). Backend/worker
+  # start only after this service completes successfully.
+  migrate:
+    build:
+      context: ./map-business-backend
+      dockerfile: Dockerfile
+    container_name: map-migrate
+    command: ["uv", "run", "alembic", "upgrade", "head"]
+    environment:
+      MAP_CONTROL_MIGRATION_DSN: postgresql+asyncpg://map_migrator:map@postgres:5432/map
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend-service:
     build:
       context: ./map-business-backend
@@ -95,6 +114,8 @@ services:
     environment:
       MAP_CORE_API_ORIGIN: http://algorithm-service:10000
       MAP_BFF_STATE_FILE: /app/data/admin_state.json
+      MAP_CONTROL_DB_DSN: postgresql+asyncpg://map:map@postgres:5432/map
+      MAP_DEFAULT_WORKSPACE_ID: ${MAP_DEFAULT_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
       MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
       MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
       MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
@@ -109,6 +130,8 @@ services:
     depends_on:
       algorithm-service:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ./map-business-backend/app/data:/app/data
     ports:
@@ -117,7 +140,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=5).read()\"",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/ready', timeout=5).read()\"",
         ]
       interval: 15s
       timeout: 8s
@@ -141,6 +164,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ./map-business-backend/app/data:/app/data
 

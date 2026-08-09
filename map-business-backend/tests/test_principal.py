@@ -146,7 +146,7 @@ def test_request_id_echoed_and_session_workspace_forwarded(monkeypatch) -> None:
     forwarded = core.calls[0]
     assert forwarded["X-Request-ID"] == "req-abc123"
     assert forwarded["X-Session-ID"] == "sess-xyz"
-    assert forwarded["X-Workspace-ID"] == "default"  # default workspace
+    assert forwarded["X-Workspace-ID"] == "00000000-0000-0000-0000-000000000001"  # default workspace
 
 
 def test_invalid_request_id_is_replaced_with_fresh_one() -> None:

@@ -13,7 +13,6 @@ re-exports for existing tests and uvicorn entry points.
 
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -25,6 +24,7 @@ from .api.admin_master import router as admin_master_router
 from .api.chat import router as chat_router
 from .api.conversations import router as conversations_router
 from .api.feedback import router as feedback_router
+from .api.readiness import router as readiness_router
 from .core.identity import AuthMode, parse_optional_id, parse_request_id
 from .core_client import MapCoreClient
 from .repositories.config import ConfigRepository
@@ -52,7 +52,7 @@ def create_app(
     store = store or AdminStateStore(settings.state_file)
     core_client = core_client or MapCoreClient(settings.map_core_api_origin)
 
-    if settings.auth_mode == AuthMode.DEV and _looks_like_production():
+    if settings.auth_mode == AuthMode.DEV and settings.env in {"prod", "production"}:
         raise RuntimeError(
             "MAP_AUTH_MODE=dev is forbidden in production; "
             "set MAP_AUTH_MODE=trusted_header and MAP_TRUSTED_PROXY_REQUIRED=true"
@@ -132,6 +132,7 @@ def create_app(
         return await call_next(request)
 
     app.include_router(chat_router)
+    app.include_router(readiness_router)
     app.include_router(conversations_router)
     app.include_router(feedback_router)
     app.include_router(admin_config_router)
@@ -142,8 +143,7 @@ def create_app(
 
 
 def _looks_like_production() -> bool:
-    env = os.getenv("MAP_ENV", "").strip().lower()
-    return env in {"prod", "production"}
+    return False  # replaced by Settings.env; kept for callers of the helper
 
 
 # Compatibility module-level singletons: uvicorn `app.main:app` and the
