@@ -112,13 +112,26 @@ uv run alembic -c alembic.ini revision --autogenerate -m "description"
 - `GET /health`（liveness）：进程存活，不依赖下游。
 - `GET /ready`（readiness）：数据库可达 + Alembic revision == head + default workspace seed 存在，任一失败返回 503。Compose healthcheck 使用 `/ready`。
 
-## Worker (F-03)
+## Worker (F-03 / FIX-P0-WORKER-01)
 
 ```bash
 uv run python -m app.workers.main
 ```
 
-SIGTERM 停止领取新任务并等待当前 handler 安全点；Compose 中对应 `worker-service`。
+SIGTERM 停止领取新任务，向正在执行的 handler 发送 cancel 信号并等待其安全点；Compose 中对应 `worker-service`。
+
+Lease 语义：
+
+- 每次 claim 使 `attempt` 递增并作为 fencing token；heartbeat/complete/fail 都带 `lease_owner + attempt` 条件，失去 lease 的 worker 无法再提交结果或执行新副作用。
+- heartbeat 在独立短事务中提交，间隔 < lease 的 1/3 并带 jitter；数据库超时按 lease 丢失处理（fail-closed），不会静默执行到租约过期。
+- handler 通过 `get_current_job_context()` 读取 `lease_ok`/`cancel`，必须在每个副作用安全点前检查；外部副作用使用稳定 `idempotency_key` 去重。
+- 日志包含 `job_id / workspace_id / worker_id / attempt / lease_expires_at`，不含 payload secret。
+
+运维：
+
+- **worker drain**：向 worker 发送 SIGTERM（`docker compose stop worker-service` 或 `kill -TERM <pid>`），等待日志出现 `worker ... stopped gracefully` 后再升级/回滚应用；运行中 job 的 lease 会在租约到期后由其他 worker 回收。
+- **运行中 job 清点**：`SELECT status, count(*) FROM map_control.jobs GROUP BY status;`，`running` 且 `lease_expires_at < now()` 的行会在下一个 claim 周期被回收。
+- **应用回滚**：先 drain worker，再回滚 BFF/worker 镜像；job 状态与数据保留在 PostgreSQL，回滚后由新 worker 继续。
 
 ## Environment Variables
 
