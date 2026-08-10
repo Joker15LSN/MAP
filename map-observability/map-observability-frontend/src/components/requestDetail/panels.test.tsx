@@ -8,7 +8,10 @@ import { ScenePanel } from './ScenePanel';
 import type { ToolCallRow } from './types';
 
 /**
- * F-05 / FIX-P2-OBSERVABILITY-01:各 detail panel 的 happy/empty/error 测试。
+ * F-05 / FIX-P2-OBSERVABILITY-01 / R2-P2-01:各 detail panel 的
+ * happy/empty/error 矩阵。panel 是纯展示组件,真实 request error 由
+ * 容器层(RequestDetailDrawer)承担;此处补充 malformed-row 鲁棒性,
+ * 确保任何不完整数据行都不会崩溃。
  */
 
 describe('AgentTimelinePanel', () => {
@@ -40,6 +43,12 @@ describe('AgentTimelinePanel', () => {
   it('falls back to unknown status when status is missing', () => {
     render(<AgentTimelinePanel rows={[{ state_id: 's-2', agent_code: 'A', duration_s: null }]} />);
     expect(screen.getByText('unknown')).toBeInTheDocument();
+  });
+
+  it('tolerates a fully malformed row without crashing', () => {
+    const { container } = render(<AgentTimelinePanel rows={[{} as Record<string, unknown>]} />);
+    expect(container.querySelector('table')).toBeInTheDocument();
+    expect(screen.getAllByText('unknown').length).toBeGreaterThan(0);
   });
 });
 
@@ -84,6 +93,17 @@ describe('LLMTracePanel', () => {
     );
     expect(screen.getByText('upstream timeout')).toBeInTheDocument();
   });
+
+  it('tolerates a malformed trace row (missing usage/status/error)', () => {
+    render(
+      <LLMTracePanel
+        rows={[{ state_id: 's-2' } as (typeof rows)[number]]}
+        requestId="req-1"
+      />,
+    );
+    expect(screen.getByText('unknown')).toBeInTheDocument();
+    expect(screen.getAllByText('-').length).toBeGreaterThan(0);
+  });
 });
 
 describe('ToolCallsPanel', () => {
@@ -112,6 +132,15 @@ describe('ToolCallsPanel', () => {
     expect(container.querySelector('table')).toBeInTheDocument();
     expect(screen.getAllByText('tool').length).toBeGreaterThan(0);
   });
+
+  it('tolerates a malformed tool row and still dispatches selection', () => {
+    const onSelect = vi.fn();
+    const malformed = [{ status: null } as ToolCallRow];
+    render(<ToolCallsPanel rows={malformed} onSelectToolCall={onSelect} />);
+    expect(screen.getAllByText('-').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText('查看详情'));
+    expect(onSelect).toHaveBeenCalledWith(malformed[0]);
+  });
 });
 
 describe('ScenePanel', () => {
@@ -123,6 +152,11 @@ describe('ScenePanel', () => {
 
   it('renders an empty object when no scene result exists', () => {
     render(<ScenePanel />);
-    expect(screen.getByText(/\{\}/)).toBeInTheDocument();
+    expect(screen.getByText(/\{}/)).toBeInTheDocument();
+  });
+
+  it('falls back to an empty object for a null scene result', () => {
+    render(<ScenePanel sceneResult={null as never} />);
+    expect(screen.getByText(/\{}/)).toBeInTheDocument();
   });
 });

@@ -1,0 +1,15 @@
+{
+  "_comment": "R2-P2-02 bundle gate baseline. Budgets are measured baselines (+10% headroom) that prevent REGRESSION; shrinking the known-large chunks is tracked separately and requires a numbered approval to raise any budget. entry = chunk referenced by dist/index.html; chunk = every other emitted .js asset.",
+  "projects": {
+    "map-business-frontend": {
+      "dist": "map-business-frontend/dist",
+      "entry": { "raw_max": 760000, "gzip_max": 245000 },
+      "chunk": { "raw_max": 740000, "gzip_max": 225000 }
+    },
+    "map-observability-frontend": {
+      "dist": "map-observability/map-observability-frontend/dist",
+      "entry": { "raw_max": 1280000, "gzip_max": 405000 },
+      "chunk": { "raw_max": 1630000, "gzip_max": 485000 }
+    }
+  }
+}

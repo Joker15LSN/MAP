@@ -9,6 +9,9 @@
     "preview": "vite preview --host 0.0.0.0 --port 5173",
     "test": "vitest run"
   },
+  "overrides": {
+    "dompurify": "3.4.13"
+  },
   "dependencies": {
     "@agentscope-ai/design": "^1.0.31",
     "@ant-design/plots": "^2.5.5",

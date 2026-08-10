@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../test/server';
@@ -59,21 +59,31 @@ describe('admin save error paths', () => {
   });
 
   it('marks the section as failed on network errors', async () => {
-    server.use(
-      http.put('/api/admin/model-center', () => {
-        throw new TypeError('Failed to fetch');
-      }),
-    );
-    const controller = makeController();
-    await act(async () => {
-      await controller.current.saveSection(
-        '/api/admin/model-center',
-        { large_models: [] },
-        'ok',
-        '保存失败-网络',
+    // R3-P2-01: expected network error 必须在本用例内显式捕获/spy。
+    // MSW 通过 handler 抛错模拟断网时会在 console.error 打印内部诊断栈，
+    // 这里用 spy 将其隔离，避免泄漏到全局测试日志。
+    const expectedErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    try {
+      server.use(
+        http.put('/api/admin/model-center', () => {
+          throw new TypeError('Failed to fetch');
+        }),
       );
-    });
-    expect(controller.current.saveStatus).toBe('保存失败-网络');
+      const controller = makeController();
+      await act(async () => {
+        await controller.current.saveSection(
+          '/api/admin/model-center',
+          { large_models: [] },
+          'ok',
+          '保存失败-网络',
+        );
+      });
+      expect(controller.current.saveStatus).toBe('保存失败-网络');
+    } finally {
+      expectedErrorSpy.mockRestore();
+    }
   });
 
   it('saves successfully when the API returns 200', async () => {

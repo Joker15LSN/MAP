@@ -58,6 +58,15 @@ class PostgresClient:
         self._pool = None
         logger.info("PostgreSQL connection pool closed")
 
+    async def verify_startup(self) -> None:
+        """Connect and verify connectivity once so boot fails fast."""
+        pool = await self.connect()
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute("SELECT 1")
+        except Exception as exc:
+            raise RuntimeError("PostgreSQL connectivity check failed") from exc
+
     @asynccontextmanager
     async def connection(self) -> AsyncIterator[Connection | PoolConnectionProxy]:
         if not self._pool:
@@ -98,20 +107,8 @@ def setup_postgres(
     )
 
     app.state.postgres_client = client
-    app.add_event_handler("startup", client.connect)
-    # Verify connectivity once on startup so boot fails fast if the DB is unreachable.
-    async def _verify_connection() -> None:
-        pool = await client.connect()
-        try:
-            async with pool.acquire() as conn:
-                await conn.execute("SELECT 1")
-        except Exception as exc:
-            raise RuntimeError("PostgreSQL connectivity check failed") from exc
-
-    app.add_event_handler("startup", _verify_connection)
-    app.add_event_handler("shutdown", client.close)
-
-
+    # NOTE: FastAPI >= 0.141 removed `add_event_handler`; the app drives
+    # connect/verify/close explicitly from its lifespan (see main.py).
 
     logger.info("PostgresClient setup complete")
 

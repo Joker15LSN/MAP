@@ -10,6 +10,9 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "overrides": {
+    "dompurify": "3.4.13"
+  },
   "dependencies": {
     "@agentscope-ai/design": "^1.0.31",
     "antd": "^5.23.0",

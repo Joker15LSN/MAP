@@ -153,6 +153,37 @@ export const handlers = [
   ),
 
   // ---- admin (legacy) ----
+  // R3-P2-01: useAdminController 挂载时会初始化 GET summary/full-config，
+  // 缺少 handler 会产生 MSW unmatched 错误日志。
+  http.get('/api/admin/summary', () =>
+    HttpResponse.json({
+      updated_at: '2026-08-09T00:00:00Z',
+      master_version: 'v1',
+      business_agent_count: 0,
+      business_agent_enabled_count: 0,
+      permission_rule_count: 0,
+      knowledge_binding_count: 0,
+      skill_enabled_count: 0,
+      release_count: 0,
+      model_count: 0,
+      user_count: 0,
+      user_enabled_count: 0,
+      mcp_server_count: 0,
+      skill_count: 0,
+    }),
+  ),
+  http.get('/api/admin/full-config', () =>
+    HttpResponse.json({
+      updated_at: '2026-08-09T00:00:00Z',
+      model_center: {
+        large_models: [],
+        asr_models: [],
+        tts_models: [],
+        embedding_models: [],
+        rerank_models: [],
+      },
+    }),
+  ),
   http.put('/api/admin/model-center', () =>
     HttpResponse.json({ large_models: [], asr_models: [], tts_models: [], embedding_models: [], rerank_models: [] }),
   ),

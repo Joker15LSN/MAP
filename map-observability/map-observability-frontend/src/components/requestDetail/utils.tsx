@@ -3,6 +3,8 @@ import { ReactNode } from 'react';
 import { formatIsoTimePair } from '../../utils/time';
 import { inferCbbContainerByTool, isCbbContainer } from '../../constants/containers';
 import type { ContainerKey } from '../../constants/containers';
+import type { CorrelationLogItem, ToolCallCorrelationPayload } from '../../types';
+import { PAGE_SIZE } from './types';
 import type { GenericRecord, ToolCallRow } from './types';
 
 export const dateRender = (value: unknown) => {
@@ -674,4 +676,51 @@ export const resolveToolTraceContainer = (tool: string, activeContainer: Contain
     return activeContainer;
   }
   return inferCbbContainerByTool(tool, activeContainer) || activeContainer;
+};
+
+/**
+ * R2-P2-01: normalize the tool-call correlation payload BEFORE storing it in
+ * state. Partial/loading-stage payloads (or future contract drift) must never
+ * reach the render path with ``main_flow_logs_page`` / ``cbb_logs_page``
+ * undefined — dereferencing ``.items`` there threw an unhandled TypeError
+ * and made ``npm test`` exit 1.
+ */
+export const normalizeToolTracePayload = (raw: unknown): ToolCallCorrelationPayload | undefined => {
+  const record = toRecordLoose(raw);
+  if (!record) {
+    return undefined;
+  }
+  const normalizeLogPage = (value: unknown, pageFallback: number) => {
+    const pageRecord = toRecordLoose(value);
+    return {
+      items: toArrayLoose(pageRecord?.items) as CorrelationLogItem[],
+      total: toNumber(pageRecord?.total) ?? 0,
+      page: toNumber(pageRecord?.page) ?? pageFallback,
+      page_size: toNumber(pageRecord?.page_size) ?? PAGE_SIZE,
+    };
+  };
+  const errorSummary = toRecordLoose(record.error_summary);
+  return {
+    ...record,
+    request_id: toText(record.request_id),
+    container: toText(record.container),
+    main_flow_container: toText(record.main_flow_container),
+    tool: toText(record.tool),
+    time_window: (toRecordLoose(record.time_window) || {}) as unknown as ToolCallCorrelationPayload['time_window'],
+    request: toRecordLoose(record.request) || {},
+    tool_call: toRecordLoose(record.tool_call) || {},
+    tool_call_candidates: toArrayLoose(record.tool_call_candidates) as Array<Record<string, unknown>>,
+    id_resolution: (toRecordLoose(record.id_resolution) || {}) as ToolCallCorrelationPayload['id_resolution'],
+    error_summary: {
+      alert_count: toNumber(errorSummary?.alert_count) ?? 0,
+      level_breakdown: toRecordLoose(errorSummary?.level_breakdown) || {},
+      channel_breakdown: toRecordLoose(errorSummary?.channel_breakdown) || {},
+      signature_breakdown: toRecordLoose(errorSummary?.signature_breakdown),
+      matched_keywords: toArrayLoose(errorSummary?.matched_keywords) as string[],
+      first_alert_ts_utc: toText(errorSummary?.first_alert_ts_utc) || undefined,
+      last_alert_ts_utc: toText(errorSummary?.last_alert_ts_utc) || undefined,
+    },
+    main_flow_logs_page: normalizeLogPage(record.main_flow_logs_page, 1),
+    cbb_logs_page: normalizeLogPage(record.cbb_logs_page, 1),
+  } as ToolCallCorrelationPayload;
 };

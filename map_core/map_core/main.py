@@ -189,8 +189,12 @@ async def lifespan(app: FastAPI):
     from .database.mongodb import setup_mongodb
     from .database.postgre import setup_postgres
 
-    setup_postgres(app, config=cfg.POSTGRES_CONFIG)
-    setup_mongodb(app, config=cfg.MONGODB_CONFIG)
+    # FastAPI >= 0.141 removed `add_event_handler`, so startup connectivity
+    # verification and shutdown cleanup are driven explicitly from lifespan.
+    pg_client = setup_postgres(app, config=cfg.POSTGRES_CONFIG)
+    mongo_client = setup_mongodb(app, config=cfg.MONGODB_CONFIG)
+    await pg_client.verify_startup()
+    await mongo_client.verify_startup()
 
     from .utils.map_logger import init_logger
 
@@ -219,6 +223,13 @@ async def lifespan(app: FastAPI):
         state_store = GlobalAgentStateStore.maybe_instance()
         if state_store is not None:
             await state_store.close()
+
+        pg_client = getattr(app.state, "postgres_client", None)
+        if pg_client is not None:
+            await pg_client.close()
+        mongo_client = getattr(app.state, "mongodb_client", None)
+        if mongo_client is not None:
+            await mongo_client.close()
 
         shutdown_telemetry()
 

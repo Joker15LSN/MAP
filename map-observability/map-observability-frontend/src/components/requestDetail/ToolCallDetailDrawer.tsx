@@ -25,6 +25,7 @@ import {
   isWenshuTool,
   mergeToolCallRows,
   normalizeRowsForTable,
+  normalizeToolTracePayload,
   resolveToolTraceContainer,
   statusClass,
   statusLabel,
@@ -98,7 +99,9 @@ export const ToolCallDetailDrawer = ({
         page,
         pageSize: PAGE_SIZE,
       });
-      setToolTracePayload(payload);
+      // R2-P2-01: normalize before storing — partial payloads must never
+      // reach the render path with undefined log pages.
+      setToolTracePayload(normalizeToolTracePayload(payload));
     } catch (error) {
       setToolTracePayload(undefined);
       setToolTraceError(String((error as Error)?.message || error));
@@ -498,8 +501,8 @@ export const ToolCallDetailDrawer = ({
             {toolTracePayload
               ? renderLogTable(
                   `主流程日志（${toolTracePayload.main_flow_container}）`,
-                  toolTracePayload.main_flow_logs_page.items || [],
-                  toolTracePayload.main_flow_logs_page.total || 0,
+                  toolTracePayload.main_flow_logs_page?.items || [],
+                  toolTracePayload.main_flow_logs_page?.total || 0,
                   (page) => resolvedToolCall && loadToolTrace(resolvedToolCall, page),
                 )
               : null}
@@ -507,8 +510,8 @@ export const ToolCallDetailDrawer = ({
             {toolTracePayload
               ? renderLogTable(
                   `${isCbbContainer(toolTracePayload.container) ? '工具容器日志' : '关联容器日志'}（${toolTracePayload.container}）`,
-                  toolTracePayload.cbb_logs_page.items || [],
-                  toolTracePayload.cbb_logs_page.total || 0,
+                  toolTracePayload.cbb_logs_page?.items || [],
+                  toolTracePayload.cbb_logs_page?.total || 0,
                   (page) => resolvedToolCall && loadToolTrace(resolvedToolCall, page),
                 )
               : null}

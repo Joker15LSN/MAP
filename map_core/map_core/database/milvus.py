@@ -65,6 +65,14 @@ class MilvusClient:
             self._client = None
             logger.info("Milvus client closed")
 
+    async def verify_startup(self) -> None:
+        """Connect and list collections once so failures surface early."""
+        milvus = await self.connect()
+        try:
+            await milvus.list_collections()
+        except Exception as exc:  # noqa: BLE001 - surface runtime issue
+            raise RuntimeError("Milvus connectivity check failed") from exc
+
     @asynccontextmanager
     async def connection(self) -> AsyncIterator[AsyncMilvusClient]:
         if not self._client:
@@ -106,17 +114,9 @@ def setup_milvus(
     )
 
     app.state.milvus_client = client
-    app.add_event_handler("startup", client.connect)
-
-    async def _verify_connection() -> None:
-        milvus = await client.connect()
-        try:
-            await milvus.list_collections()
-        except Exception as exc:  # noqa: BLE001 - surface runtime issue
-            raise RuntimeError("Milvus connectivity check failed") from exc
-
-    app.add_event_handler("startup", _verify_connection)
-    app.add_event_handler("shutdown", client.close)
+    # NOTE: FastAPI >= 0.141 removed `add_event_handler`. setup_milvus is
+    # only reached lazily from the request dependency, so the connection is
+    # established there; no startup/shutdown handlers are registered.
 
     logger.info("MilvusClient setup complete")
     return client
