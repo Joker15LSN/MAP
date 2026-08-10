@@ -15,6 +15,33 @@ import type { ConversationView, FeedbackView, MessageView } from './conversation
 
 export type ConversationPhase = 'idle' | 'loading' | 'streaming' | 'ready' | 'error';
 
+/**
+ * R3-P1-02: 浏览器刷新恢复依赖活跃会话 id 的本地持久化。
+ * create 成功后写入;加载失败(如后端换库)时清除并回落空状态,
+ * 显式传入的 conversationId 永远优先且失败时保留错误状态。
+ */
+const ACTIVE_CONVERSATION_KEY = 'map_active_conversation_id';
+
+const readStoredConversationId = (): string | null => {
+  try {
+    return window.localStorage.getItem(ACTIVE_CONVERSATION_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const writeStoredConversationId = (conversationId: string | null): void => {
+  try {
+    if (conversationId) {
+      window.localStorage.setItem(ACTIVE_CONVERSATION_KEY, conversationId);
+    } else {
+      window.localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+    }
+  } catch {
+    // 存储不可用(隐私模式等)时降级为不恢复,不影响主流程。
+  }
+};
+
 export interface ConversationState {
   phase: ConversationPhase;
   conversation: ConversationView | null;
@@ -38,7 +65,12 @@ export interface UseConversationControllerOptions {
 }
 
 export function useConversationController(options: UseConversationControllerOptions = {}) {
-  const { conversationId } = options;
+  // 显式 conversationId 优先;否则一次性读取持久化的活跃会话 id。
+  const [storedId] = useState<string | null>(() =>
+    options.conversationId ? null : readStoredConversationId(),
+  );
+  const conversationId = options.conversationId ?? storedId ?? undefined;
+  const restoredFromStorage = !options.conversationId && Boolean(storedId);
   const [state, setState] = useState<ConversationState>(initialState);
   const abortRef = useRef<AbortController | null>(null);
   const streamingMessageId = useRef<string | null>(null);
@@ -47,7 +79,13 @@ export function useConversationController(options: UseConversationControllerOpti
   const create = useCallback(async (mode: 'global' | 'flow' = 'global', title?: string) => {
     setState((prev) => ({ ...prev, phase: 'loading', error: null }));
     try {
-      const conversation = await conversationApi.create({ mode, title });
+      // Idempotency-Key: 创建走幂等键,网络重放不会产生第二个会话。
+      const conversation = await conversationApi.create({
+        mode,
+        title,
+        idempotencyKey: generateRequestId(),
+      });
+      writeStoredConversationId(conversation.id);
       setState((prev) => ({
         ...prev,
         phase: 'ready',
@@ -90,9 +128,16 @@ export function useConversationController(options: UseConversationControllerOpti
         error: null,
       }));
     } catch (error) {
+      if (restoredFromStorage) {
+        // 持久化的会话已不存在(如后端换了数据库):清除并回落空状态,
+        // 而不是把用户困在错误页。
+        writeStoredConversationId(null);
+        setState((prev) => ({ ...prev, ...initialState, error: null }));
+        return;
+      }
       setState((prev) => ({ ...prev, phase: 'error', error: describeError(error) }));
     }
-  }, [conversationId]);
+  }, [conversationId, restoredFromStorage]);
 
   useEffect(() => {
     if (conversationId) {

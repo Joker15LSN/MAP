@@ -1,0 +1,122 @@
+# R2-P2-02: the release gate. CI runs the SAME script a developer runs
+# locally (scripts/release_gate.sh): uv sync --frozen / npm ci first, then
+# ruff + pytest for all three Python services, vitest + build for both
+# frontends, and finally the bundle size gate. No locally installed tool
+# can satisfy this job — everything is resolved from lockfiles.
+#
+# R3-P1-02: the Compose E2E is part of CI. Every push/PR runs the stable
+# subset (--suite pr: real browser happy path through frontend -> BFF ->
+# core plus the secure identity boundary); the full fault matrix
+# (--suite full: BFF restart, PostgreSQL interruption, worker kill +
+# lease takeover, ...) runs nightly and on demand. Both use fresh named
+# volumes and never read the developer's .env.
+name: release-gate
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # nightly full E2E matrix (UTC)
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+
+jobs:
+  gate:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # map-business-backend integration tests require the three-role setup
+      # normally created by docker-compose on a fresh volume
+      # (map-business-backend/db/init/01-roles.sh).
+      - name: Start PostgreSQL with the three application roles
+        run: |
+          docker run -d --name map-ci-postgres \
+            -e POSTGRES_USER=map_admin \
+            -e POSTGRES_PASSWORD=map-admin-local \
+            -e POSTGRES_DB=map \
+            -p 15432:5432 postgres:16
+          until docker exec map-ci-postgres pg_isready -U map_admin -d map; do
+            sleep 1
+          done
+          docker cp map-business-backend/db/init/01-roles.sh map-ci-postgres:/tmp/01-roles.sh
+          docker exec map-ci-postgres bash /tmp/01-roles.sh
+
+      - name: Release gate
+        run: bash scripts/release_gate.sh
+
+      - name: Upload gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-logs
+          path: tmp/gate-logs
+
+  e2e-browser-pr:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright + Chromium
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install playwright
+          python3 -m playwright install --with-deps chromium
+
+      - name: Browser E2E (stable subset)
+        run: python3 e2e/run_e2e.py --suite pr
+
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-pr
+          path: |
+            e2e/tmp/report-*.json
+            e2e/tmp/browser-*.json
+            e2e/tmp/logs-*.txt
+          if-no-files-found: warn
+
+  e2e-full-nightly:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright + Chromium
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install playwright
+          python3 -m playwright install --with-deps chromium
+
+      - name: Full E2E (fault matrix)
+        run: python3 e2e/run_e2e.py --suite full
+
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-full
+          path: |
+            e2e/tmp/report-*.json
+            e2e/tmp/browser-*.json
+            e2e/tmp/logs-*.txt
+          if-no-files-found: warn

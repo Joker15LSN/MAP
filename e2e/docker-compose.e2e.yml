@@ -1,0 +1,97 @@
+# R2-P1-05 Compose E2E override — merge on top of docker-compose.yml
+# (and docker-compose.otel.yml for the OTel consistency checks):
+#
+#   python e2e/run_e2e.py
+#
+# Never run this file manually: the runner picks a RANDOM compose project
+# name (fresh named volumes), unique container names (E2E_PREFIX) and free
+# published ports, so an E2E run can never collide with or depend on the
+# local dev stack (15432/27017/18080) or its data.
+#
+# The only fake in the topology is fake-llm (LLM boundary): algorithm-service
+# keeps running the REAL map_core pipeline with MAP_LLM_BASE_URL pointed at
+# the deterministic OpenAI-compatible fake.
+
+services:
+  postgres:
+    container_name: ${E2E_PREFIX:-map-e2e}-postgres
+
+  mongo:
+    container_name: ${E2E_PREFIX:-map-e2e}-mongo
+
+  # Deterministic OpenAI-compatible fake at the LLM boundary ONLY.
+  fake-llm:
+    image: python:3.13-slim
+    container_name: ${E2E_PREFIX:-map-e2e}-fake-llm
+    working_dir: /opt/fake-llm
+    command: ["python", "fake_llm_server.py"]
+    volumes:
+      - ./e2e:/opt/fake-llm:ro
+    ports:
+      # Published so the runner can drive /__e2e/config + /__e2e/stats.
+      - "${E2E_FAKE_LLM_PORT:-19999}:9999"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9999/health', timeout=5).read()\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  algorithm-service:
+    container_name: ${E2E_PREFIX:-map-e2e}-algorithm-service
+    # Stable image tag: the random project name must not force a full
+    # rebuild on every run; later runs reuse this image (build cache).
+    image: map-e2e/algorithm-service:latest
+    environment:
+      # LLM boundary fake: every real pipeline LLM call lands here.
+      MAP_LLM_BASE_URL: http://fake-llm:9999/v1
+      MAP_LLM_MODEL: fake-e2e-model
+      MAP_LLM_API_KEY: e2e-fake-key
+    depends_on:
+      fake-llm:
+        condition: service_healthy
+
+  migrate:
+    container_name: ${E2E_PREFIX:-map-e2e}-migrate
+    image: map-e2e/backend:latest
+
+  backend-service:
+    container_name: ${E2E_PREFIX:-map-e2e}-backend-service
+    image: map-e2e/backend:latest
+    # Dedicated state dir: the E2E mutates admin config (audit scenarios)
+    # and must never touch the dev stack's app/data/admin_state.json.
+    volumes:
+      - ${E2E_DATA_DIR:-./e2e/tmp/data}:/app/data
+
+  worker-service:
+    container_name: ${E2E_PREFIX:-map-e2e}-worker-service
+    image: map-e2e/backend:latest
+    environment:
+      # R3-P1-02 fault matrix: short lease so the worker-kill + lease
+      # takeover scenario recovers in seconds instead of a full minute.
+      # Heartbeat defaults to lease/4 and stays strictly below lease/3.
+      MAP_WORKER_LEASE_SECONDS: "10"
+    volumes:
+      - ${E2E_DATA_DIR:-./e2e/tmp/data}:/app/data
+
+  frontend-service:
+    container_name: ${E2E_PREFIX:-map-e2e}-frontend-service
+    environment:
+      # R3-P1-02: the browser E2E drives the real conversation UI; the
+      # feature flag must be on for ConversationView to render.
+      VITE_MAP_CONVERSATIONS_ENABLED: "true"
+
+  observability-backend-service:
+    container_name: ${E2E_PREFIX:-map-e2e}-observability-backend-service
+
+  observability-frontend-service:
+    container_name: ${E2E_PREFIX:-map-e2e}-observability-frontend-service
+
+  otel-collector:
+    container_name: ${E2E_PREFIX:-map-e2e}-otel-collector
+
+  jaeger:
+    container_name: ${E2E_PREFIX:-map-e2e}-jaeger

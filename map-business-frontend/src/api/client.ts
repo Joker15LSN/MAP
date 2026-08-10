@@ -91,20 +91,27 @@ export const fetchJson = async <T>(url: string, init?: RequestInit): Promise<T> 
   return parseResponse<T>(response);
 };
 
+// 合并默认头与调用方自定义头:自定义头(如 Idempotency-Key)绝不能
+// 整体覆盖默认头,否则会丢失 Content-Type,导致 BFF 无法解析 JSON body。
+const withJsonHeaders = (init?: RequestInit): Record<string, string> => ({
+  'Content-Type': 'application/json',
+  ...(init?.headers as Record<string, string> | undefined),
+});
+
 export const postJson = <T>(url: string, body: unknown, init?: RequestInit): Promise<T> =>
   fetchJson<T>(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
     ...init,
+    method: 'POST',
+    headers: withJsonHeaders(init),
+    body: JSON.stringify(body),
   });
 
 export const putJson = <T>(url: string, body: unknown, init?: RequestInit): Promise<T> =>
   fetchJson<T>(url, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
     ...init,
+    method: 'PUT',
+    headers: withJsonHeaders(init),
+    body: JSON.stringify(body),
   });
 
 export const deleteJson = <T>(url: string, init?: RequestInit): Promise<T> =>

@@ -1,12 +1,14 @@
-"""FIX-P2-CONTRACT-E2E-01:minimal browser->BFF->(core)->PostgreSQL flow.
+"""R2-P1-05 (renamed from tests/e2e/test_minimal_flow.py): BFF integration.
 
-One self-contained happy+privacy+recovery loop on a fresh database:
-create (idempotency key) -> stream (fake core SSE) -> refresh restore ->
-feedback -> admin list -> withdraw tombstone + outbox -> audit chain OK.
+This is a BFF-level integration test, NOT the cross-service E2E required by
+the acceptance guide: the browser is simulated with httpx ASGITransport and
+map_core is simulated by a fake SSE client (core contract is pinned by
+map_core's own golden tests). It stays in the fast pytest loop and guards the
+BFF happy+privacy+recovery loop on a real PostgreSQL schema.
 
-The browser is simulated with httpx; map_core is simulated by a fake SSE
-client (core contract is pinned by map_core's own golden tests); MongoDB
-projection is out of scope for the BFF E2E.
+The real cross-service E2E (real BFF + real map_core containers, real
+HTTP/SSE, deterministic fake LLM at the LLM boundary only, Mongo/OTel ID
+consistency) lives in the repo-level Compose runner: ``e2e/run_e2e.py``.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ class FakeCore:
 
 
 @pytest_asyncio.fixture
-async def e2e(_engine, session):
+async def bff_app(_engine, session):
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     app = create_app(
@@ -68,8 +70,8 @@ async def e2e(_engine, session):
     return app, session
 
 
-async def test_minimal_flow(e2e) -> None:
-    app, session = e2e
+async def test_bff_minimal_flow(bff_app) -> None:
+    app, session = bff_app
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # 1. create with idempotency key; replay returns the same id.
         created = await client.post(

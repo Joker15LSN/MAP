@@ -7,10 +7,14 @@ Legacy endpoints (``/api/chat*``, ``/api/admin/*``) keep FastAPI's default
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CODES = {
     400: "BAD_REQUEST",
@@ -61,11 +65,18 @@ def _is_new_api(path: str) -> bool:
 
 
 def _sanitize_errors(errors: list) -> list:
-    """Make validation errors JSON-safe (exception objects -> str)."""
+    """Make validation errors JSON-safe (exception/bytes objects -> str).
+
+    Pydantic includes the raw ``input`` in each error; when the request
+    body could not be parsed as JSON that value is ``bytes``, which would
+    otherwise make JSONResponse rendering itself crash (422 -> 500).
+    """
 
     def _clean(value):
         if isinstance(value, Exception):
             return str(value)
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value).decode("utf-8", errors="replace")
         if isinstance(value, dict):
             return {k: _clean(v) for k, v in value.items()}
         if isinstance(value, (list, tuple)):
@@ -92,7 +103,9 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def _validation_exception(request: Request, exc: RequestValidationError) -> JSONResponse:
         if not _is_new_api(request.url.path):
-            return JSONResponse(status_code=422, content={"detail": exc.errors()})
+            return JSONResponse(
+                status_code=422, content={"detail": _sanitize_errors(exc.errors())}
+            )
         return JSONResponse(
             status_code=422,
             content=error_envelope(
@@ -101,5 +114,23 @@ def install_error_handlers(app: FastAPI) -> None:
                 "VALIDATION_ERROR",
                 "request validation failed",
                 details=_sanitize_errors(exc.errors()),
+            ),
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        """R2-P2-04: unexpected errors on the new API also use the envelope.
+
+        Legacy paths keep Starlette's plain-text 500 so old clients see no
+        behaviour change.
+        """
+        if not _is_new_api(request.url.path):
+            logger.exception("unhandled error on %s %s", request.method, request.url.path)
+            return PlainTextResponse("Internal Server Error", status_code=500)
+        logger.exception("unhandled error on %s %s", request.method, request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content=error_envelope(
+                request, 500, "INTERNAL_ERROR", "internal server error"
             ),
         )
