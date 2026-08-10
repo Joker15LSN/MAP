@@ -1,29 +1,46 @@
-"""Audit chain verification (FIX-P1-AUDIT-01).
+"""Audit chain verification (FIX-P1-AUDIT-01 / R2-P1-03).
 
-Recomputes every config_audit_events entry_hash from the previous one and
-reports the first broken link (or OK). Read-only, re-runnable.
+Recomputes every config_audit_events entry_hash from the previous one —
+walking the chain by ``ordinal`` and using the persisted ``error_message``
+— and reports the first broken link (or OK). Read-only, re-runnable, and
+never rewrites history.
 
-Usage:
+If the chain is broken, quarantine the bad suffix (migrator DSN
+required):
+    MAP_CONTROL_MIGRATION_DSN=postgresql+asyncpg://map_migrator:...@... \
+        uv run python -m scripts.quarantine_audit_chain
+
+Usage (run from the project root; both forms work, R2-P2-04):
     MAP_CONTROL_DB_DSN=postgresql+asyncpg://map:map@127.0.0.1:15432/map \
-        uv run python scripts/verify_audit_chain.py
+        uv run python -m scripts.verify_audit_chain
+    MAP_CONTROL_DB_DSN=... uv run python scripts/verify_audit_chain.py
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import sys
+from pathlib import Path
 
-from sqlalchemy import text
+# R2-P2-04: make `python scripts/verify_audit_chain.py` importable from a
+# clean checkout — script execution puts only scripts/ on sys.path, so the
+# project root must be added explicitly before importing `app`.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
-from app.db.session import build_engine
-from app.services.config_mutation import audit_record_payload, compute_entry_hash
+from sqlalchemy import text  # noqa: E402
+
+from app.api.audit_events import verify_chain_rows  # noqa: E402
+from app.db.session import build_engine  # noqa: E402
 
 _SQL = text(
     "SELECT id, workspace_id, resource_type, resource_id, action, "
     "actor_user_id, actor_subject, actor_roles, request_id, status, "
     "failure_code, before_hash, after_hash, json_patch, recovered, "
-    "prev_entry_hash, entry_hash "
-    "FROM map_control.config_audit_events ORDER BY created_at, id"
+    "error_message, prev_entry_hash, entry_hash, ordinal "
+    "FROM map_control.config_audit_events ORDER BY ordinal"
 )
 
 
@@ -35,34 +52,15 @@ async def _run() -> int:
         rows = (await conn.execute(_SQL)).all()
     await engine.dispose()
 
-    prev = ""
-    for index, row in enumerate(rows):
-        record = audit_record_payload(
-            workspace_id=row.workspace_id,
-            resource_type=row.resource_type,
-            resource_id=row.resource_id,
-            action=row.action,
-            actor_user_id=row.actor_user_id,
-            actor_subject=row.actor_subject,
-            actor_roles=list(row.actor_roles or []),
-            request_id=row.request_id,
-            status=row.status,
-            failure_code=row.failure_code,
-            before_hash=row.before_hash,
-            after_hash=row.after_hash,
-            json_patch=row.json_patch,
-            recovered=row.recovered,
-            error_message=None,
+    count, broken_at = verify_chain_rows(rows)
+    if broken_at is not None:
+        print(
+            f"BROKEN_CHAIN at {broken_at} (events={count}); "
+            "run scripts/quarantine_audit_chain.py with the migrator DSN "
+            "to isolate the broken suffix — history is never rewritten"
         )
-        expected = compute_entry_hash(prev, record)
-        if row.entry_hash != expected or row.prev_entry_hash != (prev or None):
-            print(
-                f"BROKEN_CHAIN at index={index} event_id={row.id} "
-                f"expected={expected} stored={row.entry_hash}"
-            )
-            return 1
-        prev = row.entry_hash
-    print(f"CHAIN_OK events={len(rows)}")
+        return 1
+    print(f"CHAIN_OK events={count}")
     return 0
 
 

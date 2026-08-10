@@ -11,9 +11,10 @@ reason_other from legacy kind/reason rows). This script reports:
 
 Re-runnable: read-only.
 
-Usage:
+Usage (run from the project root; both forms work, R2-P2-04):
     MAP_CONTROL_DB_DSN=postgresql+asyncpg://map:map@127.0.0.1:15432/map \
-        uv run python scripts/verify_feedback_backfill.py
+        uv run python -m scripts.verify_feedback_backfill
+    MAP_CONTROL_DB_DSN=... uv run python scripts/verify_feedback_backfill.py
 """
 
 from __future__ import annotations
@@ -22,10 +23,18 @@ import asyncio
 import hashlib
 import json
 import os
+import sys
+from pathlib import Path
 
-from sqlalchemy import text
+# R2-P2-04: make `python scripts/verify_feedback_backfill.py` importable
+# from a clean checkout (script execution puts only scripts/ on sys.path).
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
-from app.db.session import build_engine
+from sqlalchemy import text  # noqa: E402
+
+from app.db.session import build_engine  # noqa: E402
 
 DSN = os.getenv(
     "MAP_CONTROL_DB_DSN", "postgresql+asyncpg://map:map@127.0.0.1:15432/map"
