@@ -273,6 +273,29 @@ import `app.main` 零文件系统副作用（PEP 562 惰性单例，修复前 OS
 
 ### 10.4 最终 gate / E2E 证据（在不可变 SHA 上运行）
 
-- 待最终运行时回填：`bash scripts/release_gate.sh` 的 `[gate] steps=`
-  输出、`tmp/gate-logs/` 全量 artifact、`e2e/run_e2e.py --suite full`
-  连续两次干净 volume 的报告 JSON 与 git SHA。
+- 最终 SHA：`e0a0320bb63370bca8b7ccef4578e6168eb1fff0`（分支
+  `qoder/dev-modelscope`；R3 工作包提交序列：`db5378a`(identity) →
+  `3c1ed88`(conversation) → `2bc168e`(worker/effect, R3-P0-01) →
+  `d8a6df3`(mutation, R3-P1-01) → `1a60a22`(audit+筛选契约, R3-P1-03) →
+  `c017302`(E2E+CI, R3-P1-02) → `08e5840`(OpenAPI, R3-P2-02) →
+  `1f25ac4`(PG roles, R3-P2-03) → `f0d2af1`(质量 gate, R3-P2-01) →
+  `3e953e7`(供应链, R3-P2-04) → `96a12e1`→amend→lint 修复 `e0a0320`
+  (R3-P1-04)）。`git diff --check 9021065..HEAD` 为空；提交后
+  `git status --short` 为空。
+- 最终 gate（在 `e0a0320` 上）：`bash scripts/release_gate.sh` 输出
+  `[gate] steps=21 failed=0`、`RELEASE GATE PASSED`，全量 artifact 在
+  `tmp/gate-logs/`（diff-check / compose-config / 三后端 deps+lint+test /
+  两前端 deps+test+build+audit / bundle-gate / py-dep-audit，全部
+  exit=0）。首轮 gate 在 `93446de` 曾暴露 bff-lint 两处（test 导入排序
+  I001、行长 E501），已在 `e0a0320` 修复并复跑全绿。
+- E2E（`e2e/run_e2e.py --suite full`，每次全新命名 volume，结束后
+  `down -v`）：
+  1. run1 PASS — `e2e/tmp/report-map-e2e-407e09fa.json`；
+  2. run2 PASS — `e2e/tmp/report-map-e2e-c99b1f63.json`；
+  3. run3 PASS（在不可变 SHA `e0a0320` 上）—
+     `e2e/tmp/report-map-e2e-d71fdbb3.json`。
+  三次均覆盖 happy path + browser（刷新恢复/stop/feedback/撤回）+
+  secure identity boundary + 故障矩阵（BFF restart、PostgreSQL
+  interruption、worker kill + lease takeover，`takeover_attempt: 2` 证明
+  lease 被接管恰好一次）+ PG/Mongo/Jaeger 交叉校验。报告 JSON 位于被
+  gitignore 的 `e2e/tmp/`（运行产物不入交付集合）。
