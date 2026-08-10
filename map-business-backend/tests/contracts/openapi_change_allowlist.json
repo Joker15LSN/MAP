@@ -1,0 +1,11 @@
+{
+  "comment": [
+    "R2-P2-04: explicit-review allowlist for OpenAPI schema drift.",
+    "An entry allows schema differences under 'path_prefix' ONLY until 'expires'.",
+    "Expired entries fail the contract test; empty entries = exact schema match.",
+    "Fields: path_prefix (dot-path prefix in the OpenAPI document), reason,",
+    "approved_by (a person, not a role), approved_at (YYYY-MM-DD),",
+    "expires (YYYY-MM-DD)."
+  ],
+  "entries": []
+}

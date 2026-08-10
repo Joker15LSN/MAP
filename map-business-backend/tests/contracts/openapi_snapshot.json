@@ -2328,6 +2328,7 @@
     },
     "/api/admin/audit-logs": {
       "get": {
+        "description": "Legacy read-only facade (R2-P1-02): maps the new hash-chained\n``config_audit_events`` into the old audit-log shape. The legacy\n``audit_logs`` table no longer receives product writes.",
         "operationId": "get_audit_logs_api_admin_audit_logs_get",
         "parameters": [
           {
@@ -4702,6 +4703,60 @@
           },
           {
             "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "description": "Inclusive lower bound, timezone-aware ISO-8601",
+            "in": "query",
+            "name": "created_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive lower bound, timezone-aware ISO-8601",
+              "title": "Created From"
+            }
+          },
+          {
+            "description": "Inclusive upper bound, timezone-aware ISO-8601",
+            "in": "query",
+            "name": "created_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive upper bound, timezone-aware ISO-8601",
+              "title": "Created To"
+            }
+          },
+          {
+            "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
@@ -4756,7 +4811,7 @@
     },
     "/api/v1/admin/audit-events/verify": {
       "get": {
-        "description": "Verify the entry_hash chain; report the first broken link.",
+        "description": "Verify the entry_hash chain by ordinal; report the first broken link.",
         "operationId": "verify_audit_chain_api_v1_admin_audit_events_verify_get",
         "responses": {
           "200": {
@@ -5373,6 +5428,7 @@
     },
     "/api/v1/messages/{message_id}:stop": {
       "post": {
+        "description": "Stop a running stream.\n\nR2-P1-01: the registry hit is checked and logged; ``abort=True`` means\nthe in-flight stream was found, its abort event set AND its upstream\nconsumer task cancelled (core's HTTP stream closed at once). The\nregistry is per-instance: multi-instance deployments must sticky-route\nstop requests by message_id (the conditional DB terminal write below\nstays correct regardless).",
         "operationId": "stop_message_api_v1_messages__message_id__stop_post",
         "parameters": [
           {
