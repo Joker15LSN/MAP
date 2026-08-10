@@ -14,6 +14,7 @@ start/meta/content_delta/done/error.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -31,6 +32,8 @@ from ..services.conversation_service import (
 from ..services.idempotency import IdempotencyConflictError, IdempotencyService, hash_request
 from .chat import _forward_headers
 from .deps import get_core_client, get_principal
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -237,6 +240,15 @@ async def stop_message(
     request: Request,
     principal: RequestPrincipal = Depends(get_principal),
 ) -> dict[str, Any]:
+    """Stop a running stream.
+
+    R2-P1-01: the registry hit is checked and logged; ``abort=True`` means
+    the in-flight stream was found, its abort event set AND its upstream
+    consumer task cancelled (core's HTTP stream closed at once). The
+    registry is per-instance: multi-instance deployments must sticky-route
+    stop requests by message_id (the conditional DB terminal write below
+    stays correct regardless).
+    """
     repo = ConversationRepository(session)
     workspace_id = _workspace_uuid(principal)
     if workspace_id is None:
@@ -245,13 +257,14 @@ async def stop_message(
     if message is None:
         raise HTTPException(status_code=404, detail="message not found")
 
-    # 1) Signal the in-flight stream (cancels the downstream request at its
-    #    next chunk boundary).
+    # 1) Signal the in-flight stream: sets the abort event AND cancels the
+    #    upstream consumer, closing the core stream immediately.
     registry = request.app.state.stream_registry
-    registry.abort(message_id)
+    aborted = registry.abort(message_id)
 
     # 2) Conditional terminal write: only a still-streaming message flips to
     #    stopped. If done already won the race, the status stays completed.
+    finalized = False
     if message.status == "streaming":
         await repo.finalize_message(
             message_id,
@@ -260,5 +273,16 @@ async def stop_message(
             error_message="stopped by user",
         )
         await session.commit()
+        finalized = True
+    logger.info(
+        "stream stop requested message_id=%s registry_hit=%s aborted=%s "
+        "db_finalized=%s prior_status=%s user=%s",
+        message_id,
+        aborted,
+        aborted,
+        finalized,
+        message.status,
+        principal.user_id,
+    )
     message = await repo.get_owned_message(message_id, workspace_id, principal.user_id)
-    return _to_message_view(message)
+    return {**_to_message_view(message), "abort": aborted}

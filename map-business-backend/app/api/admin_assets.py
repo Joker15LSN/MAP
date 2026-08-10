@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from ..core.identity import RequestPrincipal
 from ..core_client import MapCoreClient
+from ..db.session import DbSession
 from ..repositories.config import ConfigRepository
 from ..schemas import (
     AdminState,
@@ -30,15 +31,39 @@ from ..schemas import (
     UploadedSkill,
 )
 from ..services.audit import admin_write_guard
+from ..services.config_mutation import ConfigMutationService
 from ..services.runtime_payloads import (
     build_dispatch_config_payload,
     build_scene_selection_payload,
     skill_runtime_tool_name,
     slugify,
 )
-from .deps import get_core_client, get_store
+from .deps import get_core_client, get_principal, get_store
 
 router = APIRouter()
+
+
+async def _audited_update(
+    request: Request,
+    session: DbSession,
+    resource_type: str,
+    resource_id: str,
+    action: str,
+    updater,
+):
+    """Route all AdminState writes through the ConfigMutationService
+    (R2-P1-02: no router-level store.update may bypass the audit chain)."""
+    store = request.app.state.store
+    service = ConfigMutationService(store)
+    return await service.apply_mutation(
+        session=session,
+        request=request,
+        principal=get_principal(request),
+        resource_type=resource_type,
+        resource_id=resource_id,
+        action=action,
+        updater=updater,
+    )
 
 
 def _now_iso() -> str:
@@ -80,7 +105,8 @@ async def get_business_agents(
 @router.post("/api/admin/business-agents")
 async def post_business_agent(
     payload: BusinessAgentConfig,
-    store: ConfigRepository = Depends(get_store),
+    request: Request,
+    session: DbSession,
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> BusinessAgentConfig:
     now = datetime.now().isoformat()
@@ -95,7 +121,9 @@ async def post_business_agent(
         draft.business_agents.append(created)
         return created
 
-    _, created = store.update(_append)
+    _, created = await _audited_update(
+        request, session, "business_agent", payload.agent_code, "create", _append
+    )
     return created
 
 
@@ -103,7 +131,8 @@ async def post_business_agent(
 async def put_business_agent(
     agent_code: str,
     payload: BusinessAgentConfig,
-    store: ConfigRepository = Depends(get_store),
+    request: Request,
+    session: DbSession,
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> BusinessAgentConfig:
     if payload.agent_code != agent_code:
@@ -119,7 +148,9 @@ async def put_business_agent(
                 return updated
         raise HTTPException(status_code=404, detail=f"agent {agent_code} not found")
 
-    _, updated = store.update(_update)
+    _, updated = await _audited_update(
+        request, session, "business_agent", agent_code, "update", _update
+    )
     return updated
 
 
@@ -187,17 +218,26 @@ async def get_mcp_servers(store: ConfigRepository = Depends(get_store)) -> list[
 @router.put("/api/admin/mcp-servers")
 async def put_mcp_servers(
     payload: list[McpServerConfig],
-    store: ConfigRepository = Depends(get_store),
+    request: Request,
+    session: DbSession,
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[McpServerConfig]:
-    state, _ = store.update(lambda draft: setattr(draft, "mcp_servers", payload))
+    state, _ = await _audited_update(
+        request,
+        session,
+        "mcp_server",
+        "collection",
+        "update",
+        lambda draft: setattr(draft, "mcp_servers", payload),
+    )
     return state.mcp_servers
 
 
 @router.post("/api/admin/mcp-servers")
 async def post_mcp_server(
     payload: McpServerConfig,
-    store: ConfigRepository = Depends(get_store),
+    request: Request,
+    session: DbSession,
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> McpServerConfig:
     def _upsert(draft: AdminState) -> McpServerConfig:
@@ -208,7 +248,9 @@ async def post_mcp_server(
         draft.mcp_servers.insert(0, payload)
         return payload
 
-    _, server = store.update(_upsert)
+    _, server = await _audited_update(
+        request, session, "mcp_server", payload.server_id, "upsert", _upsert
+    )
     return server
 
 
@@ -276,6 +318,8 @@ async def _probe_mcp_tools(server: McpServerConfig) -> tuple[list[McpToolConfig]
 @router.post("/api/admin/mcp-servers/{server_id}/refresh-tools")
 async def refresh_mcp_server_tools(
     server_id: str,
+    request: Request,
+    session: DbSession,
     store: ConfigRepository = Depends(get_store),
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> McpServerConfig:
@@ -299,7 +343,9 @@ async def refresh_mcp_server_tools(
                 return updated
         raise HTTPException(status_code=404, detail=f"MCP server {server_id} not found")
 
-    _, updated = store.update(_update)
+    _, updated = await _audited_update(
+        request, session, "mcp_server", server_id, "refresh_tools", _update
+    )
     return updated
 
 
@@ -311,7 +357,8 @@ async def get_uploaded_skills(store: ConfigRepository = Depends(get_store)) -> l
 @router.put("/api/admin/skills")
 async def put_uploaded_skills(
     payload: list[UploadedSkill],
-    store: ConfigRepository = Depends(get_store),
+    request: Request,
+    session: DbSession,
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> list[UploadedSkill]:
     def _replace(draft: AdminState) -> list[UploadedSkill]:
@@ -319,7 +366,9 @@ async def put_uploaded_skills(
         _sync_uploaded_skills_to_skillhub(draft)
         return draft.skills
 
-    _, skills = store.update(_replace)
+    _, skills = await _audited_update(
+        request, session, "skill", "collection", "update", _replace
+    )
     return skills
 
 
@@ -410,7 +459,8 @@ def _sync_uploaded_skills_to_skillhub(draft: AdminState) -> None:
 @router.post("/api/admin/skills/upload")
 async def upload_skill(
     payload: SkillUploadRequest,
-    store: ConfigRepository = Depends(get_store),
+    request: Request,
+    session: DbSession,
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> UploadedSkill:
     uploaded = _skill_from_upload(payload)
@@ -425,5 +475,7 @@ async def upload_skill(
         _sync_uploaded_skills_to_skillhub(draft)
         return uploaded
 
-    _, skill = store.update(_upsert)
+    _, skill = await _audited_update(
+        request, session, "skill", uploaded.skill_id, "upload", _upsert
+    )
     return skill

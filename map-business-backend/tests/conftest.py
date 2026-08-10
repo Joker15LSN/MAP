@@ -10,7 +10,12 @@ import pytest
 import pytest_asyncio
 from otel_env import OTEL_ENV_VARS
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -40,11 +45,25 @@ def _hermetic_otel_env(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Shared DB fixtures (used by tests/integration and tests/e2e).
+#
+# R2-P1-04: the suite exercises the REAL compose role separation:
+#   APP_DSN       - the backend/worker business role (non-superuser, DML)
+#   MIGRATION_DSN - the migration role (Alembic DDL)
+#   ADMIN_DSN     - the bootstrap/admin role (test isolation: TRUNCATE)
 # ---------------------------------------------------------------------------
 
-TEST_DSN = os.getenv(
+APP_DSN = os.getenv(
     "MAP_CONTROL_TEST_DSN",
     "postgresql+asyncpg://map:map@127.0.0.1:15432/map",
+)
+TEST_DSN = APP_DSN  # historical alias used across integration tests
+MIGRATION_DSN = os.getenv(
+    "MAP_CONTROL_MIGRATION_TEST_DSN",
+    "postgresql+asyncpg://map_migrator:map-migrator-local@127.0.0.1:15432/map",
+)
+ADMIN_DSN = os.getenv(
+    "MAP_CONTROL_ADMIN_TEST_DSN",
+    "postgresql+asyncpg://map_admin:map-admin-local@127.0.0.1:15432/map",
 )
 
 
@@ -56,14 +75,21 @@ async def run_alembic_upgrade() -> None:
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cfg = Config(os.path.join(project_root, "alembic.ini"))
     cfg.set_main_option("script_location", os.path.join(project_root, "app/db/migrations"))
-    os.environ["MAP_CONTROL_MIGRATION_DSN"] = TEST_DSN
+    os.environ["MAP_CONTROL_MIGRATION_DSN"] = MIGRATION_DSN
     await asyncio.to_thread(command.upgrade, cfg, "head")
+
+
+def _test_engine(dsn: str) -> AsyncEngine:
+    # pool_pre_ping mirrors production build_engine(): client disconnects
+    # cancel mid-DB-await and can kill a pooled asyncpg connection; a dead
+    # connection must never be handed out again.
+    return create_async_engine(dsn, pool_pre_ping=True)
 
 
 @pytest_asyncio.fixture
 async def _engine():
     await run_alembic_upgrade()
-    engine = create_async_engine(TEST_DSN)
+    engine = _test_engine(APP_DSN)
     yield engine
     await engine.dispose()
 
@@ -71,8 +97,11 @@ async def _engine():
 @pytest_asyncio.fixture
 async def session(_engine) -> AsyncIterator[AsyncSession]:
     factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as s:
-        await s.execute(
+    # Test isolation runs with the admin role: the app role intentionally
+    # has no TRUNCATE (append-only audit contract, R2-P1-04).
+    admin_engine = _test_engine(ADMIN_DSN)
+    async with admin_engine.begin() as admin_conn:
+        await admin_conn.execute(
             text(
                 "DO $$ DECLARE r RECORD; BEGIN "
                 "FOR r IN SELECT tablename FROM pg_tables "
@@ -81,23 +110,20 @@ async def session(_engine) -> AsyncIterator[AsyncSession]:
                 "END LOOP; END $$;"
             )
         )
-        await s.commit()
+    await admin_engine.dispose()
+    async with factory() as s:
         yield s
         await s.rollback()
 
 
 """Integration test fixtures: real PostgreSQL via docker compose.
 
-The suite expects a PostgreSQL reachable at ``MAP_CONTROL_TEST_DSN``
-(defaults to the compose-local instance on 127.0.0.1:15432). Migrations are
-applied with Alembic before each test (idempotent); every test truncates
-the map_control tables for isolation.
+The suite expects a fresh compose database reachable at ``MAP_CONTROL_TEST_DSN``
+(app role, defaults to the compose-local instance on 127.0.0.1:15432).
+Migrations are applied with Alembic via the migration role before each test
+(idempotent); every test truncates the map_control tables with the admin
+role for isolation.
 
 The engine fixture is function-scoped and async so the asyncpg connection
 is created and closed on the same event loop as the test.
 """
-
-TEST_DSN = os.getenv(
-    "MAP_CONTROL_TEST_DSN",
-    "postgresql+asyncpg://map:map@127.0.0.1:15432/map",
-)

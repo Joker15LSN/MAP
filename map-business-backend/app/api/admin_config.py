@@ -617,25 +617,30 @@ async def get_audit_logs(
     offset: int = 0,
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> dict[str, Any]:
+    """Legacy read-only facade (R2-P1-02): maps the new hash-chained
+    ``config_audit_events`` into the old audit-log shape. The legacy
+    ``audit_logs`` table no longer receives product writes."""
     from sqlalchemy import func, select
 
-    from ..db.models import AuditLog
+    from ..db.models import ConfigAuditEvent
 
     conditions = []
     if actor:
-        conditions.append(AuditLog.actor_user_id == actor)
+        conditions.append(ConfigAuditEvent.actor_user_id == actor)
     if action:
-        conditions.append(AuditLog.action == action)
+        conditions.append(ConfigAuditEvent.action == action)
     if resource_type:
-        conditions.append(AuditLog.resource_type == resource_type)
+        conditions.append(ConfigAuditEvent.resource_type == resource_type)
 
     total = (
-        await session.execute(select(func.count()).select_from(AuditLog).where(*conditions))
+        await session.execute(
+            select(func.count()).select_from(ConfigAuditEvent).where(*conditions)
+        )
     ).scalar_one()
     result = await session.execute(
-        select(AuditLog)
+        select(ConfigAuditEvent)
         .where(*conditions)
-        .order_by(AuditLog.created_at.desc())
+        .order_by(ConfigAuditEvent.created_at.desc())
         .limit(min(limit, 200))
         .offset(max(offset, 0))
     )
@@ -645,12 +650,13 @@ async def get_audit_logs(
         "items": [
             {
                 "id": str(row.id),
-                "workspace_id": str(row.workspace_id),
+                "workspace_id": str(row.workspace_id) if row.workspace_id else None,
                 "actor_user_id": row.actor_user_id,
                 "action": row.action,
                 "resource_type": row.resource_type,
                 "resource_id": row.resource_id,
                 "request_id": row.request_id,
+                "status": row.status,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
             for row in rows
