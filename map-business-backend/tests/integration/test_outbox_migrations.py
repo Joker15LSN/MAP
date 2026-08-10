@@ -61,13 +61,17 @@ async def test_rollback_removes_both_domain_and_outbox_rows(session) -> None:
 async def test_migrations_upgrade_downgrade_roundtrip(_engine) -> None:
     """Downgrade one revision, then upgrade to head again (empty DB)."""
     from alembic.config import Config
+    from conftest import ADMIN_DSN
+    from sqlalchemy.ext.asyncio import create_async_engine
 
     project_root = "/Users/liusongnan/MAP/map-business-backend"
     cfg = Config(f"{project_root}/alembic.ini")
     cfg.set_main_option("script_location", f"{project_root}/app/db/migrations")
 
-    # Truncate product tables so downgrade can run.
-    async with _engine.connect() as conn:
+    # Truncate product tables so downgrade can run. The admin role does it:
+    # the app role has no TRUNCATE on audit tables (R2-P1-04).
+    admin_engine = create_async_engine(ADMIN_DSN)
+    async with admin_engine.begin() as conn:
         await conn.execute(
             text(
                 "DO $$ DECLARE r RECORD; BEGIN "
@@ -77,7 +81,7 @@ async def test_migrations_upgrade_downgrade_roundtrip(_engine) -> None:
                 "END LOOP; END $$;"
             )
         )
-        await conn.commit()
+    await admin_engine.dispose()
 
     # Downgrade one step and upgrade back; both must succeed.
     await _run_alembic(cfg, "downgrade", "-1")

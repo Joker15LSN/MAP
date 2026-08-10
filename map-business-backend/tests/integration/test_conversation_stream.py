@@ -1,8 +1,13 @@
-"""FIX-P1-CONV-01 acceptance: stream state machine, buffering, stop, replay.
+"""FIX-P1-CONV-01 / R2-P1-01 acceptance: stream state machine, buffering,
+stop, replay, registry lifecycle.
 
 - byte-split streams: identical final events/content/status (E-03)
 - EOF without done / error-then-done / bad JSON / duplicate done / abort
-- stop vs done race (50 runs): exactly one terminal state, core stops
+- stop vs done race (50 runs): exactly one terminal state, losing side
+  stops executing, registry never leaks
+- R2-P1-01: mid-stream registry hit, stop abort=True + upstream finally
+  fired + side effects frozen; hung core cancelled within timeout;
+  client disconnect cancels upstream; registry empty on every exit path
 - reconciler marks stale streaming as interrupted, idempotent
 - concurrent identical request_id -> exactly one pair
 - user B replaying A's request_id -> 404, never A's content
@@ -12,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import uuid
@@ -40,21 +46,60 @@ STREAM = (
 
 
 class FakeStreamCoreClient:
-    """Core double: byte-splittable stream, abort/stop observation."""
+    """Core double: byte-splittable stream, abort/stop observation.
 
-    def __init__(self, stream: bytes = STREAM, split: int | None = None) -> None:
+    R2-P1-01 observability:
+    - ``side_effect_count`` increments once per produced chunk (stands in
+      for core tool calls / external side effects); after a successful stop
+      it must freeze;
+    - ``closed`` is set in the upstream generator ``finally`` (fires both on
+      natural exhaustion and on aclose/cancel);
+    - ``completed_normally`` is only set when every chunk was consumed, so a
+      cancelled stream can be told apart from a finished one.
+    """
+
+    def __init__(
+        self,
+        stream: bytes = STREAM,
+        split: int | None = None,
+        chunks: list[bytes] | None = None,
+        chunk_delay_s: float = 0.0,
+        hang_after: int | None = None,
+        hang_seconds: float = 60.0,
+    ) -> None:
         self.stream = stream
         self.split = split
+        self.chunks = chunks
+        self.chunk_delay_s = chunk_delay_s
+        self.hang_after = hang_after
+        self.hang_seconds = hang_seconds
         self.aborted = False
         self.fail_setup = False
+        self.closed = asyncio.Event()
+        self.completed_normally = False
+        self.side_effect_count = 0
+
+    def _chunks(self) -> list[bytes]:
+        if self.chunks is not None:
+            return list(self.chunks)
+        if self.split is None:
+            return [self.stream]
+        return [self.stream[: self.split], self.stream[self.split :]]
 
     async def _stream(self):
-        if self.fail_setup:
-            raise RuntimeError("core down")
-        chunk = self.stream if self.split is None else self.stream[: self.split]
-        yield chunk
-        if self.split is not None and self.split < len(self.stream):
-            yield self.stream[self.split :]
+        try:
+            if self.fail_setup:
+                raise RuntimeError("core down")
+            for produced, chunk in enumerate(self._chunks()):
+                if self.hang_after is not None and produced >= self.hang_after:
+                    await asyncio.sleep(self.hang_seconds)  # core hang
+                if self.chunk_delay_s:
+                    await asyncio.sleep(self.chunk_delay_s)
+                self.side_effect_count += 1  # one unit of core work
+                yield chunk
+            self.completed_normally = True
+        finally:
+            self.closed.set()
 
     async def stream_chat(self, payload, headers):
         async for c in self._stream():
@@ -225,7 +270,8 @@ async def test_duplicate_done_is_idempotent(app_and_core, session) -> None:
 
 
 async def test_stop_race_with_done_only_one_terminal_state(app_and_core, session) -> None:
-    """50 runs: stop vs done race -> exactly one terminal state, core stops."""
+    """50 runs: stop vs done race -> exactly one terminal state; the losing
+    side stops executing (side effects freeze) and the registry never leaks."""
     app, _ = app_and_core
     registry = app.state.stream_registry
 
@@ -262,7 +308,19 @@ async def test_stop_race_with_done_only_one_terminal_state(app_and_core, session
             assert statuses == ["stopped"] or statuses == ["completed"], statuses
             outcomes.add(statuses[0])
 
-        registry.unregister(uuid.UUID("00000000-0000-0000-0000-000000000000"))  # no-op
+        # Losing side must not keep executing: once the stream task is over
+        # the upstream is either exhausted or cancelled, so the side-effect
+        # count freezes.
+        for _ in range(100):
+            if core.closed.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert core.closed.is_set()
+        first = core.side_effect_count
+        await asyncio.sleep(0.02)
+        assert core.side_effect_count == first
+        # No registry leak, no pending consumer task.
+        assert registry.active_count() == 0
 
     assert outcomes <= {"stopped", "completed"}
 
@@ -286,6 +344,194 @@ async def _assistant_id(app, conversation_id) -> uuid.UUID:
                     return m.id
         await asyncio.sleep(0.02)
     raise AssertionError("assistant message never appeared")
+
+
+def _slow_chunks(count: int = 20) -> list[bytes]:
+    chunks = [
+        f'event: content_delta\ndata: {{"content":"c{i}"}}\n\n'.encode() for i in range(count)
+    ]
+    content = "".join(f"c{i}" for i in range(count))
+    chunks.append(f'event: done\ndata: {{"content":"{content}","task_id":"t-slow"}}\n\n'.encode())
+    return chunks
+
+
+async def _wait_until(predicate, timeout_s: float = 5.0, interval_s: float = 0.005) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("condition not met within timeout")
+        await asyncio.sleep(interval_s)
+
+
+async def test_stop_hits_registry_mid_stream_and_freezes_side_effects(
+    app_and_core, session
+) -> None:
+    """R2-P1-01: mid-stream active_count==1 (registry must NOT unregister
+    before the upstream is consumed); stop returns abort=True, upstream
+    finally fires, and core side effects freeze afterwards."""
+    app, _ = app_and_core
+    registry = app.state.stream_registry
+    core = FakeStreamCoreClient(chunks=_slow_chunks(), chunk_delay_s=0.03)
+    app.state.core_client = core
+
+    async with await _client(app) as client:
+        conversation_id = await _new_conversation(client)
+        task = asyncio.create_task(
+            client.post(
+                f"/api/v1/conversations/{conversation_id}/messages:stream",
+                json={"query": "hi", "request_id": "req-stop-mid"},
+            )
+        )
+
+        # Mid-stream: core has already produced chunks AND the registry
+        # still holds the stream (the exact R2 regression).
+        await _wait_until(lambda: core.side_effect_count >= 2 and registry.active_count() == 1)
+
+        message_id = await _assistant_id(app, conversation_id)
+        stop_response = await client.post(f"/api/v1/messages/{message_id}:stop")
+        assert stop_response.status_code == 200
+        assert stop_response.json()["abort"] is True
+
+        response = await asyncio.wait_for(task, timeout=5)
+        events = _parse_sse(response.content)
+        assert events[-1][0] == "done"
+        assert events[-1][1]["status"] == "stopped"
+
+        # Upstream generator finally ran (core HTTP stream really closed)
+        # and the stream did not run to natural completion.
+        await _wait_until(core.closed.is_set)
+        assert not core.completed_normally
+
+        # Side effects freeze after stop: core keeps no producing.
+        first = core.side_effect_count
+        await asyncio.sleep(0.15)
+        assert core.side_effect_count == first
+
+        # Second stop after the terminal state: registry already empty.
+        again = await client.post(f"/api/v1/messages/{message_id}:stop")
+        assert again.status_code == 200
+        assert again.json()["abort"] is False
+
+    # Registry is exactly zero once the stream has ended.
+    assert registry.active_count() == 0
+
+
+async def test_stop_cancels_hung_upstream_within_timeout(app_and_core, session) -> None:
+    """R2-P1-01: core hangs after the first chunk; stop must cancel the
+    hung upstream read within the timeout instead of waiting for a chunk
+    that never comes."""
+    app, _ = app_and_core
+    registry = app.state.stream_registry
+    core = FakeStreamCoreClient(
+        chunks=[
+            b'event: content_delta\ndata: {"content":"h"}\n\n',
+            b'event: done\ndata: {"content":"never"}\n\n',
+        ],
+        hang_after=1,
+        hang_seconds=60,
+    )
+    app.state.core_client = core
+
+    async with await _client(app) as client:
+        conversation_id = await _new_conversation(client)
+        task = asyncio.create_task(
+            client.post(
+                f"/api/v1/conversations/{conversation_id}/messages:stream",
+                json={"query": "hi", "request_id": "req-hang"},
+            )
+        )
+        # Core produced the first chunk and now sleeps inside the hang.
+        await _wait_until(lambda: core.side_effect_count >= 1 and registry.active_count() == 1)
+        await asyncio.sleep(0.02)
+
+        message_id = await _assistant_id(app, conversation_id)
+        started = asyncio.get_running_loop().time()
+        stop_response = await client.post(f"/api/v1/messages/{message_id}:stop")
+        assert stop_response.json()["abort"] is True
+        response = await asyncio.wait_for(task, timeout=5)  # must not wait 60s
+        elapsed = asyncio.get_running_loop().time() - started
+        assert elapsed < 5
+
+        events = _parse_sse(response.content)
+        assert events[-1][1]["status"] == "stopped"
+        await _wait_until(core.closed.is_set)
+        assert not core.completed_normally
+
+    assert registry.active_count() == 0
+
+
+async def test_client_disconnect_cancels_upstream_and_unregisters(
+    app_and_core, session
+) -> None:
+    """R2-P1-01: client disconnect follows the same cleanup path — upstream
+    cancelled, registry unregistered, message stopped."""
+    app, _ = app_and_core
+    registry = app.state.stream_registry
+    core = FakeStreamCoreClient(chunks=_slow_chunks(), chunk_delay_s=0.03)
+    app.state.core_client = core
+
+    async with await _client(app) as client:
+        conversation_id = await _new_conversation(client)
+        task = asyncio.create_task(
+            client.post(
+                f"/api/v1/conversations/{conversation_id}/messages:stream",
+                json={"query": "hi", "request_id": "req-disconnect"},
+            )
+        )
+        await _wait_until(lambda: core.side_effect_count >= 2 and registry.active_count() == 1)
+
+        # Client goes away mid-stream.
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        # Unified cleanup: upstream closed and registry drained.
+        await _wait_until(lambda: core.closed.is_set() and registry.active_count() == 0)
+        assert not core.completed_normally
+
+        # The stopped terminal write is a shielded detached write (the
+        # request session dies with the cancelled request): poll for it.
+        async def _assistant_status():
+            detail = (await client.get(f"/api/v1/conversations/{conversation_id}")).json()
+            return next(m for m in detail["messages"] if m["role"] == "assistant")
+
+        for _ in range(200):
+            assistant = await _assistant_status()
+            if assistant["status"] == "stopped":
+                break
+            await asyncio.sleep(0.02)
+        assert assistant["status"] == "stopped"
+        assert assistant["stream_error"] == "STREAM_ABORTED"
+
+
+async def test_registry_empty_after_every_exit_path(app_and_core, session) -> None:
+    """R2-P1-01: completed / error / EOF-without-done streams all leave the
+    registry at exactly zero (no leaked entries, no pending consumers)."""
+    app, _ = app_and_core
+    registry = app.state.stream_registry
+    cases = {
+        "req-exit-ok": FakeStreamCoreClient(),
+        "req-exit-err": FakeStreamCoreClient(
+            stream=(
+                b'event: error\ndata: {"error":"boom"}\n\n'
+                b'event: done\ndata: {"content":"x"}\n\n'
+            )
+        ),
+        "req-exit-nodone": FakeStreamCoreClient(
+            stream=b'event: content_delta\ndata: {"content":"x"}\n\n'
+        ),
+    }
+    async with await _client(app) as client:
+        for request_id, core in cases.items():
+            app.state.core_client = core
+            conversation_id = await _new_conversation(client)
+            response = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages:stream",
+                json={"query": "x", "request_id": request_id},
+            )
+            assert response.status_code == 200
+            assert core.closed.is_set()
+            assert registry.active_count() == 0, request_id
 
 
 async def test_reconciler_marks_stale_streaming_interrupted(_engine, session) -> None:
@@ -313,11 +559,19 @@ async def test_reconciler_marks_stale_streaming_interrupted(_engine, session) ->
         )
         await s.commit()
 
-    count = await reconcile_stale_streaming_messages(factory, stale_after_s=60)
+    async def _reconcile(stale_after_s: int) -> int:
+        # R3-P0-01: the reconciler now runs on the caller's session and
+        # flushes only; the caller owns the commit.
+        async with factory() as s:
+            count = await reconcile_stale_streaming_messages(s, stale_after_s=stale_after_s)
+            await s.commit()
+        return count
+
+    count = await _reconcile(stale_after_s=60)
     assert count == 1
 
     # Idempotent: running again finds nothing.
-    assert await reconcile_stale_streaming_messages(factory, stale_after_s=60) == 0
+    assert await _reconcile(stale_after_s=60) == 0
 
     async with factory() as s:
         message = await s.get(Message, assistant.id)
@@ -338,7 +592,7 @@ async def test_reconciler_marks_stale_streaming_interrupted(_engine, session) ->
             conversation=conversation, request_id="req-fresh", user_content="hi"
         )
         await s.commit()
-    assert await reconcile_stale_streaming_messages(factory, stale_after_s=3600) == 0
+    assert await _reconcile(stale_after_s=3600) == 0
 
 
 async def _latest_conversation_id(factory):

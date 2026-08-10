@@ -1,12 +1,19 @@
-"""FIX-P0-WORKER-01 acceptance: lease fencing, split-brain, duplicate effects.
+"""FIX-P0-WORKER-01 / FIX-R2-P0-WORKER acceptance: lease fencing,
+split-brain, duplicate effects.
 
 Runs against the real PostgreSQL container:
-- 1s lease + 3s handler + two workers: exactly one side effect (E-01)
+- 1s lease + 3s handler + two workers: exactly one side effect (E-01),
+  stable across 20 consecutive rounds
 - heartbeat commits are visible to other sessions
 - stale worker's complete/fail is rejected (fence), terminal state intact
+- expired lease WITHOUT reclaim still blocks heartbeat/complete/fail
+  (E2-01), including the ±100ms expiry race window (100 rounds)
+- handler's uncommitted DB writes are rolled back when the lease expired
 - killed worker's lease expires and is reclaimed
 - heartbeat DB failure sets lease_lost (fail-closed)
-- retry handler replays the same idempotency key without a second effect
+- retry/kill/restart use the persisted EffectGuard fact source: the side
+  effect happens exactly once even across separate runner instances
+- heartbeat interval >= lease/3 is rejected at startup
 """
 
 from __future__ import annotations
@@ -20,9 +27,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Job, JobStatus
 from app.repositories.jobs import JobRepository
-from app.workers.job_runner import JobRunner, get_current_job_context
+from app.workers.job_runner import EffectGuard, JobRunner, get_current_job_context
 
-pytestmark = pytest.mark.asyncio
+# asyncio_mode=auto handles the async tests; no module-level asyncio mark
+# (it would wrongly mark the sync validation test below).
 
 WORKSPACE = "00000000-0000-0000-0000-000000000001"
 
@@ -119,7 +127,9 @@ async def _first_job_id(factory) -> None:
     from sqlalchemy import select
 
     async with factory() as s:
-        return (await s.execute(select(Job.id).limit(1))).scalar_one()
+        return (
+            await s.execute(select(Job.id).order_by(Job.created_at.desc(), Job.id.desc()).limit(1))
+        ).scalar_one()
 
 
 async def test_heartbeat_committed_and_visible_to_other_session(_engine, session) -> None:
@@ -246,29 +256,46 @@ async def test_heartbeat_db_failure_sets_lease_lost(_engine, session, monkeypatc
 
 
 async def test_retry_replays_idempotency_key_with_single_side_effect(_engine, session) -> None:
+    """R3-P0-01 window 4 (after ack, before job complete): the first attempt
+    delivers the effect but crashes before the fenced completion; the retry
+    sees ``delivered`` in the ledger, skips the call and succeeds."""
     factory = _factory(_engine)
     async with factory() as s:
         job = await _create_job(s, idempotency_key="key-42")
 
-    external: set[str] = set()
+    calls: list[str] = []
+    crash_first = {"flag": True}
 
     async def handler(job, session):
         ctx = get_current_job_context()
-        if ctx.idempotency_key not in external:
-            external.add(ctx.idempotency_key)  # the external side effect
-            raise RuntimeError("boom on first attempt")
+        guard = EffectGuard(ctx.session_factory)
+
+        async def provider():
+            calls.append("call")
+            return True
+
+        await guard.run_effect_once(
+            ctx.idempotency_key, job.workspace_id, provider, job_id=job.id
+        )
+        if crash_first["flag"]:
+            crash_first["flag"] = False
+            raise RuntimeError("crash after ack, before job complete")
         return {"ok": True}
 
     runner = JobRunner(factory, {"test": handler}, worker_id="w", poll_seconds=0.05)
-    await runner.run_once()  # attempt 1: side effect + failure
+    await runner.run_once()  # attempt 1: delivered + crash before complete
 
     async with factory() as s:
         stored = await s.get(Job, job.id)
         delay = (stored.next_run_at - datetime.now(UTC)).total_seconds()
     await asyncio.sleep(max(0.0, delay + 0.1))
 
-    await runner.run_once()  # attempt 2: replays, no second side effect
-    assert external == {"key-42"}
+    await runner.run_once()  # attempt 2: ledger says delivered -> no call
+    guard = EffectGuard(factory)
+    async with factory() as s:
+        stored = await s.get(Job, job.id)
+    assert await guard.has_effect("key-42", stored.workspace_id)
+    assert calls == ["call"]
 
     async with factory() as s:
         stored = await s.get(Job, job.id)
@@ -300,3 +327,324 @@ async def test_sigterm_cancels_inflight_handler_at_safe_point(_engine, session) 
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+# ---------------------------------------------------------------------------
+# FIX-R2-P0-WORKER: expiry window without reclaim, rollback, race window.
+# ---------------------------------------------------------------------------
+
+
+async def test_expired_lease_without_reclaim_blocks_all_writes(_engine, session) -> None:
+    """E2-01 regression: lease expired, nobody reclaimed yet — the old
+    owner's heartbeat/complete/fail must ALL be rejected."""
+    factory = _factory(_engine)
+    async with factory() as s:
+        await _create_job(s)
+        repo = JobRepository(s)
+        claimed = await repo.claim_next(worker_id="worker-A", lease_seconds=60)
+        assert claimed is not None
+        await s.commit()
+        job_id, attempt = claimed.id, claimed.attempt
+        # Force the lease into the past; no other worker reclaims.
+        claimed.lease_expires_at = datetime.now(UTC) - timedelta(seconds=5)
+        await s.commit()
+
+        assert (
+            await repo.heartbeat(job_id, lease_seconds=60, owner="worker-A", attempt=attempt)
+            is False
+        )
+        assert (
+            await repo.complete(job_id, {"by": "A"}, owner="worker-A", attempt=attempt) is False
+        )
+        assert (
+            await repo.fail(
+                job_id,
+                error_code="HANDLER_ERROR",
+                error_message="late",
+                owner="worker-A",
+                attempt=attempt,
+            )
+            is False
+        )
+        await s.rollback()
+
+    async with factory() as s2:
+        stored = await s2.get(Job, job_id)
+        assert stored.status == JobStatus.RUNNING  # never rewritten by A
+        assert stored.lease_owner == "worker-A"
+
+
+async def test_expired_lease_complete_rolls_back_handler_db_writes(
+    _engine, session, monkeypatch
+) -> None:
+    """Handler produced uncommitted DB writes, then the lease expired:
+    complete must fail AND the handler's writes must be rolled back."""
+    factory = _factory(_engine)
+    async with factory() as s:
+        await _create_job(s)
+        job_id = await _first_job_id(factory)
+
+    # Heartbeat lies: the worker believes the lease is fine, so only the
+    # database fence (lease_expires_at >= now()) can stop the stale write.
+    async def lying_heartbeat(self, job_id, *, lease_seconds=60, owner="", attempt=1):
+        return True
+
+    monkeypatch.setattr(JobRepository, "heartbeat", lying_heartbeat)
+
+    marker_ids: list = []
+
+    async def slow_handler(job, session):
+        # Ignore ctx on purpose: worst-case handler that outlives the lease.
+        await asyncio.sleep(1.3)  # longer than the 1s lease
+        marker = Job(
+            workspace_id=job.workspace_id,
+            job_type="side-effect-marker",
+            payload_json={"marker": True},
+        )
+        session.add(marker)  # uncommitted handler DB write
+        await session.flush()
+        marker_ids.append(marker.id)
+        return {"ok": True}
+
+    runner = JobRunner(
+        factory,
+        {"test": slow_handler},
+        worker_id="worker-A",
+        lease_seconds=1,
+        poll_seconds=0.05,
+        heartbeat_interval_seconds=0.2,
+    )
+    await runner.run_once()
+    assert marker_ids, "handler must have attempted the DB write"
+
+    async with factory() as s2:
+        stored = await s2.get(Job, job_id)
+        # complete was rejected by the expiry fence: no SUCCEEDED.
+        assert stored.status == JobStatus.RUNNING
+        # The handler's uncommitted write was rolled back.
+        assert await s2.get(Job, marker_ids[0]) is None
+
+
+async def test_expiry_race_window_100_rounds_old_worker_never_wins(
+    _engine, session
+) -> None:
+    """±100ms race window around expiry, 100 rounds: the old worker's
+    terminal writes must never succeed once the lease is expired."""
+    import random
+
+    factory = _factory(_engine)
+    succeeded_terminal = 0
+    for _ in range(100):
+        delta_ms = random.uniform(-100.0, 100.0)
+        async with factory() as s:
+            await _create_job(s)
+            repo = JobRepository(s)
+            claimed = await repo.claim_next(worker_id="worker-A", lease_seconds=60)
+            assert claimed is not None
+            await s.commit()
+            job_id, attempt = claimed.id, claimed.attempt
+            # Push expiry around "now" (±100ms) using database time.
+            from sqlalchemy import text
+
+            await s.execute(
+                text(
+                    "UPDATE map_control.jobs SET lease_expires_at = "
+                    "now() + make_interval(secs => :d) WHERE id = :id"
+                ),
+                {"d": delta_ms / 1000.0, "id": job_id},
+            )
+            await s.commit()
+
+        # Wait until the lease is certainly expired (past the +100ms edge).
+        await asyncio.sleep(max(0.0, delta_ms / 1000.0) + 0.05)
+
+        async with factory() as s:
+            repo = JobRepository(s)
+            ok_complete = await repo.complete(
+                job_id, {"by": "A"}, owner="worker-A", attempt=attempt
+            )
+            ok_fail = False
+            if not ok_complete:
+                ok_fail = await repo.fail(
+                    job_id,
+                    error_code="HANDLER_ERROR",
+                    error_message="late",
+                    owner="worker-A",
+                    attempt=attempt,
+                )
+            await s.rollback()
+        if ok_complete or ok_fail:
+            succeeded_terminal += 1
+
+    assert succeeded_terminal == 0
+
+
+async def test_long_handler_two_workers_20_rounds_single_effect(_engine, session) -> None:
+    """1s lease + 3s handler + two workers + heartbeat timeout, run 20
+    consecutive rounds: the side effect happens exactly once per round."""
+    factory = _factory(_engine)
+    for _round in range(20):
+        async with factory() as s:
+            await _create_job(s)
+            job_id = await _first_job_id(factory)
+
+        effects: list[str] = []
+        original_heartbeat = JobRepository.heartbeat
+
+        async def flaky_heartbeat(
+            self, job_id, *, lease_seconds=60, owner="", attempt=1, _original=original_heartbeat
+        ):
+            if owner == "worker-A":
+                raise ConnectionError("simulated db timeout")
+            return await _original(
+                self, job_id, lease_seconds=lease_seconds, owner=owner, attempt=attempt
+            )
+
+        async def long_handler(job, session, _effects=effects):
+            ctx = get_current_job_context()
+            for _ in range(15):
+                await asyncio.sleep(0.2)
+                if not ctx.lease_ok:
+                    return None
+            _effects.append(f"effect-by-{ctx.worker_id}")
+            return {"ok": True}
+
+        JobRepository.heartbeat = flaky_heartbeat  # type: ignore[method-assign]
+        try:
+            runner_a = JobRunner(
+                factory,
+                {"test": long_handler},
+                worker_id="worker-A",
+                lease_seconds=1,
+                poll_seconds=0.05,
+                heartbeat_interval_seconds=0.3,
+            )
+            runner_b = JobRunner(
+                factory,
+                {"test": long_handler},
+                worker_id="worker-B",
+                lease_seconds=1,
+                poll_seconds=0.05,
+                heartbeat_interval_seconds=0.3,
+            )
+            task_a = asyncio.create_task(runner_a.run_once())
+            await asyncio.sleep(1.6)
+            await runner_b.run_once()
+            await task_a
+        finally:
+            JobRepository.heartbeat = original_heartbeat  # type: ignore[method-assign]
+
+        assert len(effects) == 1, f"round {_round}: {effects}"
+        async with factory() as s:
+            stored = await s.get(Job, job_id)
+            assert stored.status == JobStatus.SUCCEEDED, f"round {_round}"
+            assert stored.result_json == {"ok": True}
+
+
+async def test_effect_ledger_survives_process_restart(_engine, session) -> None:
+    """Two separate runner instances (simulated restart) sharing only the
+    DB: the persisted effect ledger still yields exactly one side effect.
+    The first process crashes right AFTER the provider confirmation (ack
+    lost); the second process must NOT replay the call."""
+    factory = _factory(_engine)
+    async with factory() as s:
+        job = await _create_job(s, idempotency_key="restart-key", max_attempts=5)
+
+    effects: list[str] = []
+
+    async def handler(job, session):
+        ctx = get_current_job_context()
+        guard = EffectGuard(ctx.session_factory)
+
+        async def provider():
+            effects.append("external-effect")
+            return True
+
+        await guard.run_effect_once(
+            ctx.idempotency_key, job.workspace_id, provider, job_id=job.id
+        )
+        # Crash right after the confirmed effect; the ack already committed.
+        if (job.attempt or 0) == 1:
+            raise RuntimeError("crash right after the effect")
+        return {"ok": True}
+
+    # "Process 1": delivers the effect, crashes.
+    runner_1 = JobRunner(factory, {"test": handler}, worker_id="p1", poll_seconds=0.05)
+    await runner_1.run_once()
+
+    async with factory() as s:
+        stored = await s.get(Job, job.id)
+        delay = (stored.next_run_at - datetime.now(UTC)).total_seconds()
+    await asyncio.sleep(max(0.0, delay + 0.1))
+
+    # "Process 2": brand-new runner, no shared memory — the DB ledger wins.
+    runner_2 = JobRunner(factory, {"test": handler}, worker_id="p2", poll_seconds=0.05)
+    await runner_2.run_once()
+
+    assert effects == ["external-effect"]
+    async with factory() as s:
+        stored = await s.get(Job, job.id)
+        assert stored.status == JobStatus.SUCCEEDED
+
+
+async def test_pending_intent_is_not_skipped_on_retry(_engine, session) -> None:
+    """R3-P0-01 window 2 regression: an intent committed BEFORE the external
+    call must NOT be treated as done. The old claim-based guard skipped the
+    call here and still reported success with zero external actions."""
+    factory = _factory(_engine)
+    async with factory() as s:
+        job = await _create_job(s, idempotency_key="pending-key", max_attempts=5)
+
+    effects: list[str] = []
+    crash_before_call = {"flag": True}
+
+    async def handler(job, session):
+        ctx = get_current_job_context()
+        guard = EffectGuard(ctx.session_factory)
+        if crash_before_call["flag"]:
+            # Intent committed, then the process dies before the call.
+            await guard.record_intent(ctx.idempotency_key, job.workspace_id, job_id=job.id)
+            raise RuntimeError("crash after intent, before effect")
+
+        async def provider():
+            effects.append("external-effect")
+            return True
+
+        await guard.run_effect_once(
+            ctx.idempotency_key, job.workspace_id, provider, job_id=job.id
+        )
+        return {"ok": True}
+
+    runner = JobRunner(factory, {"test": handler}, worker_id="p1", poll_seconds=0.05)
+    await runner.run_once()  # attempt 1: intent persisted, crash before call
+
+    async with factory() as s:
+        stored = await s.get(Job, job.id)
+        delay = (stored.next_run_at - datetime.now(UTC)).total_seconds()
+    await asyncio.sleep(max(0.0, delay + 0.1))
+
+    crash_before_call["flag"] = False
+    runner2 = JobRunner(factory, {"test": handler}, worker_id="p2", poll_seconds=0.05)
+    await runner2.run_once()  # attempt 2: pending -> proceeds with the call
+
+    # The effect actually happened exactly once, and the job succeeded.
+    assert effects == ["external-effect"]
+    async with factory() as s:
+        stored = await s.get(Job, job.id)
+        assert stored.status == JobStatus.SUCCEEDED
+        guard = EffectGuard(factory)
+    assert await guard.has_effect("pending-key", job.workspace_id)
+
+
+def test_heartbeat_interval_must_be_below_lease_third() -> None:
+    """Startup validation: any configured heartbeat interval must be
+    strictly smaller than lease/3."""
+    with pytest.raises(ValueError):
+        JobRunner(None, {}, lease_seconds=3, heartbeat_interval_seconds=1.0)  # == lease/3
+    with pytest.raises(ValueError):
+        JobRunner(None, {}, lease_seconds=3, heartbeat_interval_seconds=2.0)
+    with pytest.raises(ValueError):
+        JobRunner(None, {}, lease_seconds=3, heartbeat_interval_seconds=0)
+    # Strictly below is accepted.
+    runner = JobRunner(None, {}, lease_seconds=3, heartbeat_interval_seconds=0.9)
+    assert runner.heartbeat_interval_seconds == 0.9

@@ -1,10 +1,13 @@
-"""Durable job repository (F-03 / FIX-P0-WORKER-01).
+"""Durable job repository (F-03 / FIX-P0-WORKER-01 / FIX-R2-P0-WORKER).
 
 Claim uses ``FOR UPDATE SKIP LOCKED`` so concurrent workers never double
 claim. Every state-changing write (heartbeat/complete/fail) is fenced by
-``lease_owner + attempt`` so a worker that lost its lease can never
-overwrite a newer worker's result. Reclaim picks one expired job inside a
-locked transaction instead of bulk-resetting all expired jobs.
+``lease_owner + attempt`` AND ``lease_expires_at >= now()`` so a worker
+that lost its lease — either to a reclaim or simply to clock time — can
+never overwrite state. All fence time comparisons use database time
+(``now()``) so worker clock drift can never widen the expiry window.
+Reclaim picks one expired job inside a locked transaction instead of
+bulk-resetting all expired jobs.
 
 Transactions are owned by the caller (service layer); repository methods
 flush/return so the runner can commit in short transactions.
@@ -16,7 +19,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.models import Job, JobStatus
@@ -46,16 +49,21 @@ class JobRepository:
         """Claim one due job (queued, or running with an expired lease).
 
         ``attempt`` is incremented on every claim; it acts as the fencing
-        token for all later writes from this worker.
+        token for all later writes from this worker. Due/lease comparisons
+        use database time so worker clock drift cannot steal or extend a
+        lease.
         """
-        now = _utcnow()
-        lease_expires = now + timedelta(seconds=lease_seconds)
+        # Anchor to the database clock once (concrete value) so the lease
+        # expiry we store and the fence comparisons below share one time
+        # base without worker clock drift.
+        db_now = (await self._session.execute(select(func.now()))).scalar_one()
+        lease_expires = db_now + timedelta(seconds=lease_seconds)
 
         stmt = (
             select(Job)
             .where(
                 Job.status == JobStatus.QUEUED,
-                (Job.next_run_at.is_(None)) | (Job.next_run_at <= now),
+                (Job.next_run_at.is_(None)) | (Job.next_run_at <= db_now),
             )
             .order_by(Job.priority.desc(), Job.created_at.asc())
             .limit(1)
@@ -66,7 +74,7 @@ class JobRepository:
 
         job = (await self._session.execute(stmt)).scalar_one_or_none()
         if job is not None:
-            self._take_lease(job, worker_id, now, lease_expires)
+            self._take_lease(job, worker_id, lease_expires)
             await self._session.flush()
             return job
 
@@ -77,7 +85,7 @@ class JobRepository:
             select(Job)
             .where(
                 Job.status == JobStatus.RUNNING,
-                Job.lease_expires_at < now,
+                Job.lease_expires_at < db_now,
             )
             .order_by(Job.priority.desc(), Job.created_at.asc())
             .limit(1)
@@ -85,18 +93,18 @@ class JobRepository:
         )
         job = (await self._session.execute(reclaim)).scalar_one_or_none()
         if job is not None:
-            self._take_lease(job, worker_id, now, lease_expires)
+            self._take_lease(job, worker_id, lease_expires)
             await self._session.flush()
             return job
         return None
 
     @staticmethod
-    def _take_lease(job: Job, worker_id: str, now: datetime, lease_expires: datetime) -> None:
+    def _take_lease(job: Job, worker_id: str, lease_expires: datetime) -> None:
         job.status = JobStatus.RUNNING
         job.attempt = (job.attempt or 0) + 1
         job.lease_owner = worker_id
         job.lease_expires_at = lease_expires
-        job.started_at = job.started_at or now
+        job.started_at = job.started_at or _utcnow()  # bookkeeping only
 
     async def heartbeat(
         self,
@@ -108,10 +116,11 @@ class JobRepository:
     ) -> bool:
         """Renew the lease; False when the job is no longer ours.
 
-        Fenced by (id, status=running, lease_owner, attempt) so an expired
-        worker can never keep a reclaimed lease alive.
+        Fenced by (id, status=running, lease_owner, attempt) plus a live
+        lease (``lease_expires_at >= now()`` in database time) so an
+        expired worker can never keep a reclaimed lease alive.
         """
-        now = _utcnow()
+        db_now = func.now()
         result = await self._session.execute(
             update(Job)
             .where(
@@ -119,9 +128,9 @@ class JobRepository:
                 Job.status == JobStatus.RUNNING,
                 Job.lease_owner == owner,
                 Job.attempt == attempt,
-                Job.lease_expires_at >= now,
+                Job.lease_expires_at >= db_now,
             )
-            .values(lease_expires_at=now + timedelta(seconds=lease_seconds))
+            .values(lease_expires_at=db_now + timedelta(seconds=lease_seconds))
         )
         return bool(result.rowcount)
 
@@ -133,7 +142,12 @@ class JobRepository:
         owner: str,
         attempt: int,
     ) -> bool:
-        """Mark the job succeeded; False means ownership was lost."""
+        """Mark the job succeeded; False means ownership was lost.
+
+        The fence includes the live-lease condition (database time), so a
+        worker whose lease expired — even before another worker reclaims —
+        can never submit a terminal state.
+        """
         now = _utcnow()
         result_update = await self._session.execute(
             update(Job)
@@ -142,6 +156,8 @@ class JobRepository:
                 Job.status == JobStatus.RUNNING,
                 Job.lease_owner == owner,
                 Job.attempt == attempt,
+                Job.lease_expires_at.isnot(None),
+                Job.lease_expires_at >= func.now(),
             )
             .values(
                 status=JobStatus.SUCCEEDED,
@@ -177,6 +193,8 @@ class JobRepository:
                 Job.status == JobStatus.RUNNING,
                 Job.lease_owner == owner,
                 Job.attempt == attempt,
+                Job.lease_expires_at.isnot(None),
+                Job.lease_expires_at >= func.now(),
             )
             .values(
                 error_code=error_code,

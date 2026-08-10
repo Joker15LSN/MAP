@@ -30,24 +30,35 @@ def build_runner() -> JobRunner:
     handlers: dict[str, JobHandler] = {
         "message_reconcile": _message_reconcile_handler,
     }
+    raw_interval = os.getenv("MAP_WORKER_HEARTBEAT_INTERVAL_SECONDS", "").strip()
     return JobRunner(
         get_session_factory(),
         handlers=handlers,
         worker_id=os.getenv("MAP_WORKER_ID"),
         lease_seconds=int(os.getenv("MAP_WORKER_LEASE_SECONDS", "60")),
         poll_seconds=float(os.getenv("MAP_WORKER_POLL_SECONDS", "1.0")),
+        # JobRunner validates at startup: any configured value must be
+        # strictly below lease/3.
+        heartbeat_interval_seconds=float(raw_interval) if raw_interval else None,
     )
 
 
 async def _message_reconcile_handler(job: Job, session: AsyncSession) -> dict | None:
-    """Reconcile stale streaming messages; idempotent and observable."""
-    from ..db.session import get_session_factory
-    from ..services.message_reconciler import reconcile_stale_streaming_messages
+    """Reconcile stale streaming messages; idempotent and observable.
 
+    R3-P0-01: runs on the runner-provided session and never commits on its
+    own — the business writes ride the SAME transaction as the fenced
+    ``complete()``; a lost lease rolls both back together.
+    """
+    from ..services.message_reconciler import reconcile_stale_streaming_messages
+    from .job_runner import get_current_job_context
+
+    ctx = get_current_job_context()
+    if ctx is not None and not ctx.lease_ok:
+        # Lease already lost before we started: produce no writes at all.
+        return None
     stale_after_s = int(os.getenv("MAP_RECONCILE_STALE_AFTER_S", "300"))
-    count = await reconcile_stale_streaming_messages(
-        get_session_factory(), stale_after_s=stale_after_s
-    )
+    count = await reconcile_stale_streaming_messages(session, stale_after_s=stale_after_s)
     return {"reconciled": count}
 
 

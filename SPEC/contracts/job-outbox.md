@@ -10,7 +10,23 @@
 - lease 到期（`lease_expires_at < now()`）的 `running` job 可被其他 worker 在带锁事务内单个回收（无批量重置）。
 - heartbeat 独立短事务提交，间隔 < lease/3 带 jitter；DB 超时按 lease 丢失处理（fail-closed）。
 - handler 通过 `get_current_job_context()` 读取 `lease_ok`（lease_lost/cancel）；SIGTERM 传播为 cancel 并等待安全点。
-- 外部副作用 handler 使用稳定 `idempotency_key` 去重，重放不产生第二次外部动作。
+- 生产 handler 必须使用 runner 传入的 session，禁止自建 session/自行 commit：handler 业务写与 fenced `complete()` 同事务提交，lease 丢失时一并回滚（R3-P0-01）。
+
+## 1.1 外部副作用协议（effect ledger，R3-P0-01）
+
+外部副作用 handler 必须经 `EffectGuard` 走 `map_control.effect_ledger`（`UNIQUE(workspace_id, effect_key)`），状态机：
+
+```text
+pending -> dispatching -> delivered
+                      或 -> uncertain（可观测终态，永不盲重放）
+```
+
+- `pending`：意图已持久化，外部调用**可能尚未发生**——重试继续执行调用（绝不跳过）；
+- `dispatching`：调用已开始；此状态崩溃意味着结果未知，恢复时置 `uncertain`，不得重放（at-most-once，fail-closed）；
+- `delivered`：provider 已确认；重试跳过调用；
+- `uncertain`：终态。provider 返回 unknown/timeout 或分发窗口崩溃时写入；关联 job 以 `EFFECT_UNCERTAIN` 终态失败（`retryable=false`），禁止伪报 `succeeded`。
+- side-effect job 必须携带非空稳定 `idempotency_key` 作为 `effect_key`；空键直接拒绝（`ValueError`），不得以 `None` 作为跨 job 共用键。
+- 四个崩溃窗口（intent 前 / intent 后调用前 / 调用后确认前 / 确认后 job 完成前）均有真实 PostgreSQL 测试，每窗口 20 轮外部动作计数恒为 1（`tests/integration/test_effect_protocol_windows.py`）。
 
 ## 2. 已注册 job 类型
 
