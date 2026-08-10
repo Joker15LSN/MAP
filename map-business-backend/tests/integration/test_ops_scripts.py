@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from conftest import APP_DSN, MIGRATION_DSN
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

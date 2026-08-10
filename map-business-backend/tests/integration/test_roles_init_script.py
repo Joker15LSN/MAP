@@ -120,7 +120,11 @@ def test_fresh_volume_init_accepts_tricky_passwords(password: str) -> None:
         superuser = _run([*admin, "SELECT rolsuper FROM pg_roles WHERE rolname = 'map'"])
         assert superuser.stdout.strip() == "f"
         schema_owner = _run(
-            [*admin, "SELECT nspowner::regrole::text FROM pg_namespace WHERE nspname = 'map_control'"]
+            [
+                *admin,
+                "SELECT nspowner::regrole::text FROM pg_namespace "
+                "WHERE nspname = 'map_control'",
+            ]
         )
         assert schema_owner.stdout.strip() == "map_migrator"
         usage = _run(
