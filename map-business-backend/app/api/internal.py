@@ -1,8 +1,11 @@
-"""Internal service-to-service API (FIX-P0-AUTH-01).
+"""Internal service-to-service API (FIX-P0-AUTH-01, hardened in R2-P0-02).
 
-Only authenticated service principals (valid bearer token + service
-identity headers) may call these endpoints; browser/user tokens are
-rejected. Audience and scopes are validated against settings.
+Only authenticated service principals may call these endpoints; the route
+is split out of the user-principal middleware in ``app.main`` so a valid
+service credential alone is sufficient (and required). Authorization is
+decided exclusively by the matched credential's inherent claims
+(token reference -> metadata); ``X-Service-*`` headers never grant
+anything. Browser/user tokens are rejected.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ def require_service(*scopes: str):
 
     def _dep(request: Request, settings: Settings = Depends(get_settings)) -> ServicePrincipal:
         try:
-            principal = authenticate_service(request, secrets=settings.service_tokens)
+            principal = authenticate_service(request, credentials=settings.service_credentials)
         except ServiceAuthenticationError as exc:
             code = exc.args[1] if len(exc.args) > 1 else "INVALID_SERVICE_IDENTITY"
             if code == "FORBIDDEN":
@@ -65,4 +68,5 @@ async def ping(
         "service": principal.service_name,
         "audience": principal.audience,
         "scopes": list(principal.scopes),
+        "key_id": principal.key_id,
     }

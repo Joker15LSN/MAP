@@ -33,8 +33,17 @@
 
 ## 4. 服务身份（`/internal/v1`）
 
-- `Authorization: Bearer <service-token>`：token 来自 `MAP_SERVICE_TOKEN_SECRET`（逗号分隔支持轮换），常量时间比较。
-- `X-Service-Name`（合法 ID）、`X-Service-Audience`（须等于 `MAP_SERVICE_AUDIENCE`，默认 `map-bff`）、`X-Service-Scopes`（逗号分隔）。
+- `Authorization: Bearer <service-token>`：token 通过服务端凭证注册表
+  `MAP_SERVICE_CREDENTIALS`（JSON 数组）绑定到**固有声明**：`key_id`（轮换密钥引用）、
+  `service_name`、`audience`（缺省 `MAP_SERVICE_AUDIENCE`，默认 `map-bff`）、`scopes`。
+  常量时间比较；不存在所有服务共享的全局万能 secret。
+- 授权只由匹配凭证的固有声明决定；`X-Service-*` Header 仅为传输/调试信息，
+  与固有声明矛盾（冒充其他服务名、错误 audience、超出授权 scope）时拒绝（401/403），
+  绝不用于赋权。
+- `/internal/v1/*` 从用户 principal 中间件分流，只接受 `ServicePrincipal`；
+  浏览器 API 只接受 `RequestPrincipal`；两类身份互不满足。
+- 轮换：新增一条带新 `key_id` 的凭证（双 key 窗口）→ 切换调用方 → 将旧条目
+  `revoked: true` 或移除。撤销立即生效。
 - 浏览器/用户 token 永远无法通过服务身份校验（401 `INVALID_SERVICE_IDENTITY`）；scope 不足 403 `FORBIDDEN`。
 
 ## 5. 错误 envelope（所有 `/api/v1` 与 `/internal/v1`）

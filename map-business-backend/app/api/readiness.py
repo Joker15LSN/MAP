@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from ..db.session import DEFAULT_DSN
-from ..settings import DEFAULT_WORKSPACE_CODE
+from ..settings import DEFAULT_WORKSPACE_CODE, DEFAULT_WORKSPACE_ID
 
 logger = logging.getLogger(__name__)
 
@@ -80,15 +80,26 @@ async def ready(request: Request) -> JSONResponse:
             checks["migration"] = {"ok": False, "error": str(exc)[:200]}
 
     if ok:
+        # R2-P2-04: the seed is only valid if the STABLE UUID *and* the
+        # business code both match; a row with the right code but a wrong
+        # id must fail readiness (503).
+        expected_id = os.getenv("MAP_DEFAULT_WORKSPACE_ID", DEFAULT_WORKSPACE_ID)
         try:
             async with engine.connect() as conn:
                 seeded = (
                     await conn.execute(
-                        text("SELECT 1 FROM map_control.workspaces WHERE code = :code LIMIT 1"),
-                        {"code": DEFAULT_WORKSPACE_CODE},
+                        text(
+                            "SELECT 1 FROM map_control.workspaces "
+                            "WHERE id = :id AND code = :code LIMIT 1"
+                        ),
+                        {"id": expected_id, "code": DEFAULT_WORKSPACE_CODE},
                     )
                 ).scalar_one_or_none()
-            checks["seed"] = {"default_workspace": bool(seeded), "ok": bool(seeded)}
+            checks["seed"] = {
+                "default_workspace_id": expected_id,
+                "default_workspace_code": DEFAULT_WORKSPACE_CODE,
+                "ok": bool(seeded),
+            }
             if not seeded:
                 ok = False
         except Exception as exc:  # noqa: BLE001

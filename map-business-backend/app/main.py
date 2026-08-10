@@ -130,8 +130,25 @@ def create_app(
     # oidc fails closed with 501. Registered BEFORE request_context so the
     # request/session/workspace IDs are populated when the 401/501 envelope
     # is built.
+    #
+    # R2-P0-02: /internal/* is split out of the user-principal gate. These
+    # routes accept ServicePrincipal only (require_service dependency,
+    # fail-closed per route); a service credential must never need forged
+    # user headers to enter, and user credentials alone can never satisfy
+    # the service registry lookup.
+    #
+    # R3-P1-02: /health and /ready are infrastructure probes (docker
+    # healthchecks cannot carry identity credentials). /health returns a
+    # fixed liveness payload; /ready discloses only DB/migration/seed
+    # status and is itself protected by the workspace UUID+code double
+    # check (R2-P1-06) — no principal data is exposed either way.
     @app.middleware("http")
     async def identity_gate(request: Request, call_next):
+        if request.url.path.startswith("/internal/") or request.url.path in (
+            "/health",
+            "/ready",
+        ):
+            return await call_next(request)
         if settings.auth_mode != AuthMode.DEV:
             from fastapi import HTTPException
 
@@ -180,6 +197,27 @@ def _looks_like_production() -> bool:
 # Compatibility module-level singletons: uvicorn `app.main:app` and the
 # existing tests import these names directly. New code should prefer
 # ``create_app(overrides)``.
-app = create_app()
-store = app.state.store
-core_client = app.state.core_client
+#
+# R2-P2-04: these are LAZY (PEP 562). Importing ``app.main`` must never
+# touch the filesystem — eager construction here forced every importer to
+# pre-set MAP_BFF_STATE_FILE to avoid creating /app/data, which is exactly
+# the "pretending to be defaults" anti-pattern the second-round review
+# rejected.
+_lazy_app: FastAPI | None = None
+
+
+def _compat_app() -> FastAPI:
+    global _lazy_app
+    if _lazy_app is None:
+        _lazy_app = create_app()
+    return _lazy_app
+
+
+def __getattr__(name: str):
+    if name == "app":
+        return _compat_app()
+    if name == "store":
+        return _compat_app().state.store
+    if name == "core_client":
+        return _compat_app().state.core_client
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

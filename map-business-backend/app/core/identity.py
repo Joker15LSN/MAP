@@ -40,11 +40,18 @@ class RequestPrincipal:
 
 @dataclass(frozen=True)
 class ServicePrincipal:
-    """Identity for service-to-service calls (never a user principal)."""
+    """Identity for service-to-service calls (never a user principal).
+
+    Every claim is an *inherent* property of the matched credential
+    (token reference -> metadata mapping); caller-supplied ``X-Service-*``
+    headers never contribute to authorization. ``key_id`` identifies the
+    rotation key that issued the credential (safe to log/audit).
+    """
 
     service_name: str
     audience: str
     scopes: tuple[str, ...] = field(default_factory=tuple)
+    key_id: str = ""
 
 
 def is_valid_id(value: str | None) -> bool:

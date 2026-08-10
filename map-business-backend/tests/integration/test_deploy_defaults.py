@@ -16,6 +16,8 @@ os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_deploy_test_state.json
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
+from conftest import MIGRATION_DSN
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
@@ -25,17 +27,13 @@ from app.settings import DEFAULT_WORKSPACE_CODE, DEFAULT_WORKSPACE_ID
 
 pytestmark = pytest.mark.asyncio
 
-TEST_DSN = os.getenv(
-    "MAP_CONTROL_TEST_DSN",
-    "postgresql+asyncpg://map:map@127.0.0.1:15432/map",
-)
-
 
 def _alembic_config() -> Config:
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     cfg = Config(os.path.join(project_root, "alembic.ini"))
     cfg.set_main_option("script_location", os.path.join(project_root, "app/db/migrations"))
-    os.environ["MAP_CONTROL_MIGRATION_DSN"] = TEST_DSN
+    # Migrations always run with the migration role (R2-P1-04).
+    os.environ["MAP_CONTROL_MIGRATION_DSN"] = MIGRATION_DSN
     return cfg
 
 
@@ -83,6 +81,31 @@ async def test_readiness_fails_without_seed_and_passes_after_seed(_engine, sessi
         assert body["checks"]["seed"]["ok"] is True
 
 
+async def test_readiness_wrong_workspace_uuid_is_503(_engine, session) -> None:
+    """R2-P2-04: seed validity requires the STABLE UUID *and* the code.
+
+    A row with code='default' but a different id must NOT satisfy
+    readiness — repro for the code-only check in the second-round review.
+    """
+    app = create_app()
+    wrong_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO map_control.workspaces (id, code, name, status) "
+            "VALUES (:wid, :code, '错误 UUID 的种子', 'active')"
+        ),
+        {"wid": wrong_id, "code": DEFAULT_WORKSPACE_CODE},
+    )
+    await session.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/ready")
+        assert response.status_code == 503, response.text
+        body = response.json()
+        assert body["checks"]["seed"]["ok"] is False
+        assert body["checks"]["seed"]["default_workspace_id"] == DEFAULT_WORKSPACE_ID
+
+
 async def test_seed_migration_idempotent_and_downgrade_upgrade(_engine, session) -> None:
     """upgrade head -> downgrade -1 -> upgrade head leaves exactly one seed."""
     cfg = _alembic_config()
@@ -96,8 +119,12 @@ async def test_seed_migration_idempotent_and_downgrade_upgrade(_engine, session)
         ).scalar_one()
 
     # Fixture truncated the seeded row and upgrade is already at head.
-    # Downgrade back before the seed migration removes it (four revisions).
-    await asyncio.to_thread(command.downgrade, cfg, "-4")
+    # Downgrade back before the seed migration removes it; resolve the
+    # target dynamically so later revisions (e.g. R2-P1-03) never break
+    # this round-trip test.
+    script = ScriptDirectory.from_config(cfg)
+    before_seed = script.get_revision("4c9e1f2a8b3d").down_revision
+    await asyncio.to_thread(command.downgrade, cfg, before_seed)
     assert await _count() == 0
 
     await asyncio.to_thread(command.upgrade, cfg, "head")

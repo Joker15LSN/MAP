@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass, field
 
 from .core.identity import AuthMode
+from .core.service_identity import ServiceCredential, parse_service_credentials
 
 # Stable default workspace UUID shared by seed/migration/API/tests/Compose.
 # Business code for this workspace stays "default" (workspaces.code).
@@ -47,13 +48,16 @@ class Settings:
             _env_or("MAP_TRUSTED_PROXY_REQUIRED", "true").lower() in {"1", "true", "yes"}
         )
     )
-    # Comma-separated shared secrets for service-to-service bearer tokens
-    # (rotation: all values stay valid until removed).
-    service_tokens: tuple[str, ...] = field(
-        default_factory=lambda: tuple(
-            item.strip()
-            for item in _env_or("MAP_SERVICE_TOKEN_SECRET", "").split(",")
-            if item.strip()
+    # Service-to-service credentials: a token reference -> metadata
+    # registry (R2-P0-02). Each entry binds one bearer token to its
+    # inherent service_name/audience/scopes plus a rotation key_id; there
+    # is NO shared global secret. Rotation = add a new key_id entry, then
+    # revoke/remove the old one. Parsed from MAP_SERVICE_CREDENTIALS
+    # (JSON array); invalid configuration fails startup (fail-closed).
+    service_credentials: tuple[ServiceCredential, ...] = field(
+        default_factory=lambda: parse_service_credentials(
+            _env_or("MAP_SERVICE_CREDENTIALS", ""),
+            default_audience=_env_or("MAP_SERVICE_AUDIENCE", "map-bff"),
         )
     )
     # Expected audience for service tokens targeting this BFF.
@@ -73,10 +77,9 @@ def load_settings() -> Settings:
         trusted_proxy_secret=_env_or("MAP_TRUSTED_PROXY_SECRET", ""),
         trusted_proxy_required=_env_or("MAP_TRUSTED_PROXY_REQUIRED", "true").lower()
         in {"1", "true", "yes"},
-        service_tokens=tuple(
-            item.strip()
-            for item in _env_or("MAP_SERVICE_TOKEN_SECRET", "").split(",")
-            if item.strip()
+        service_credentials=parse_service_credentials(
+            _env_or("MAP_SERVICE_CREDENTIALS", ""),
+            default_audience=_env_or("MAP_SERVICE_AUDIENCE", "map-bff"),
         ),
         service_audience=_env_or("MAP_SERVICE_AUDIENCE", "map-bff"),
     )
