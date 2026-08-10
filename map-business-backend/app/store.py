@@ -2,9 +2,11 @@
 
 - :meth:`load` fails closed: a corrupt state file raises
   :class:`BadStateFileError` and is NEVER overwritten by defaults;
-- :meth:`update_with_hash` performs an optimistic concurrency check
-  (expected hash) and writes atomically: temp file -> fsync -> rename,
-  so no half-written file can ever be observed;
+- :meth:`prepare_update` / :meth:`apply_prepared` split the optimistic
+  write into a pure-computation phase and an expected-hash CAS + atomic
+  rename phase (R3-P1-01), so callers can persist the target hash BEFORE
+  the rename and recover deterministically from any crash window;
+- :meth:`update_with_hash` is the one-call wrapper over both phases;
 - legacy :meth:`update` is kept for read-only compatibility callers.
 """
 
@@ -16,10 +18,11 @@ import json
 import os
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import TypeVar
+from typing import Generic, TypeVar
 
 from pydantic import ValidationError
 
@@ -48,6 +51,24 @@ class StoreWriteError(Exception):
     """The atomic write failed; the previous file stays intact."""
 
 
+@dataclass(frozen=True)
+class PreparedUpdate(Generic[T]):
+    """The pure-computation result of :meth:`AdminStateStore.prepare_update`.
+
+    ``state`` is the fully computed target state (``updated_at`` included)
+    but NO file has been touched yet; ``expected_hash`` records the base
+    the CAS of :meth:`AdminStateStore.apply_prepared` is validated against.
+    """
+
+    expected_hash: str
+    state: AdminState
+    result: T
+
+    @property
+    def target_hash(self) -> str:
+        return state_hash(self.state)
+
+
 class AdminStateStore:
     def __init__(self, state_file: str) -> None:
         self._path = Path(state_file)
@@ -73,15 +94,38 @@ class AdminStateStore:
         self, expected_hash: str, updater: Callable[[AdminState], T]
     ) -> tuple[AdminState, T]:
         """Optimistic update: fails with ConcurrentModificationError when the
-        state changed since ``expected_hash`` was read."""
+        state changed since ``expected_hash`` was read. One-call wrapper over
+        :meth:`prepare_update` + :meth:`apply_prepared`; callers that need to
+        persist the target hash BEFORE the rename must use the two phases."""
+        prepared = self.prepare_update(expected_hash, updater)
+        self.apply_prepared(prepared)
+        return prepared.state, prepared.result
+
+    def prepare_update(
+        self, expected_hash: str, updater: Callable[[AdminState], T]
+    ) -> PreparedUpdate[T]:
+        """Pure computation phase: read the state, verify the expected-hash
+        CAS, run ``updater`` and compute the target state/hash. NO file is
+        written, so the caller can commit the pending mutation (with
+        ``target_hash``) before any rename happens."""
         with self._lock:
             state = self._read_state()
             if state_hash(state) != expected_hash:
                 raise ConcurrentModificationError("admin state changed since the request was read")
             result = updater(state)
             state.updated_at = datetime.now().isoformat()
-            self._write_atomic(state)
-            return state, result
+            return PreparedUpdate(expected_hash=expected_hash, state=state, result=result)
+
+    def apply_prepared(self, prepared: PreparedUpdate[T]) -> None:
+        """Apply phase: re-check the expected-hash CAS under the lock and
+        write atomically (temp file -> fsync -> rename). Raises
+        :class:`ConcurrentModificationError` when another writer landed
+        between prepare and apply."""
+        with self._lock:
+            current = self._read_state()
+            if state_hash(current) != prepared.expected_hash:
+                raise ConcurrentModificationError("admin state changed between prepare and apply")
+            self._write_atomic(prepared.state)
 
     def _read_state(self) -> AdminState:
         raw = self._path.read_text(encoding="utf-8")
