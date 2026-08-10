@@ -25,6 +25,22 @@ dependencies = [
     "psutil>=7.2.2",
 ]
 
+# R2-P2-03: minimum versions mandated by the supply-chain audit
+# (scripts/dependency_audit.sh). Every entry closes pip-audit/PYSEC
+# findings on transitive dependencies without touching direct deps.
+[tool.uv]
+constraint-dependencies = [
+    "click>=8.3.3",            # PYSEC-2026-2132
+    "lxml>=6.1.0",             # PYSEC-2026-87
+    "orjson>=3.11.6",          # PYSEC-2026-107
+    "pydantic-settings>=2.14.2",  # GHSA-4xgf-cpjx-pc3j
+    "pygments>=2.20.0",        # PYSEC-2026-2987
+    "python-dotenv>=1.2.2",    # PYSEC-2026-2270
+    "python-multipart>=0.0.31",  # PYSEC-2026-1852/3036/3037/3038/3039/3040
+    "setuptools>=83.0.0",      # PYSEC-2026-3447
+    "urllib3>=2.7.0",          # PYSEC-2026-141/142
+]
+
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true

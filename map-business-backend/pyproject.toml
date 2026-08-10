@@ -20,11 +20,13 @@ dependencies = [
   "uvicorn[standard]>=0.30.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
+# R2-P2-02: dependency group (not optional extra) so that a clean
+# `uv sync --frozen` + `uv run ruff/pytest` works without --extra flags.
 dev = [
   "pytest>=8.3.0",
   "pytest-asyncio>=0.24.0",
-  "ruff>=0.9.0",
+  "ruff>=0.15.12",
 ]
 
 [tool.pytest.ini_options]

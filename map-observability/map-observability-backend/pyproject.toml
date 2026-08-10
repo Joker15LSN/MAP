@@ -12,11 +12,14 @@ dependencies = [
   "python-dateutil>=2.9.0"
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
+# R2-P2-02: dependency group (not optional extra) so that a clean
+# `uv sync --frozen` + `uv run ruff/pytest` works without --extra flags.
 dev = [
   "pytest>=8.3.0",
   "httpx>=0.27.0",
-  "mongomock>=4.1.2"
+  "mongomock>=4.1.2",
+  "ruff>=0.15.12",
 ]
 
 [tool.pytest.ini_options]
