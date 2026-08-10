@@ -233,3 +233,12 @@ reasonix.toml
 
 # macOS
 .DS_Store
+
+# R3-P1-04: runtime artifacts must never be committed
+#   - e2e/tmp/: E2E report JSONs, browser reports/screenshots, compose log
+#     dumps (may contain request payloads)
+#   - tmp/gate-logs/: release gate step logs
+#   - vite incremental build info
+e2e/tmp/
+tmp/gate-logs/
+*.tsbuildinfo
