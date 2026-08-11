@@ -541,5 +541,3 @@ import `app.main` 零文件系统副作用（PEP 562 惰性单例，修复前 OS
   self-test 全过；修复为独立提交；final gate 22/22 全绿；final PR
   E2E 一轮 PASS；证据回填本节，不再以第六轮 `49e6295` 作为修复后
   的最终验证 HEAD。
-
-

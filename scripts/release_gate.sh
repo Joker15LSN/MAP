@@ -27,14 +27,23 @@
 # FINAL mode (RELEASE_GATE_FINAL=1) refuses dirty PRODUCT code; docs-only
 # drift is tolerated and stays recorded in the summary. Quality documents
 # must reference the fields inside gate-summary.json, never a narration.
+#
+# R7-P2-02: whitespace checks cover BOTH the worktree and the committed
+# range. FINAL mode requires an explicit GATE_BASELINE_SHA that resolves
+# to a commit and is an ancestor of HEAD (fail-closed); the two auditable
+# steps are `diff-check` (worktree) and `diff-check-committed`
+# (baseline..HEAD via scripts/gate_diff_check.sh). A non-final run
+# without a baseline records the committed-range step as SKIPPED with a
+# reason — never disguised as passed.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LOG_DIR="$ROOT/tmp/gate-logs"
+LOG_DIR="${GATE_LOG_DIR:-$ROOT/tmp/gate-logs}"
 mkdir -p "$LOG_DIR"
 
 FAILURES=()
 STEP_TOTAL=0
+STEPS_SKIPPED=0
 STEPS_JSONL="$LOG_DIR/steps.jsonl"
 SUMMARY="$LOG_DIR/gate-summary.json"
 : > "$STEPS_JSONL"
@@ -68,6 +77,17 @@ GIT_BRANCH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["b
 FINAL_MODE=0
 if [ "${RELEASE_GATE_FINAL:-0}" = "1" ]; then
     FINAL_MODE=1
+    # R7-P2-02: final mode needs a REAL committed-range check, so the
+    # baseline is mandatory and validated BEFORE any step runs —
+    # missing, unresolvable or non-ancestor baselines fail the gate.
+    if [ -z "$GATE_BASELINE_SHA" ]; then
+        echo "[gate] RELEASE GATE FAILED — final mode requires GATE_BASELINE_SHA for the committed-range diff check"
+        exit 1
+    fi
+    if ! (cd "$ROOT" && bash scripts/gate_diff_check.sh validate "$GATE_BASELINE_SHA"); then
+        echo "[gate] RELEASE GATE FAILED — invalid GATE_BASELINE_SHA (see [diff-check] message above)"
+        exit 1
+    fi
     if [ "${#DIRTY_PRODUCT[@]}" -gt 0 ]; then
         echo "[gate] RELEASE GATE FAILED — final mode refuses dirty product code:"
         for path in "${DIRTY_PRODUCT[@]}"; do
@@ -122,12 +142,44 @@ print(json.dumps({
     fi
 }
 
+# record_skipped <step-name> <reason...>
+# R7-P2-02: a step that legitimately did not run (non-final mode without
+# baseline) must be visible in gate-summary.json as skipped with its
+# reason — never silently counted as passed.
+record_skipped() {
+    local name="$1"
+    shift
+    STEP_TOTAL=$((STEP_TOTAL + 1))
+    STEPS_SKIPPED=$((STEPS_SKIPPED + 1))
+    STEP_NAME="$name" STEP_REASON="$*" python3 -c '
+import json, os
+print(json.dumps({
+    "step": os.environ["STEP_NAME"],
+    "command": None,
+    "workdir": None,
+    "exit_code": None,
+    "skipped": True,
+    "skip_reason": os.environ["STEP_REASON"],
+}, ensure_ascii=False))' >> "$STEPS_JSONL"
+    echo "[gate] $name SKIPPED: $*"
+}
+
 # ---- R4-P2-01: the browser-event hygiene gate must fail closed; its
 #      failure-reproduction self-test runs WITHOUT any stack.
 run browser-e2e-self-test "$ROOT" python3 e2e/browser_e2e.py --self-test
 
 # ---- Repo hygiene (R3-P2-01 unified standard commands)
-run diff-check "$ROOT" git diff --check
+# R7-P2-02: two auditable whitespace steps. The worktree step keeps the
+# classic contract; the committed-range step checks baseline..HEAD so
+# committed trailing-whitespace / blank-at-EOF defects can no longer
+# hide behind a clean worktree.
+run diff-check "$ROOT" bash scripts/gate_diff_check.sh worktree
+if [ -n "$GATE_BASELINE_SHA" ]; then
+    run diff-check-committed "$ROOT" bash scripts/gate_diff_check.sh committed "$GATE_BASELINE_SHA"
+else
+    record_skipped diff-check-committed \
+        "non-final run without GATE_BASELINE_SHA: committed-range whitespace check not executed"
+fi
 run compose-config "$ROOT" docker compose config --quiet
 
 # ---- Python backends: frozen sync, then the unified ruff + pytest commands
@@ -177,7 +229,8 @@ GATE_START_UTC="$GATE_START_UTC" GATE_END_UTC="$GATE_END_UTC" \
     GATE_BASELINE_SHA="$GATE_BASELINE_SHA" FINAL_MODE="$FINAL_MODE" \
     SUMMARY="$SUMMARY" STEPS_JSONL="$STEPS_JSONL" \
     SOURCE_CONTROL_JSON="$SOURCE_CONTROL_JSON" \
-    GATE_FAILED="${#FAILURES[@]}" GATE_STEPS="$STEP_TOTAL" python3 -c '
+    GATE_FAILED="${#FAILURES[@]}" GATE_STEPS="$STEP_TOTAL" \
+    GATE_SKIPPED="$STEPS_SKIPPED" python3 -c '
 import json, os
 with open(os.environ["SOURCE_CONTROL_JSON"], encoding="utf-8") as fh:
     source_control = json.load(fh)
@@ -194,6 +247,7 @@ summary = {
     "finished_utc": os.environ["GATE_END_UTC"],
     "steps_total": int(os.environ["GATE_STEPS"]),
     "steps_failed": int(os.environ["GATE_FAILED"]),
+    "steps_skipped": int(os.environ["GATE_SKIPPED"]),
     "result": "PASS" if os.environ["GATE_FAILED"] == "0" else "FAIL",
     "steps": steps,
 }
@@ -203,9 +257,9 @@ with open(os.environ["SUMMARY"], "w", encoding="utf-8") as fh:
 echo "[gate] summary artifact: $SUMMARY (sha=$GIT_SHA tree=$GIT_TREE)"
 
 echo "========================================================================"
-echo "[gate] steps=$STEP_TOTAL failed=${#FAILURES[@]} artifacts=$LOG_DIR"
+echo "[gate] steps=$STEP_TOTAL skipped=$STEPS_SKIPPED failed=${#FAILURES[@]} artifacts=$LOG_DIR"
 if [ "${#FAILURES[@]}" -eq 0 ]; then
-    echo "[gate] RELEASE GATE PASSED (all $STEP_TOTAL steps exit=0, artifacts in $LOG_DIR)"
+    echo "[gate] RELEASE GATE PASSED (all $STEP_TOTAL steps exit=0, $STEPS_SKIPPED skipped, artifacts in $LOG_DIR)"
     exit 0
 fi
 echo "[gate] RELEASE GATE FAILED:"
