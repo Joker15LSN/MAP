@@ -404,3 +404,81 @@ import `app.main` 零文件系统副作用（PEP 562 惰性单例，修复前 OS
 - 注：E2E r4b 之后仅对 `e2e/browser_e2e.py` 追加了隔离记录元数据
   字段与 self-test 断言（§11.3），随后 gate final5 已在包含该改动
   的工作树上整体复跑全绿，两份 artifact 指向同一 tree。
+
+## 12. R5 第五轮整改收口记录
+
+### 12.1 R5-P0-01 effect dispatch fencing token CAS（提交 `e13b7d0`）
+
+- 第五轮在真实 PostgreSQL 证明：`adopt_dispatch` / `ack_effect` /
+  `mark_uncertain` 的 SQL 条件未携带 owner/attempt/token，旧 owner 可
+  覆盖合法接管，两个 `run_effect_once` 均失败且行停在 `uncertain`。
+- 修复：effect 行新增 `dispatch_token`（迁移 `f8a9b0c1d2e3`，单
+  head、可逆、旧行 NULL 经 `IS NOT DISTINCT FROM` 兼容）；
+  `begin_dispatch` 铸造 uuid4 围栏 token；`adopt_dispatch` 为单条原子
+  CAS（observed token/owner/attempt 匹配 + 数据库时间 lease 过期，接
+  管者铸造新 token，败者 rowcount=0 必须重新解析）；ack/mark_uncertain
+  只结算本 generation；`confirm_provider_fact` 为唯一单调对账路径。
+- 反例固化：live-lease 拒绝接管、协议级 barrier 20 轮（provider 动作
+  =1、ledger=delivered、A 迟到写 rowcount=0）、并发 recovery 单一发
+  送权、query=None 围栏，全部真实 PostgreSQL 通过。
+
+### 12.2 R5-P1-01 async predicate + gate warning policy（`e17bd5e`、`fe34bd9`）
+
+- disconnect 清理等待曾把 `async def` predicate 不带 await 调用：
+  coroutine 恒真，30 秒等待首轮即退出，检查被整体跳过且 RuntimeWarning
+  被吞。`_wait_until` 现在强制同步 predicate（coroutine function /
+  返回 awaitable 一律 TypeError，coroutine 关闭不外泄），并带
+  `diagnose` 诊断；新增失败复现测试。
+- gate 的 bff-test 升级为 `-W error::RuntimeWarning
+  -W error::pytest.PytestUnraisableExceptionWarning`：该假绿形态从此
+  在 gate 层直接失败。
+
+### 12.3 R5-P2-01 quarantine review_until 到期 fail-closed（`e419a97`）
+
+- 启动即严格解析每条 `review_until`（ISO `YYYY-MM-DD`，缺失/畸形先于
+  浏览器启动即 fail closed）；UTC date 比较且 self-test 注入固定
+  today；边界按文档定义（当天到期仍有效）；过期匹配进入新的
+  `expired_quarantine` 数组并令 run exit 1；artifact 记录
+  `expired`/`days_remaining` 治理字段；`--self-test` 新增过期/边界/
+  未来三类用例共 9 例全过；`run_e2e.py` 强制 `expired_quarantine == []`。
+
+### 12.4 R5-P2-02 统一 NUL-safe source-control 证据链（`fe34bd9`）
+
+- 新建 `scripts/source_control.py`：以 bytes/NUL 解析
+  `git -c core.quotepath=false status --porcelain=v1 -z`（首行、空
+  格、中文、rename 双路径、untracked 全部逐字节；禁止整体 strip 与固
+  定列切片），docs/product 分类集中一处；dirty 非 final 运行额外记录
+  `diff_head_sha256` + untracked 逐文件 sha256 manifest（工作树内容
+  证据）；CLI `--require-clean-product` 在产品 dirty 时退出 2。
+- gate 与 E2E 均委托该实现：gate 落盘 `tmp/gate-logs/source-control.json`
+  并逐字并入 gate-summary；E2E report 的 `source_control` 与其同源。
+- parser 单测在真实临时 git 仓库覆盖报告要求的 7 类路径形态 + 分类
+  + 退出契约（`tests/test_source_control_snapshot.py`，11 例）；
+  R4 供应链 argv 安全与前端隔离元数据同批入库（`51cdd30`）。
+
+### 12.5 最终验证证据（不可变 HEAD `39621a1` 上执行）
+
+- 工作包提交：`e13b7d0`（P0 围栏）、`e17bd5e`（P1 predicate）、
+  `e419a97`（P2-01 到期）、`fe34bd9`（P2-02 证据链）、`51cdd30`
+  （R4 供应链遗留）、`39621a1`（docs：复审报告 + 本记录），合计 6；
+  加上本证据提交为 7（`git rev-list --count 1057cfa..HEAD` 实测为准）。
+- Release gate（`RELEASE_GATE_FINAL=1`）：`tmp/gate-logs/gate-summary.json`
+  —— result=PASS，steps=22，failed=0，final_mode=true，
+  git_sha=`39621a12fc86`、tree=`f44951a2cb94`、branch=
+  `qoder/dev-modelscope`、dirty=false，2026-08-11T01:58:07Z →
+  02:11:16Z；每步 command/exit/log sha256 齐全；bff-test 在严格
+  warning policy 下全绿。
+- Full E2E（`MAP_E2E_FINAL=1`，全新命名 volume）：
+  `e2e/tmp/report-map-e2e-a488f51f.json` —— result=PASS，12 个场景
+  全 PASS，final_mode=true，source_control 与 gate 同一
+  SHA/tree（`39621a12fc86`/`f44951a2cb94`）、dirty=false，
+  duration_s=377.4，2026-08-11T02:13:36Z → 02:19:53Z。
+- 报告 §6.1 回归复验：`worker_kill_detail.effect` ——
+  provider_action_count=1、takeover_attempt=2、killed_worker_commits=0、
+  两侧 killed container ID 与 barrier crash point 均在；场景断言硬编
+  码接管后 `effect_ledger.status == 'delivered'`（uncertain 即失败），
+  P0 修复后 kill 场景确认 delivered/动作 1，而非“事实 1、ledger
+  uncertain”。browser 卫生：`page_errors=[]`、`unexpected_console=[]`、
+  `expired_quarantine=[]`、`unexpected_failed_requests=[]`、
+  `failed_responses=[]`；隔离记录携带 days_remaining=111 治理字段。
+
