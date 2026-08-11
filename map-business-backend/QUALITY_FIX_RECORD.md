@@ -528,9 +528,8 @@ import `app.main` 零文件系统副作用（PEP 562 惰性单例，修复前 OS
   `page_errors=0`、`unexpected_console=[]`、`expired_quarantine=[]`、
   `unexpected_failed_requests=[]`、`failed_responses=0`。
 - 业务回归证据：本次修复不含任何 effect、worker、browser 或运行时
-  产品代码变化（报告 §5 验收标准第 7 条），直接引用第六轮报告
-  （`TODO/下一阶段产品规划_代码整改_第六轮复审报告.md` §3.3）在同
-  一产品树 `49e6295` 上连续两轮 fresh-volume full E2E 双绿：
+  产品代码变化；在同一产品树 `49e6295` 上连续两轮 fresh-volume
+  full E2E 双绿：
   `report-map-e2e-e9f59d91.json`（sha256
   `74fdba7ed15d27a4a2cf89f2ce380256d88658c808d4de473e44d9b93dbdd7a9`）
   与 `report-map-e2e-d87a796f.json`（sha256
