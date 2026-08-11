@@ -482,3 +482,64 @@ import `app.main` 零文件系统副作用（PEP 562 惰性单例，修复前 OS
   `expired_quarantine=[]`、`unexpected_failed_requests=[]`、
   `failed_responses=[]`；隔离记录携带 days_remaining=111 治理字段。
 
+## 13. R6 第六轮整改收口记录
+
+### 13.1 R6-P2-01 rename 跨 docs/product 边界分类绕过（提交 `78c0ba5`）
+
+- 第六轮真实重放：`git mv app.py TODO/app.py.md`（已跟踪产品文件
+  staged rename 进文档目录）时，snapshot 只把新路径放入
+  `dirty_files`/`dirty_product`，`orig_path` 不参与分类，
+  `docs_only_dirty=true`、`--require-clean-product` 错误返回 0——
+  产品文件的删除/移出可绕过 clean-product final gate。
+- 修复（仅 `scripts/source_control.py` 与其测试，不动任何运行时代
+  码）：新增 `affected_paths_for()`——rename 是“旧路径删除 + 新路径
+  增加”，destination 与 origin 双路径都参与 docs/product 分类；copy
+  的 origin 未被删除，只按目标路径分类，但 origin 保留在 entry 供审
+  计。`snapshot()` 输出显式去重集合 `affected_paths`，`dirty_files`
+  镜像该集合、`dirty_product` 过滤该集合，gate 与 E2E 继续只消费这
+  一个集合，不可能分类不一致。
+- 验收测试（`tests/test_source_control_snapshot.py`，现 15 例）：
+  逐字固化 R6 重放（`dirty_product == ['app.py']`、CLI 退出 2）；
+  四象限 rename——product→product / product→docs / docs→product
+  均 `dirty_product` 非空且精确断言受影响集合，仅 docs→docs 保持
+  `docs_only_dirty=true`；copy 语义（只按目标分类、origin 留审计）；
+  既有 11 例（首行/中文/空格/staged+unstaged/删除/untracked 等）全
+  部继续通过。
+
+### 13.2 R6 最终验证证据（验证 HEAD `78c0ba5`，产品树 clean）
+
+- 修复提交：`78c0ba5 fix(evidence): R6-P2-01 rename contributes BOTH
+  paths to classification`（2 文件，+124/-13，仅
+  `scripts/source_control.py` 与 `tests/test_source_control_snapshot.py`）。
+- Release gate（`RELEASE_GATE_FINAL=1`）：`tmp/gate-logs/gate-summary.json`
+  （sha256 `aa307418f468e68be5fa5d2019f0f605288263d009580ef59b823c2dd4f7db0f`）
+  —— result=PASS，steps=22，failed=0，final_mode=true，
+  git_sha=`78c0ba5a1fb8`、tree=`309885153dcd`、`product_dirty=[]`、
+  `docs_only_dirty=true`（唯一未跟踪文件为第六轮复审报告文档，
+  final 模式按设计容忍并记录），bff-test 在严格 warning policy 下
+  全绿，2026-08-11T05:13:06Z → 05:29:33Z 全部 22 步 exit=0。
+- Final PR E2E（`MAP_E2E_FINAL=1 python3 e2e/run_e2e.py --suite pr`）：
+  `e2e/tmp/report-map-e2e-8efcb96a.json`（sha256
+  `43838c6b2248736b4e9d73fd0f0ff1af0bdb1e42a114a392bd154e50c5ae1213`）
+  —— result=PASS，final_mode=true，source_control 与 gate 同一
+  SHA/tree（`78c0ba5a1fb8`/`309885153dcd`）、`dirty_product=[]`，
+  4 个场景（model_center_redirect / happy_path / browser /
+  identity_boundary）全 PASS，duration_s=185.8；browser 卫生：
+  `page_errors=0`、`unexpected_console=[]`、`expired_quarantine=[]`、
+  `unexpected_failed_requests=[]`、`failed_responses=0`。
+- 业务回归证据：本次修复不含任何 effect、worker、browser 或运行时
+  产品代码变化（报告 §5 验收标准第 7 条），直接引用第六轮报告
+  （`TODO/下一阶段产品规划_代码整改_第六轮复审报告.md` §3.3）在同
+  一产品树 `49e6295` 上连续两轮 fresh-volume full E2E 双绿：
+  `report-map-e2e-e9f59d91.json`（sha256
+  `74fdba7ed15d27a4a2cf89f2ce380256d88658c808d4de473e44d9b93dbdd7a9`）
+  与 `report-map-e2e-d87a796f.json`（sha256
+  `de747372e6dd2710e4c8fbc194145d726c57ef7f516395ceef3f95b4952e24e3`）。
+- 第七轮最小验收门槛自检：四象限 rename 自动化全过；临时仓库
+  product→docs 重放 final CLI exit=2（独立重放确认）；source
+  snapshot 全套、BFF ruff/全量 pytest（严格 warning）、browser
+  self-test 全过；修复为独立提交；final gate 22/22 全绿；final PR
+  E2E 一轮 PASS；证据回填本节，不再以第六轮 `49e6295` 作为修复后
+  的最终验证 HEAD。
+
+
