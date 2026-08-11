@@ -4,14 +4,17 @@ import { cleanup } from '@testing-library/react';
 import { server } from './server';
 
 /**
- * R2-P2-02: 仅隔离已知、不可在本仓库修复的第三方告警,其余 console.error
- * 全部保留(不吞错误)。每条过滤均记录来源包与精确版本:
+ * R2-P2-02 / R4-P2-01: 仅隔离已知、不可在本仓库修复的第三方告警,其余
+ * console.error 全部保留(不吞错误)。每条临时隔离均记录
+ * package/version/owner/到期日(review_until),到期必须复审:
  *  1. `[antd: Tooltip] overlayClassName deprecated`
  *     来源: antd@5.29.3 内部经 @agentscope-ai/design@1.0.32 调用;
+ *     owner: frontend; review_until: 2026-11-30;
  *     待上游升级至 classNames API 后移除本过滤。
  *  2. `Warning: forwardRef render functions accept exactly two parameters`
  *     来源: react-dom@18.3.1 对第三方组件(如 @agentscope-ai/design@1.0.32
- *     内部 forwardRef 用法)的告警;React 19 已移除该 API 形式。
+ *     内部 forwardRef 用法)的告警;React 19 已移除该 API 形式;
+ *     owner: frontend; review_until: 2026-11-30。
  * 过滤边界: 仅按完整告警前缀匹配,任何其它文本一律放行。
  */
 const KNOWN_THIRD_PARTY_WARNINGS = [

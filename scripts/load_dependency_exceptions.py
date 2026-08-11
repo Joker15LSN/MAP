@@ -1,4 +1,4 @@
-"""Machine-readable supply-chain exception loader (R3-P2-04).
+"""Machine-readable supply-chain exception loader (R3-P2-04 / R4-P2-02).
 
 Reads ``security/dependency_exceptions.json`` and emits the advisory IDs
 that ``scripts/dependency_audit.sh`` may pass as ``--ignore-vuln``. The
@@ -6,6 +6,11 @@ script is the SINGLE source of truth for allowlisting:
 
 - every entry must carry all documented fields (advisory, owner, ticket,
   approver, approved_at, expires, reachability/mitigation rationale);
+- the advisory must be a SINGLE well-formed advisory ID from an explicit
+  allowlist of formats (CVE / GHSA / PYSEC). Whitespace, control
+  characters, shell metacharacters and extra tokens (e.g. an embedded
+  second ``--ignore-vuln``) are rejected BEFORE any shell ever sees the
+  value (R4-P2-02 fail closed);
 - dates are parsed with strict ISO ``date.fromisoformat``;
 - an entry whose ``expires`` is on/before today FAILS the gate (exit 2) —
   an expired exception is treated exactly like a new vulnerability;
@@ -22,6 +27,7 @@ Exit codes: 0 = ok (IDs on stdout), 1 = malformed file/entry,
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -44,8 +50,44 @@ REQUIRED_FIELDS = (
     "expires",
 )
 
+# R4-P2-02: explicit advisory-ID formats. The character classes are
+# strict subsets, so whitespace, control characters, shell metacharacters
+# (`;`, `#`, `|`, `` ` ``, `$`, …), quotes and hyphen-lead injections
+# (e.g. an extra ``--ignore-vuln`` token) can never match.
+ADVISORY_FORMATS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # CVE-2026-12345 (4+ digit years, 4+ digit sequence per CVE 2.0)
+    ("CVE", re.compile(r"^CVE-\d{4}-\d{4,19}$")),
+    # GHSA-xxxx-xxxx-xxxx (GitHub Security Advisory slug; GitHub's slug
+    # alphabet excludes 0/1/a/e/i/l/o/s/t/u)
+    ("GHSA", re.compile(r"^GHSA(?:-[23456789bcdfghjkmnpqrvwxyz]{4}){3}$")),
+    # PYSEC-2026-123 (PyPA advisory database ID)
+    ("PYSEC", re.compile(r"^PYSEC-\d{4}-\d{1,19}$")),
+)
 
-def _fail(message: str, code: int) -> "None":
+
+def validate_advisory(advisory: str) -> str:
+    """Return the advisory if it is a SINGLE valid ID, else raise.
+
+    Fail closed on anything that is not exactly one well-formed ID —
+    including multi-token values that would smuggle extra pip-audit
+    arguments (R4-P2-02).
+    """
+    if not advisory or advisory != advisory.strip():
+        raise ValueError(
+            f"advisory {advisory!r} has surrounding whitespace (a single "
+            "well-formed advisory ID is required)"
+        )
+    for _name, pattern in ADVISORY_FORMATS:
+        if pattern.fullmatch(advisory):
+            return advisory
+    raise ValueError(
+        f"advisory {advisory!r} is not a single valid advisory ID; "
+        f"supported formats: {', '.join(name for name, _ in ADVISORY_FORMATS)} "
+        "(e.g. CVE-2026-12345, GHSA-xxxx-xxxx-xxxx, PYSEC-2026-123)"
+    )
+
+
+def _fail(message: str, code: int) -> None:
     print(f"[exceptions] ERROR: {message}", file=sys.stderr)
     raise SystemExit(code)
 
@@ -55,7 +97,7 @@ def _parse_iso_date(value: str, field: str) -> date:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError:
         _fail(f"field '{field}' must be a strict ISO date (YYYY-MM-DD), got {value!r}", 1)
-        raise AssertionError("unreachable")
+        raise AssertionError("unreachable") from None
 
 
 def main() -> int:
@@ -85,7 +127,11 @@ def main() -> int:
         if missing:
             _fail(f"{label} missing required fields: {', '.join(missing)}", 1)
 
-        advisory = str(entry["advisory"]).strip()
+        advisory = str(entry["advisory"])
+        try:
+            advisory = validate_advisory(advisory)
+        except ValueError as exc:
+            _fail(f"{label}: {exc}", 1)
         if advisory in seen:
             _fail(f"{label} duplicates advisory {advisory}", 1)
         seen.add(advisory)
