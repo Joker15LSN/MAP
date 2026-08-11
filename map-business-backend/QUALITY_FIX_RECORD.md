@@ -299,3 +299,108 @@ import `app.main` 零文件系统副作用（PEP 562 惰性单例，修复前 OS
   interruption、worker kill + lease takeover，`takeover_attempt: 2` 证明
   lease 被接管恰好一次）+ PG/Mongo/Jaeger 交叉校验。报告 JSON 位于被
   gitignore 的 `e2e/tmp/`（运行产物不入交付集合）。
+
+### 10.5 提交数口径修正（R4-P2-03）
+
+- 第四轮复审指出交付说明的“12 个提交”与 `git rev-list --count
+  9021065..HEAD` 的 13 不一致。正确口径：**12 个实现/收尾提交
+  （`db5378a`…`e0a0320`）+ 1 个证据文档提交（`1057cfa`，docs-only，
+  不改变产品 tree），合计 13**。
+- 自 R4 起不再依赖人工叙述：`scripts/release_gate.sh` 生成
+  `tmp/gate-logs/gate-summary.json`（自带 git SHA / tree hash /
+  branch / dirty / 每步 exit code、日志 sha256、UTC 时间），
+  `e2e/run_e2e.py` 报告自带 `source_control` 字段；质量记录只引用
+  artifact 内字段，提交数一律以 `git rev-list` 实测为准。
+
+## 11. R4 第四轮整改收口记录
+
+### 11.1 R4-P0-01 effect dispatch 恰好一次（key 强制 + 围栏 + 事实恢复）
+
+- `EffectProvider` 协议改为 `send(key) -> bool` + `query(key) ->
+  bool | None`：key 成为强制位置参数，任何无 key 的 effect 发送在
+  类型层面不可能存在；`query` 返回服务端事实（delivered / 未送达 /
+  uncertain）。
+- effect 行新增 dispatch 围栏列（owner / attempt / lease），迁移
+  `e7f8a9b0c1d2_effect_dispatch_fence.py`：只有持有当前 lease 的
+  attempt 才能把行推进到 dispatched，被接管 worker 的迟到写入被行级
+  围栏拒绝。
+- dispatching 恢复不再假设“没提交=没送达”：按 idempotency key 查
+  provider 事实 —— delivered 则直接对账落库、未送达则重发、
+  uncertain 则保持 pending 并告警，不做盲重发。
+- 测试：崩溃窗口 W1/W2/W2b/W3/W4 各 20 轮（W2b = 新增的“已调
+  provider、未写结果”崩溃点），PG 持久 fake provider 记录真实事实，
+  每轮断言事实数=1；另有并发围栏测试（`test_job_lease_fencing.py`、
+  `test_effect_protocol_windows.py`）。后端全套 pytest 303 个通过。
+
+### 11.2 R4-P1-01 E2E 杀真实 lease owner（barrier 崩溃窗口）
+
+- E2E `worker_kill_lease_takeover` 不再杀空闲容器：通过
+  `MAP_WORKER_ID` + 环境变量 barrier（`MAP_E2E_RECONCILE_BARRIER_S`
+  / `MAP_E2E_EFFECT_BARRIER_S`）让受害者 worker 在精确崩溃点暂停
+  （`barrier_after_claim_before_business_write` /
+  `barrier_after_intent_before_dispatch`），确认其为 lease owner 后
+  `docker kill` 真实容器，再由接管 worker 恢复。
+- 报告 artifact `faults.worker_kill_detail`（r4b 运行实测值）：
+  reconcile 侧 `attempt_sequence=[1,2]`、`business_write_count=1`、
+  `killed_worker_commits=0`、`reconciled=1`；effect 侧
+  `provider_action_count=1`、`killed_worker_commits=0`、
+  `idempotency_key` 记录在案 —— 业务写入与外部副作用各恰好一次。
+
+### 11.3 R4-P2-01 browser E2E 事件卫生 fail-closed
+
+- `e2e/browser_e2e.py` 对以下任一情况直接 FAIL：未捕获 pageerror、
+  非隔离名单的 console error/warning、任何 >=400 响应、不在白名单
+  的 requestfailed。白名单是精确匹配（scenario + method + 路由
+  regex + failure reason），不是通配放行；`net::ERR_ABORTED` console
+  副作用仅在同场景存在白名单 abort 时归因放行。
+- 隔离名单（`CONSOLE_QUARANTINE`）每条记录 package / version /
+  owner / review_until（当前 3 条均来自 @agentscope-ai/design 1.0.32，
+  review_until=2026-11-30），且报告里每条隔离命中都携带完整元数据。
+- `--self-test` 无栈失败复现：注入 console.error / 500 / 非白名单
+  abort 各必须使评估 FAIL；隔离 warning 与白名单 abort 必须放行且
+  隔离记录元数据完整。该 self-test 已作为 release gate 第 1 步
+  （`browser-e2e-self-test`）常设执行。
+- r4b E2E 实测：`page_errors` / `unexpected_console` /
+  `unexpected_failed_requests` / `failed_responses` 均为 `[]`，
+  `quarantined_console` 46 条全部携带完整隔离元数据。
+
+### 11.4 R4-P2-02 供应链审计参数安全
+
+- `load_dependency_exceptions.py` 对每条 advisory 做显式格式校验
+  （CVE / GHSA / PYSEC 正则 fullmatch；空白、控制字符、shell 元字
+  符、多余 token 一律拒绝），过期例外 fail closed（exit 2）。
+- `dependency_audit.sh` 不再拼接命令字符串：allowlist 保存为 bash
+  数组，以位置参数（`"$@"`）进入容器内固定脚本体；恶意值在结构上
+  不可能逃逸成 shell 语法。漏洞库服务固定为 PyPI 官方 advisory 库
+  （OSV 端点在本网络环境主机+容器双层验证不可达，脚本注释留证），
+  服务不可达或真实 finding 仍然 fail gate；对瞬时超时仅重试，不吞
+  失败（非零退出原样传播）。
+- `test_dependency_exceptions.py` 32 个测试：合法 ID 6 例、恶意值
+  15 例全部被拒、argv 探针镜像容器契约证明 1 条/2 条例外分别得到
+  1 对/2 对 `--ignore-vuln` 参数、`exit 3` 探针证明非零退出不被掩盖。
+
+### 11.5 R4-P2-03 artifact 自证（git SHA / tree / dirty / UTC）
+
+- gate 启动即采集 source_control（SHA / tree hash / branch /
+  baseline / dirty 文件清单，docs 与产品代码分类），每步记录
+  command、exit_code、日志 sha256、UTC 起止时间，结尾组装
+  `gate-summary.json`；`RELEASE_GATE_FINAL=1` 时产品代码 dirty 直接
+  拒绝（docs-only 容忍并记录）。
+- E2E 报告同样携带 `source_control` + `started_utc` /
+  `finished_utc` / `final_mode`（`MAP_E2E_FINAL=1` 同规则）。
+
+### 11.6 最终验证证据（同一工作树上运行）
+
+- Release gate（final5）：`tmp/gate-logs/gate-summary.json` ——
+  result=PASS，steps=22，failed=0，2026-08-10T14:34:35Z →
+  15:02:56Z；source_control git_sha=1057cfa43e55、
+  tree=4da78ab875aa、dirty=True（本轮未提交整改本身，final 模式
+  关闭）。首步 `browser-e2e-self-test` exit 0。
+- Full E2E（r4b，全新命名 volume）：
+  `e2e/tmp/report-map-e2e-ba291521.json` —— result=PASS，12 个场景
+  全 PASS（含 worker_kill_lease_takeover、pg_interruption_recovery、
+  browser 三场景），`duration_s=500.7`，2026-08-10T14:25:46Z →
+  14:34:07Z；worker kill 与 browser 卫生实测值见 §11.2 / §11.3。
+- 注：E2E r4b 之后仅对 `e2e/browser_e2e.py` 追加了隔离记录元数据
+  字段与 self-test 断言（§11.3），随后 gate final5 已在包含该改动
+  的工作树上整体复跑全绿，两份 artifact 指向同一 tree。
