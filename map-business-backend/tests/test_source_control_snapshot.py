@@ -132,8 +132,89 @@ def test_rename_reports_both_paths(git_repo: Path) -> None:
     assert renamed, f"no rename entry in {snap['entries']!r}"
     assert renamed[0]["path"] == "new_name.py"
     assert renamed[0]["orig_path"] == "old_name.py"
+    # R6-P2-01: a rename is "old path deleted + new path added" — BOTH
+    # paths are affected and must be visible in the dirty set.
     assert "new_name.py" in snap["dirty_files"]
-    assert "old_name.py" not in snap["dirty_files"]
+    assert "old_name.py" in snap["dirty_files"]
+    assert snap["affected_paths"] == ["new_name.py", "old_name.py"]
+
+
+def test_r6_product_to_docs_rename_is_refused(git_repo: Path) -> None:
+    """R6-P2-01 failure reproduction, pinned verbatim: staging
+    ``git mv app.py TODO/app.py.md`` must NOT look docs-only — the old
+    product path is being deleted, so ``--require-clean-product`` must
+    exit 2 (it used to return 0)."""
+    (git_repo / "app.py").write_text("product\n")
+    (git_repo / "TODO").mkdir()
+    _commit(git_repo, "baseline")
+    _git(git_repo, "mv", "app.py", "TODO/app.py.md")
+
+    snap = _snapshot_paths(git_repo)
+    assert snap["affected_paths"] == ["TODO/app.py.md", "app.py"]
+    assert snap["dirty_product"] == ["app.py"]
+    assert snap["docs_only_dirty"] is False
+    rc = source_control.main(
+        ["--repo", str(git_repo), "--json", "--require-clean-product"]
+    )
+    assert rc == 2
+
+
+def test_rename_four_quadrants_classification(git_repo: Path) -> None:
+    """R6-P2-01 acceptance matrix: product->product, product->docs and
+    docs->product renames are ALL product-dirty; only docs->docs stays
+    docs-only."""
+    # Distinct contents: rename pairing must stay unambiguous.
+    (git_repo / "prod_a.py").write_text("alpha\n")
+    (git_repo / "prod_b.py").write_text("bravo\n")
+    (git_repo / "TODO").mkdir()
+    (git_repo / "TODO" / "docs_a.md").write_text("delta docs\n")
+    (git_repo / "TODO" / "docs_b.md").write_text("echo docs\n")
+    _commit(git_repo, "baseline")
+
+    # Three product-affecting quadrants in ONE tree.
+    _git(git_repo, "mv", "prod_a.py", "prod_a2.py")          # product -> product
+    _git(git_repo, "mv", "prod_b.py", "TODO/prod_b.md")       # product -> docs
+    _git(git_repo, "mv", "TODO/docs_a.md", "docs_a.py")       # docs -> product
+
+    snap = _snapshot_paths(git_repo)
+    # Product-affecting paths: both sides of product->product, the DELETED
+    # origin of product->docs, the NEW destination of docs->product. The
+    # docs side of the two cross-boundary renames stays docs.
+    assert snap["dirty_product"] == [
+        "docs_a.py",
+        "prod_a.py",
+        "prod_a2.py",
+        "prod_b.py",
+    ]
+    assert "TODO/prod_b.md" not in snap["dirty_product"]  # docs destination
+    assert "TODO/docs_a.md" not in snap["dirty_product"]  # docs origin
+    assert snap["docs_only_dirty"] is False
+
+
+def test_rename_docs_to_docs_stays_docs_only(git_repo: Path) -> None:
+    """The ONLY rename quadrant that may keep docs_only_dirty=true."""
+    (git_repo / "TODO").mkdir()
+    (git_repo / "TODO" / "old.md").write_text("d\n")
+    _commit(git_repo, "baseline")
+    _git(git_repo, "mv", "TODO/old.md", "TODO/new.md")
+
+    snap = _snapshot_paths(git_repo)
+    assert snap["affected_paths"] == ["TODO/new.md", "TODO/old.md"]
+    assert snap["dirty_product"] == []
+    assert snap["docs_only_dirty"] is True
+    rc = source_control.main(
+        ["--repo", str(git_repo), "--json", "--require-clean-product"]
+    )
+    assert rc == 0
+
+
+def test_copy_classified_by_destination_only() -> None:
+    """R6-P2-01: a COPY leaves its origin in place, so only the
+    destination drives classification; the origin stays in the entry
+    (and therefore the artifact) for audit."""
+    entry = source_control.parse_porcelain_z(b"C  TODO/copy.md\x00product.py\x00")[0]
+    assert entry["orig_path"] == "product.py"  # kept for audit
+    assert source_control.affected_paths_for(entry) == ["TODO/copy.md"]
 
 
 def test_deletion(git_repo: Path) -> None:

@@ -20,7 +20,12 @@ Rules baked in:
   slicing — the first line, leading spaces, Chinese paths, rename double
   paths and untracked files are all handled correctly.
 - docs/product classification runs ONLY on parsed repo-relative paths;
-  the rule lives in ONE place (``is_docs_path``).
+  the rule lives in ONE place (``is_docs_path``). R6-P2-01: a RENAME is
+  "old path deleted + new path added", so BOTH paths of a rename drive
+  classification (``affected_paths_for``) — renaming a product file into
+  a docs directory can no longer bypass the clean-product gate; a COPY
+  leaves its origin in place, so only the destination is affected while
+  the origin stays in the artifact for audit.
 - a dirty working tree additionally records working-tree content
   evidence (``diff_head_sha256`` over ``git diff HEAD`` plus a per-file
   sha256 manifest of every untracked file), so a non-final artifact can
@@ -87,6 +92,23 @@ def parse_porcelain_z(raw: bytes) -> list[dict]:
     return entries
 
 
+def affected_paths_for(entry: dict) -> list[str]:
+    """Repo-relative paths whose state changed for ONE porcelain entry.
+
+    R6-P2-01: a RENAME is "old path deleted + new path added" — BOTH the
+    destination (``path``) and the origin (``orig_path``) must drive
+    docs/product classification, otherwise ``git mv app.py
+    TODO/app.py.md`` would masquerade a product deletion as a docs-only
+    change and bypass the clean-product final gate. A COPY leaves its
+    origin in place, so only the destination is affected; the origin
+    still stays in the entry (and thus the artifact) for audit.
+    """
+    paths = [entry["path"]]
+    if entry["xy"][0] == "R" and entry.get("orig_path"):
+        paths.append(entry["orig_path"])
+    return paths
+
+
 def _git_bytes(repo_root: Path, *args: str) -> bytes:
     result = subprocess.run(
         ["git", "-C", str(repo_root), *args], capture_output=True, check=True
@@ -124,31 +146,39 @@ def _untracked_manifest(repo_root: Path) -> tuple[list[dict], str]:
 def snapshot(repo_root: Path) -> dict:
     """Self-describing source-control evidence for gate/E2E artifacts.
 
-    ``dirty_files``/``dirty_product`` are PARSED repo-relative paths,
-    byte-identical to what git reports; ``docs_only_dirty`` is true only
-    when the tree is dirty AND every dirty path is documentation. A
-    dirty tree additionally carries ``diff_head_sha256`` and the
-    untracked-file content manifest (R5-P2-02 content evidence).
+    ``affected_paths`` is the DEDUPLICATED set of every path whose state
+    changed — rename entries contribute BOTH paths (R6-P2-01); the gate
+    and the E2E runner consume this one set, so they can never classify
+    differently. ``dirty_files`` mirrors it for compatibility,
+    ``dirty_product`` filters it through ``is_docs_path``, and
+    ``docs_only_dirty`` is true only when the tree is dirty AND every
+    affected path is documentation. All paths are PARSED repo-relative
+    paths, byte-identical to what git reports. A dirty tree additionally
+    carries ``diff_head_sha256`` and the untracked-file content manifest
+    (R5-P2-02 content evidence).
     """
     porcelain = _git_bytes(
         repo_root, "-c", "core.quotepath=false", "status", "--porcelain=v1", "-z"
     )
     entries = parse_porcelain_z(porcelain)
-    dirty_files = [entry["path"] for entry in entries]
-    dirty_product = [path for path in dirty_files if not is_docs_path(path)]
-    docs_only_dirty = bool(dirty_files) and not dirty_product
+    affected_paths = sorted(
+        {path for entry in entries for path in affected_paths_for(entry)}
+    )
+    dirty_product = [path for path in affected_paths if not is_docs_path(path)]
+    docs_only_dirty = bool(affected_paths) and not dirty_product
     result = {
         "git_sha": _git_text(repo_root, "rev-parse", "HEAD"),
         "git_tree": _git_text(repo_root, "rev-parse", "HEAD^{tree}"),
         "branch": _git_text(repo_root, "rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty": bool(dirty_files),
-        "dirty_files": dirty_files,
+        "dirty": bool(affected_paths),
+        "affected_paths": affected_paths,
+        "dirty_files": affected_paths,
         "dirty_product": dirty_product,
         "docs_only_dirty": docs_only_dirty,
         "entries": entries,
         "captured_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    if dirty_files:
+    if affected_paths:
         result["diff_head_sha256"] = hashlib.sha256(
             _git_bytes(repo_root, "diff", "HEAD")
         ).hexdigest()
