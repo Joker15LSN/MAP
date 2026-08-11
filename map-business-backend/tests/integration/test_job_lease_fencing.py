@@ -55,6 +55,30 @@ def _factory(_engine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
 
 
+class _RecordingProvider:
+    """EffectProvider (R4-P0-01) with an in-memory per-key fact store.
+
+    These tests exercise lease fencing, not cross-process provider facts —
+    the server-side persistent fact proofs live in
+    ``test_effect_protocol_windows.py``. Deduplication by key is still
+    structurally enforced: a repeated ``send`` under the same key appends
+    nothing.
+    """
+
+    def __init__(self, effects: list[str]) -> None:
+        self._effects = effects
+        self._facts: set[str] = set()
+
+    async def send(self, key: str) -> bool:
+        if key not in self._facts:
+            self._facts.add(key)
+            self._effects.append("external-effect")
+        return True
+
+    async def query(self, key: str) -> bool | None:
+        return key in self._facts
+
+
 async def test_long_handler_with_two_workers_single_side_effect(
     _engine, session, monkeypatch
 ) -> None:
@@ -270,12 +294,8 @@ async def test_retry_replays_idempotency_key_with_single_side_effect(_engine, se
         ctx = get_current_job_context()
         guard = EffectGuard(ctx.session_factory)
 
-        async def provider():
-            calls.append("call")
-            return True
-
         await guard.run_effect_once(
-            ctx.idempotency_key, job.workspace_id, provider, job_id=job.id
+            ctx.idempotency_key, job.workspace_id, _RecordingProvider(calls), job_id=job.id
         )
         if crash_first["flag"]:
             crash_first["flag"] = False
@@ -295,7 +315,7 @@ async def test_retry_replays_idempotency_key_with_single_side_effect(_engine, se
     async with factory() as s:
         stored = await s.get(Job, job.id)
     assert await guard.has_effect("key-42", stored.workspace_id)
-    assert calls == ["call"]
+    assert calls == ["external-effect"]
 
     async with factory() as s:
         stored = await s.get(Job, job.id)
@@ -480,8 +500,15 @@ async def test_expiry_race_window_100_rounds_old_worker_never_wins(
 
 
 async def test_long_handler_two_workers_20_rounds_single_effect(_engine, session) -> None:
-    """1s lease + 3s handler + two workers + heartbeat timeout, run 20
-    consecutive rounds: the side effect happens exactly once per round."""
+    """2s lease + 3s handler + two workers + heartbeat timeout, run 20
+    consecutive rounds: the side effect happens exactly once per round.
+
+    R5 note: the lease was originally 1s; under full-gate machine load the
+    surviving worker's heartbeat task could be scheduled >1s late, losing
+    the lease mid-handler and producing ZERO effects (a false red, not a
+    fencing regression). 2s keeps the exact takeover semantics (the lease
+    still expires before the 3s handler ends) with twice the margin.
+    """
     factory = _factory(_engine)
     for _round in range(20):
         async with factory() as s:
@@ -515,7 +542,7 @@ async def test_long_handler_two_workers_20_rounds_single_effect(_engine, session
                 factory,
                 {"test": long_handler},
                 worker_id="worker-A",
-                lease_seconds=1,
+                lease_seconds=2,
                 poll_seconds=0.05,
                 heartbeat_interval_seconds=0.3,
             )
@@ -523,12 +550,14 @@ async def test_long_handler_two_workers_20_rounds_single_effect(_engine, session
                 factory,
                 {"test": long_handler},
                 worker_id="worker-B",
-                lease_seconds=1,
+                lease_seconds=2,
                 poll_seconds=0.05,
                 heartbeat_interval_seconds=0.3,
             )
             task_a = asyncio.create_task(runner_a.run_once())
-            await asyncio.sleep(1.6)
+            # Wait until worker-A's lease is DEFINITELY expired (its
+            # heartbeats all fail) before worker-B polls for the takeover.
+            await asyncio.sleep(2.6)
             await runner_b.run_once()
             await task_a
         finally:
@@ -556,12 +585,8 @@ async def test_effect_ledger_survives_process_restart(_engine, session) -> None:
         ctx = get_current_job_context()
         guard = EffectGuard(ctx.session_factory)
 
-        async def provider():
-            effects.append("external-effect")
-            return True
-
         await guard.run_effect_once(
-            ctx.idempotency_key, job.workspace_id, provider, job_id=job.id
+            ctx.idempotency_key, job.workspace_id, _RecordingProvider(effects), job_id=job.id
         )
         # Crash right after the confirmed effect; the ack already committed.
         if (job.attempt or 0) == 1:
@@ -606,12 +631,8 @@ async def test_pending_intent_is_not_skipped_on_retry(_engine, session) -> None:
             await guard.record_intent(ctx.idempotency_key, job.workspace_id, job_id=job.id)
             raise RuntimeError("crash after intent, before effect")
 
-        async def provider():
-            effects.append("external-effect")
-            return True
-
         await guard.run_effect_once(
-            ctx.idempotency_key, job.workspace_id, provider, job_id=job.id
+            ctx.idempotency_key, job.workspace_id, _RecordingProvider(effects), job_id=job.id
         )
         return {"ok": True}
 

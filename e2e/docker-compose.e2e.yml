@@ -74,6 +74,16 @@ services:
       # takeover scenario recovers in seconds instead of a full minute.
       # Heartbeat defaults to lease/4 and stays strictly below lease/3.
       MAP_WORKER_LEASE_SECONDS: "10"
+      # R4-P1-01 fault-matrix controls (E2E-only, driven by run_e2e.py):
+      # MAP_WORKER_ID pins the worker identity so the scenario can prove
+      # the DB lease_owner equals the killed container's worker ID; the
+      # barrier holds the handler at a deterministic in-flight crash
+      # window; the effect probe registers an E2E-only idempotent effect
+      # handler with a server-side fact table. All inert when unset.
+      MAP_WORKER_ID: ${MAP_WORKER_ID:-}
+      MAP_E2E_RECONCILE_BARRIER_S: ${MAP_E2E_RECONCILE_BARRIER_S:-0}
+      MAP_E2E_EFFECT_PROBE: ${MAP_E2E_EFFECT_PROBE:-}
+      MAP_E2E_EFFECT_BARRIER_S: ${MAP_E2E_EFFECT_BARRIER_S:-0}
     volumes:
       - ${E2E_DATA_DIR:-./e2e/tmp/data}:/app/data
 
