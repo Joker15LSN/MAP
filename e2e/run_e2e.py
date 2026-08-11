@@ -62,6 +62,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -107,6 +108,32 @@ POLL_S = 2.0
 
 class E2EFailure(AssertionError):
     """A scenario assertion failed; abort the run (cleanup still runs)."""
+
+
+# R4-P2-03 / R5-P2-02: source-control evidence is produced by the ONE
+# tested NUL-safe snapshot (scripts/source_control.py), shared with the
+# release gate. The fifth-round defects (whole-output ``.strip()`` +
+# fixed ``[3:]`` slicing truncating real paths; quoted octal escapes for
+# Chinese docs paths) can only be avoided by never parsing porcelain
+# here again — docs/product classification lives in that module only.
+
+
+def _load_source_control_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "map_source_control", REPO_ROOT / "scripts" / "source_control.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def source_control_info() -> dict:
+    """R4-P2-03 / R5-P2-02: every artifact self-describes the immutable
+    git objects AND the working-tree content evidence it was produced
+    from — no reliance on human narration."""
+    return _load_source_control_module().snapshot(REPO_ROOT)
 
 
 class Ctx:
@@ -905,6 +932,22 @@ def scenario_browser(ctx: Ctx) -> dict:
         browser_report.get("result") == "PASS",
         f"browser report not PASS: {browser_report.get('failure')}",
     )
+    # R4-P2-01: the browser gate is fail-closed — a PASS report must
+    # carry EMPTY unexpected-event fields (quarantined third-party
+    # warnings and expected stop/reload aborts are reported separately).
+    # R5-P2-01: expired quarantines are NOT allowlists — they must be
+    # empty too, otherwise the run fails regardless of scenario results.
+    for field in (
+        "page_errors",
+        "unexpected_console",
+        "expired_quarantine",
+        "unexpected_failed_requests",
+        "failed_responses",
+    ):
+        expect(
+            browser_report.get(field) == [],
+            f"browser hygiene field {field} not empty: {browser_report.get(field)!r}",
+        )
 
     conversation_id = browser_report.get("conversation_id")
     expect(bool(conversation_id), "browser report missing conversation_id")
@@ -1280,14 +1323,69 @@ def scenario_pg_interruption(ctx: Ctx) -> None:
     ctx.report["faults"]["pg_interruption_recovery"] = "PASS"
 
 
-def scenario_worker_kill_takeover(ctx: Ctx, happy: dict) -> None:
-    """Worker kill + lease takeover.
+def _recreate_worker(ctx: Ctx, extra_env: dict[str, str]) -> None:
+    """Force-recreate worker-service with fault-matrix env and wait for it."""
+    ctx.env.update(extra_env)
+    compose(ctx, ["up", "-d", "--force-recreate", "--no-deps", "worker-service"], timeout=600.0)
 
-    A job is left RUNNING by a dead worker (expired lease); the real
-    worker container is killed and restarted, and the restarted worker
-    must reclaim the expired job (attempt bump proves the takeover) and
-    finish it exactly once.
+    def _running():
+        info = compose_ps(ctx).get("worker-service") or {}
+        return info.get("state") == "running"
+
+    poll_until(_running, timeout_s=180.0, what="worker-service running after recreate")
+
+
+def _job_lease_row(ctx: Ctx, job_id: str) -> tuple[str, int, str]:
+    row = psql(
+        ctx,
+        "SELECT status || '|' || attempt || '|' || coalesce(lease_owner, '') "
+        f"FROM map_control.jobs WHERE id = '{job_id}'",
+    )
+    status, attempt_str, owner = row.split("|")
+    return status, int(attempt_str), owner
+
+
+def _kill_worker(ctx: Ctx) -> str:
+    """SIGKILL the worker container; return the killed container id."""
+    killed_id = run(
+        ["docker", "inspect", "--format", "{{.Id}}", ctx.worker_container]
+    ).stdout.strip()
+    run(["docker", "kill", ctx.worker_container], timeout=120.0)
+    return killed_id
+
+
+def scenario_worker_kill_takeover(ctx: Ctx, happy: dict) -> None:
+    """R4-P1-01: REAL in-flight worker kill + lease takeover.
+
+    A real QUEUED job is claimed by the REAL worker (identity pinned via
+    ``MAP_WORKER_ID``); an E2E-only barrier holds the handler at a
+    deterministic crash window, then the runner kills exactly the lease
+    owner container. After lease expiry a fresh owner takes over: attempt
+    goes EXACTLY 1 -> 2, the killed worker commits ZERO, and the business
+    write / provider-side action fact count is EXACTLY 1.
+
+    Phase A (message_reconcile): crash window = after claim, before any
+    business write; the taken-over job reconciles the stale message
+    exactly once (version 1 -> 2).
+    Phase B (e2e_effect_probe): crash window = after the effect intent,
+    before dispatch/provider call; the provider's SERVER-side fact table
+    must hold exactly one action after takeover.
     """
+    barrier_s = "20"
+    detail: dict = {}
+
+    # ---------------- Phase A: kill the live reconcile lease owner -------
+    victim_a, takeover_a = "e2e-victim-reconcile", "e2e-takeover-reconcile"
+    _recreate_worker(
+        ctx,
+        {
+            "MAP_WORKER_ID": victim_a,
+            "MAP_E2E_RECONCILE_BARRIER_S": barrier_s,
+            "MAP_E2E_EFFECT_PROBE": "true",
+            "MAP_E2E_EFFECT_BARRIER_S": "0",
+        },
+    )
+
     stale_id = psql(
         ctx,
         "INSERT INTO map_control.messages "
@@ -1299,52 +1397,198 @@ def scenario_worker_kill_takeover(ctx: Ctx, happy: dict) -> None:
     job_id = psql(
         ctx,
         "INSERT INTO map_control.jobs "
-        "(workspace_id, job_type, status, priority, attempt, max_attempts, "
-        "lease_owner, lease_expires_at, started_at) "
-        f"VALUES ('{WORKSPACE_ID}', 'message_reconcile', 'running', 0, 1, 3, "
-        "'dead-worker', now() + interval '2 seconds', now()) RETURNING id",
+        "(workspace_id, job_type, status, priority, attempt, max_attempts) "
+        f"VALUES ('{WORKSPACE_ID}', 'message_reconcile', 'queued', 0, 0, 3) RETURNING id",
     )
-    expect(bool(job_id), "failed to insert dead-worker job")
+    expect(bool(job_id), "failed to enqueue message_reconcile job")
 
-    # Kill the real worker mid-flight-window, then bring it back.
-    run(["docker", "kill", ctx.worker_container], timeout=120.0)
-    compose(ctx, ["up", "-d", "--no-deps", "worker-service"], timeout=600.0)
+    def _victim_a_claimed():
+        status, attempt, owner = _job_lease_row(ctx, job_id)
+        return status == "running" and attempt == 1 and owner == victim_a
 
-    def _worker_running():
-        info = compose_ps(ctx).get("worker-service") or {}
-        return info.get("state") == "running"
+    poll_until(_victim_a_claimed, timeout_s=60.0, what="victim worker claims the job (attempt 1)")
 
-    poll_until(_worker_running, timeout_s=180.0, what="worker-service running after kill")
-
-    def _job_succeeded():
-        return (
-            psql(ctx, f"SELECT status FROM map_control.jobs WHERE id = '{job_id}'")
-            == "succeeded"
-        )
-
-    # Lease expiry (2s) + poll interval + container boot headroom.
-    poll_until(_job_succeeded, timeout_s=120.0, what="lease takeover completes the job")
-
-    lease_row = psql(
-        ctx,
-        "SELECT attempt || '|' || coalesce(lease_owner, '') "
-        f"FROM map_control.jobs WHERE id = '{job_id}'",
+    # The handler is now INSIDE the barrier (past the claim, before any
+    # business write); the heartbeat keeps the lease alive while it waits.
+    time.sleep(3.0)
+    status, attempt, owner = _job_lease_row(ctx, job_id)
+    expect(
+        status == "running" and attempt == 1 and owner == victim_a,
+        f"job left the deterministic barrier window before the kill: "
+        f"{(status, attempt, owner)!r}",
     )
-    attempt_str, owner = lease_row.split("|", 1)
-    expect(int(attempt_str) >= 2, f"takeover did not bump attempt: {lease_row!r}")
-    expect(owner == "", f"terminal job still holds a lease owner: {lease_row!r}")
+    killed_a = _kill_worker(ctx)
 
+    # A SIGKILLed worker can never commit: the job stays running with the
+    # dead owner and the message is untouched (version still 1).
+    status, attempt, owner = _job_lease_row(ctx, job_id)
+    expect(
+        status == "running" and attempt == 1 and owner == victim_a,
+        f"killed worker's job state changed without takeover: {(status, attempt, owner)!r}",
+    )
+    expect(
+        psql(ctx, f"SELECT version FROM map_control.messages WHERE id = '{stale_id}'") == "1",
+        "killed worker committed a business write",
+    )
+
+    _recreate_worker(
+        ctx, {"MAP_WORKER_ID": takeover_a, "MAP_E2E_RECONCILE_BARRIER_S": "0"}
+    )
+
+    transitions_a: list[tuple[str, int, str]] = []
+
+    def _job_a_done():
+        row = _job_lease_row(ctx, job_id)
+        if not transitions_a or transitions_a[-1] != row:
+            transitions_a.append(row)
+        return row[0] == "succeeded"
+
+    poll_until(
+        _job_a_done,
+        timeout_s=180.0,
+        what="fresh owner takes over and completes the reconcile job",
+        interval_s=0.3,
+    )
+    status, attempt, owner = _job_lease_row(ctx, job_id)
+    expect(attempt == 2, f"takeover attempt not exactly 2: {attempt}")
+    result_json = psql(
+        ctx, f"SELECT result_json::text FROM map_control.jobs WHERE id = '{job_id}'"
+    )
+    result = json.loads(result_json)
+    expect(
+        int(result.get("reconciled", 0)) >= 1,
+        f"takeover did not reconcile: {result_json!r}",
+    )
     row = psql(
         ctx,
-        "SELECT status || '|' || coalesce(stream_error, '') "
+        "SELECT status || '|' || coalesce(stream_error, '') || '|' || version "
         f"FROM map_control.messages WHERE id = '{stale_id}'",
     )
     expect(
-        row == "failed|STREAM_INTERRUPTED",
-        f"taken-over job did not reconcile the stale message: {row!r}",
+        row == "failed|STREAM_INTERRUPTED|2",
+        f"stale message not reconciled EXACTLY once (version must be 2): {row!r}",
     )
+    detail["reconcile"] = {
+        "killed_container_id": killed_a,
+        "crash_point": "barrier_after_claim_before_business_write",
+        "old_lease_owner": victim_a,
+        "new_lease_owner": takeover_a,
+        "attempt_sequence": [t[1] for t in transitions_a],
+        "business_write_count": 1,
+        "killed_worker_commits": 0,
+        "reconciled": result.get("reconciled"),
+    }
+
+    # ---------------- Phase B: kill the live effect lease owner ----------
+    victim_b, takeover_b = "e2e-victim-effect", "e2e-takeover-effect"
+    effect_key = f"e2e-kill-{secrets.token_hex(6)}"
+    psql(
+        ctx,
+        "CREATE TABLE IF NOT EXISTS map_control.e2e_effect_facts ("
+        " effect_key TEXT PRIMARY KEY, outcome TEXT NOT NULL,"
+        " created_at TIMESTAMPTZ NOT NULL DEFAULT now());"
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON map_control.e2e_effect_facts TO map",
+    )
+    _recreate_worker(
+        ctx, {"MAP_WORKER_ID": victim_b, "MAP_E2E_EFFECT_BARRIER_S": barrier_s}
+    )
+    effect_job_id = psql(
+        ctx,
+        "INSERT INTO map_control.jobs "
+        "(workspace_id, job_type, status, priority, attempt, max_attempts, "
+        "payload_json, idempotency_key) "
+        f"VALUES ('{WORKSPACE_ID}', 'e2e_effect_probe', 'queued', 0, 0, 3, "
+        f"'{{\"effect_key\": \"{effect_key}\"}}', '{effect_key}') RETURNING id",
+    )
+    expect(bool(effect_job_id), "failed to enqueue e2e_effect_probe job")
+
+    def _victim_b_claimed():
+        status, attempt, owner = _job_lease_row(ctx, effect_job_id)
+        return status == "running" and attempt == 1 and owner == victim_b
+
+    poll_until(_victim_b_claimed, timeout_s=60.0, what="victim worker claims the effect job")
+
+    # Crash window proof: intent committed (pending), no dispatch yet, and
+    # the provider NEVER received the action (zero server-side facts).
+    time.sleep(3.0)
+    expect(
+        psql(
+            ctx,
+            "SELECT status FROM map_control.effect_ledger "
+            f"WHERE workspace_id = '{WORKSPACE_ID}' AND effect_key = '{effect_key}'",
+        )
+        == "pending",
+        "effect intent not in the deterministic barrier window (pending)",
+    )
+    expect(
+        psql(
+            ctx,
+            "SELECT count(*) FROM map_control.e2e_effect_facts "
+            f"WHERE effect_key = '{effect_key}'",
+        )
+        == "0",
+        "provider already received the action before the kill",
+    )
+    killed_b = _kill_worker(ctx)
+
+    _recreate_worker(
+        ctx, {"MAP_WORKER_ID": takeover_b, "MAP_E2E_EFFECT_BARRIER_S": "0"}
+    )
+
+    def _job_b_done():
+        return _job_lease_row(ctx, effect_job_id)[0] == "succeeded"
+
+    poll_until(
+        _job_b_done,
+        timeout_s=180.0,
+        what="fresh owner takes over and delivers the effect",
+        interval_s=0.5,
+    )
+    status, attempt, owner = _job_lease_row(ctx, effect_job_id)
+    expect(attempt == 2, f"effect takeover attempt not exactly 2: {attempt}")
+    action_count = psql(
+        ctx,
+        "SELECT count(*) FROM map_control.e2e_effect_facts "
+        f"WHERE effect_key = '{effect_key}'",
+    )
+    expect(
+        action_count == "1",
+        f"provider-side action fact count must be EXACTLY 1, got {action_count}",
+    )
+    expect(
+        psql(
+            ctx,
+            "SELECT status FROM map_control.effect_ledger "
+            f"WHERE workspace_id = '{WORKSPACE_ID}' AND effect_key = '{effect_key}'",
+        )
+        == "delivered",
+        "effect ledger not delivered after takeover",
+    )
+    detail["effect"] = {
+        "killed_container_id": killed_b,
+        "crash_point": "barrier_after_intent_before_dispatch",
+        "old_lease_owner": victim_b,
+        "new_lease_owner": takeover_b,
+        "idempotency_key": effect_key,
+        "provider_action_count": int(action_count),
+        "killed_worker_commits": 0,
+    }
+
+    # Restore a neutral worker (no barriers, no probe, fresh random id)
+    # for the remaining scenarios.
+    _recreate_worker(
+        ctx,
+        {
+            "MAP_WORKER_ID": "",
+            "MAP_E2E_RECONCILE_BARRIER_S": "0",
+            "MAP_E2E_EFFECT_BARRIER_S": "0",
+            "MAP_E2E_EFFECT_PROBE": "",
+        },
+    )
+
     ctx.report["faults"]["worker_kill_lease_takeover"] = "PASS"
-    ctx.report["faults"]["takeover_attempt"] = int(attempt_str)
+    ctx.report["faults"]["worker_kill_detail"] = detail
+    ctx.report["faults"]["takeover_attempt"] = 2
 
 
 def collect_db_counts(ctx: Ctx) -> None:
@@ -1459,6 +1703,7 @@ def dump_failure_logs(ctx: Ctx) -> str | None:
 
 def print_report(ctx: Ctx, success: bool, failure: str | None) -> None:
     ctx.report["duration_s"] = round(time.time() - ctx.started, 1)
+    ctx.report["finished_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ctx.report["result"] = "PASS" if success else "FAIL"
     if failure:
         ctx.report["failure"] = failure
@@ -1558,8 +1803,25 @@ def main() -> int:
 
     ctx = Ctx()
     ctx.report["suite"] = args.suite
+    # R4-P2-03: the artifact self-describes the immutable git objects it
+    # was produced from (SHA / tree / branch / dirty / UTC time).
+    ctx.report["source_control"] = source_control_info()
+    ctx.report["started_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ctx.report["final_mode"] = os.getenv("MAP_E2E_FINAL", "").strip() == "1"
     failure: str | None = None
     try:
+        if ctx.report["final_mode"]:
+            # R4-P2-03: FINAL mode refuses dirty product code; docs-only
+            # drift is tolerated but stays recorded in the artifact.
+            source = ctx.report["source_control"]
+            if source["dirty"] and not source["docs_only_dirty"]:
+                raise E2EFailure(
+                    "final mode refuses dirty product code: "
+                    f"{', '.join(source['dirty_files'][:10])} "
+                    "(commit product changes or run without MAP_E2E_FINAL=1)"
+                )
+            if source["dirty"]:
+                log(f"final mode: docs-only dirtiness tolerated: {source['dirty_files']}")
         start_stack(ctx)
         if args.suite == "pr":
             run_pr_suite(ctx)
