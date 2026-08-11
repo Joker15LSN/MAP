@@ -1,177 +1,448 @@
-# MAP (Multi Agent Path)
+# MAP — Multi Agent Path
 
-MAP 是一个面向企业场景的多智能体编排平台，采用 `前端 -> BFF -> 算法 -> 观测` 的分层架构，支持全域智能问答与跨业务域心流编排（ScenarioHub + SkillHub）。
+MAP 是一个面向企业场景的多智能体应用平台。它把业务 UI、身份与控制面、会话与异步任务、算法编排、运行观测拆成独立服务，并通过 PostgreSQL、MongoDB 和可选的 OpenTelemetry 链路形成可配置、可追踪、可恢复的运行闭环。
 
-## Project Positioning
+当前仓库同时保留两类问答入口：
 
-- 面向业务团队：提供“可配置、可观测、可治理”的企业智能体运行底座。
-- 面向工程团队：将 UI、业务编排、算法执行、运行观测彻底解耦，支持独立演进。
-- 面向运维治理：通过策略配置、运行时鉴权、链路追踪实现上线可控与问题可回溯。
+- 兼容入口 `/api/chat*`：继续承载现有全域和心流模式；
+- 会话入口 `/api/v1/conversations*`：提供持久化会话、SSE 流式回答、刷新恢复、主动停止、反馈和幂等。
 
-## Core Capabilities
+浏览器只访问 BFF，不直接访问算法服务。跨服务契约以 [`SPEC/contracts/`](SPEC/contracts/) 为准。
 
-- 双执行模式：
-  - `全域模式`：基于场景识别进行业务智能体调度与总结。
-  - `心流模式`：基于 ScenarioHub/SkillHub 构建跨域串行执行图。
-- 动态治理：管理端可配置模型、智能体、权限、心流策略，并实时影响新请求。
-- 安全执行：工具预挂载 + 运行时二次鉴权，防止越权工具调用。
-- 端到端可观测：请求、智能体、工具三层事件入库，支持链路追踪与错误聚类。
+## 核心能力
 
-## System Architecture
+- 多智能体执行：场景识别、业务智能体调度、工具调用、结果聚合，以及 ScenarioHub/SkillHub 心流编排。
+- 会话式问答：会话与消息持久化、增量 SSE、终态状态机、request-id 重放和 `Idempotency-Key`。
+- 控制面治理：模型、智能体、MCP、Skill、权限、场景包和心流策略统一通过 BFF 管理。
+- 安全边界：可信代理身份、服务身份、workspace/user 所有权隔离、集中授权和标准错误 envelope。
+- 异步执行：独立 worker、短事务 heartbeat、lease/attempt fencing、崩溃回收和副作用 ledger。
+- 不可抵赖审计：所有管理写操作经过 mutation 编排，并写入 append-only hash chain。
+- 端到端观测：Mongo 请求/智能体/工具记录，独立观测前后端，以及可选的 BFF → map_core 分布式追踪。
+- 可复现质量门禁：冻结依赖、后端 Ruff/pytest、前端 test/build、bundle、依赖审计和 Compose 跨服务 E2E。
 
-```mermaid
-graph TD
-    U[User] --> F[frontend-service]
-    F --> B[backend-service BFF]
-    B --> A[algorithm-service map_core]
-    A --> P[(PostgreSQL)]
-    A --> M[(MongoDB)]
-    O[observability-service] --> M
-```
-
-## Runtime Flow
-
-### 1) 全域模式（Global Domain）
-
-1. 前端调用 `POST /api/chat/stream/v2`（经 BFF）。
-2. 算法服务进行场景识别并选择业务智能体。
-3. 智能体执行工具调用，汇总后按 SSE 输出 `start/meta/content_delta/done/error`。
-4. 运行事件写入 Mongo，观测服务可查询请求详情与执行链路。
-
-### 2) 心流模式（Flow Domain）
-
-1. 前端调用 `POST /api/chat/stream/flow/v1`（经 BFF）。
-2. 算法服务加载心流策略快照（BFF 管理端配置源）。
-3. ScenarioResolver 命中场景后构建执行图，SkillHub 动态挂载可用工具。
-4. 节点按依赖顺序执行，并输出策略命中、节点结果、repair 事件。
-5. 未命中场景或策略允许时，自动回退全域链路保证可用性。
-
-## End-to-End Sequence
+## 系统架构
 
 ```mermaid
-sequenceDiagram
-    participant U as User
-    participant F as Frontend
-    participant B as BFF
-    participant A as Algorithm
-    participant C as Config Snapshot
-    participant D as Datastores
-    participant O as Observability
+flowchart LR
+    User["用户 / 企业代理"] --> Web["业务前端<br/>React + Vite"]
+    Web --> BFF["业务 BFF<br/>FastAPI"]
 
-    U->>F: Submit query
-    F->>B: /api/chat or /api/chat/flow
-    B->>A: Forward request with runtime config
-    A->>C: Load flow runtime snapshot
-    A->>A: Scene resolve and agent orchestration
-    A->>D: Persist request agent tool events
-    A-->>B: SSE or sync response
-    B-->>F: Return response
-    O->>D: Query telemetry and traces
+    BFF --> Core["map_core<br/>多智能体执行"]
+    BFF --> State["AdminState<br/>配置快照文件"]
+    BFF --> PG[("PostgreSQL<br/>map_control")]
+
+    Worker["异步 Worker"] --> PG
+    Worker --> Core
+    Migrator["一次性 Migrator"] --> PG
+
+    Core --> Mongo[("MongoDB<br/>运行记录")]
+    Core --> LLM["LLM / MCP / 外部工具"]
+    Core --> PG
+
+    ObsWeb["观测前端"] --> ObsAPI["观测后端"]
+    ObsAPI --> Mongo
+
+    BFF -. "OTLP（可选）" .-> Collector["OTel Collector"]
+    Core -. "OTLP（可选）" .-> Collector
+    Collector --> Jaeger["Jaeger"]
 ```
 
-## Repository Layout
+### 服务与端口
 
-```text
-MAP/
-├── README.md
-├── docker-compose.yml
-├── SPEC/
-│   ├── ARCHITECTURE.md
-│   ├── STANDARDS.md
-│   └── README.md
-├── map-business-frontend/                # 业务前端（React + Vite）
-├── map-business-backend/                 # 业务后端 BFF（FastAPI）
-├── map_core/                             # 算法服务（FastAPI）
-├── map-observability/                    # 观测系统（前后端）
-└── packages/
-    └── map-tree-core/                    # 问答树共享能力
-```
+| Compose 服务 | 代码目录 | 职责 | 默认宿主机入口 |
+| --- | --- | --- | --- |
+| `frontend-service` | `map-business-frontend/` | 问答工作台与管理配置 UI | `http://localhost:5174` |
+| `backend-service` | `map-business-backend/` | BFF、身份、会话、反馈、管理配置、审计 | `http://localhost:18080` |
+| `worker-service` | `map-business-backend/app/workers/` | job claim、lease、reconcile 和副作用执行 | 无公开端口 |
+| `migrate` | `map-business-backend/app/db/migrations/` | 使用独立角色执行 Alembic 升级 | 一次性服务 |
+| `algorithm-service` | `map_core/` | 场景识别、多智能体/工具/心流执行 | `http://localhost:10000` |
+| `observability-frontend-service` | `map-observability/map-observability-frontend/` | 请求、智能体、工具和关联诊断 UI | `http://localhost:15152` |
+| `observability-backend-service` | `map-observability/map-observability-backend/` | Mongo 分析与关联查询 API | `http://localhost:15151/api/v1` |
+| `postgres` | — | 控制面、会话、任务、反馈和审计事实 | `localhost:15432` |
+| `mongo` | — | map_core 运行记录与观测数据 | `localhost:27017` |
+| `otel-collector` | `otel/` | 可选 OTLP 接收与转发 | `4317` / `4318` |
+| `jaeger` | — | 可选分布式追踪查询 | `http://localhost:16686` |
 
-## Quick Start
+## 关键运行链路
 
-### 1) Prerequisites
+### 会话与流式回答
 
-- Docker + Docker Compose v2
-- 建议 8GB+ 可用内存
+1. 前端向 BFF 创建会话，或加载已有会话进行刷新恢复。
+2. BFF 校验 workspace/user 所有权，在 PostgreSQL 创建 user/assistant 消息事实。
+3. BFF 调用 map_core，并将上游 SSE 解析为冻结事件集：`start`、`meta`、`content_delta`、`done`、`error`。
+4. 只有合法 `done` 可以把消息置为 `completed`；EOF、解析错误、非法 UTF-8、上游错误和中断会保存为明确失败事实。
+5. `POST /api/v1/messages/{id}:stop` 同时触发上游取消和条件终态更新；stop/done 竞态只允许一个终态。
+6. 异常遗留的 `streaming` 消息由 worker 的 `message_reconcile` job 收敛为 `failed/STREAM_INTERRUPTED`。
 
-### 2) Prepare Environment
+### 管理配置与审计
+
+管理配置的当前快照保存在 `map-business-backend/app/data/admin_state.json`，但写入不是简单覆盖文件：
+
+1. `ConfigMutationService` 计算 expected/target hash 和脱敏 JSON Patch；
+2. PostgreSQL 先持久化 pending mutation；
+3. 通过临时文件、fsync 和原子 rename 更新快照；
+4. 随后以短事务追加 applied/failed/rejected 审计事件并终结 mutation；
+5. 审计事件形成 append-only SHA-256 hash chain，应用角色只有 SELECT/INSERT 权限；
+6. BFF 启动时 reconciler 处理崩溃遗留 mutation，未知状态不会猜测为成功。
+
+### Worker 与外部副作用
+
+- 每次 job claim 都递增 `attempt`，`lease_owner + attempt` 是 heartbeat/complete/fail 的 fencing 条件。
+- heartbeat 使用独立短事务；数据库异常按 lease 丢失处理，旧 worker 不能提交迟到结果。
+- handler 业务写和 fenced complete 共用事务；SIGTERM 会停止领取新任务并向运行中 handler 传播 cancel。
+- 外部副作用必须使用稳定 `idempotency_key`，并经过 effect ledger 与 provider 事实对账；未知结果进入 `uncertain`，不会盲目重发。
+
+详细状态机见 [`SPEC/contracts/job-outbox.md`](SPEC/contracts/job-outbox.md)。
+
+## 数据所有权
+
+| 数据 | 事实源 | 主要写入方 | 主要读取方 |
+| --- | --- | --- | --- |
+| workspace、会话、消息、反馈、job、outbox、mutation、审计链 | PostgreSQL `map_control` schema | BFF、worker、migrator | BFF、worker、运维工具 |
+| 管理配置当前快照 | `admin_state.json` | BFF `ConfigMutationService` | BFF、map_core 运行时快照消费者 |
+| request/agent/tool/LLM 运行记录 | MongoDB `map_db_dev` | map_core | 观测后端、E2E 交叉验证 |
+| trace/span | OTel Collector → Jaeger（可选） | BFF、map_core | Jaeger、E2E |
+
+PostgreSQL 使用三个角色分权：
+
+- `map_admin`：仅用于首次初始化和维护，不供应用服务使用；
+- `map_migrator`：仅由一次性 `migrate` 服务执行 DDL；
+- `map`：BFF、worker 和算法服务使用的非超级应用角色。
+
+生产环境必须覆盖 Compose 中所有本地默认密码。
+
+## 快速开始
+
+### 前置条件
+
+- Docker Engine 或 Docker Desktop
+- Docker Compose v2
+- 建议至少 8 GB 可用内存
+
+只有在直接运行服务或执行本地测试时才需要 Node.js、Python 和 [`uv`](https://docs.astral.sh/uv/)。
+
+### 1. 准备环境变量
 
 ```bash
 cp .env.example .env
 ```
 
-最少建议配置：
+至少填写 OpenAI-compatible 模型配置：
 
-- `MAP_LLM_BASE_URL`（例如 `https://api.deepseek.com`）
-- `MAP_LLM_MODEL`（例如 `deepseek-v4-flash`）
-- `MAP_LLM_API_KEY`
+```dotenv
+MAP_LLM_BASE_URL=https://api.deepseek.com
+MAP_LLM_MODEL=deepseek-v4-flash
+MAP_LLM_API_KEY=replace-me
+```
 
-### 3) Start All Services
+`.env` 只用于本地，不应提交。生产环境还必须设置安全的 PostgreSQL 密码，并使用 `trusted_header` 身份模式；不要沿用 `dev` 身份或仓库默认凭证。
+
+### 2. 启动完整开发栈
 
 ```bash
 docker compose up -d --build
 ```
 
-### 4) Access URLs
+首次启动顺序由 Compose 管理：PostgreSQL/MongoDB 健康 → `migrate` 升级到 Alembic head → BFF/worker → 两个前端。
 
-- 业务前端：`http://localhost:5174`
-- BFF：`http://localhost:18080`
-- 算法服务：`http://localhost:10000`
-- 观测前端：`http://localhost:15152`
-- 观测后端：`http://localhost:15151/api/v1`
-
-### 5) Health Check
+检查状态：
 
 ```bash
-curl http://localhost:18080/health
-curl http://localhost:10000/health
-curl http://localhost:15151/api/v1/health
+docker compose ps
+docker compose logs -f backend-service worker-service algorithm-service
 ```
 
-### 6) Stop / Cleanup
+### 3. 验证健康状态
+
+```bash
+curl -fsS http://localhost:18080/health
+curl -fsS http://localhost:18080/ready
+curl -fsS http://localhost:10000/health
+curl -fsS http://localhost:15151/api/v1/health
+```
+
+- BFF `/health` 只表示进程存活；
+- BFF `/ready` 同时检查数据库、Alembic revision 和默认 workspace seed；
+- `/health` 与 `/ready` 是无身份基础设施探针，不返回 principal 数据。
+
+OpenAPI：
+
+- BFF：`http://localhost:18080/docs`
+- map_core：`http://localhost:10000/docs`
+- 观测后端：`http://localhost:15151/docs`
+
+### 4. 停止服务
 
 ```bash
 docker compose down
+```
+
+需要同时删除本地 PostgreSQL/MongoDB 数据和前端依赖卷时：
+
+```bash
 docker compose down -v
 ```
 
-## API Entry Points
+`down -v` 会删除本地数据，执行前应确认不需要保留。
 
-- 全域问答：`POST /api/chat`、`POST /api/chat/stream/v2`
-- 心流问答：`POST /api/chat/flow/v1`、`POST /api/chat/stream/flow/v1`
-- 管理配置：`/api/admin/*`
-- 观测分析：`/api/v1/overview`、`/api/v1/requests`、`/api/v1/correlation/*`
+## 启用分布式追踪
 
-## Configuration & Governance
+基础 Compose 默认不启用 OpenTelemetry。使用 overlay 同时启用 BFF、map_core、Collector 和 Jaeger：
 
-- 管理态配置存储于 BFF 状态文件：`map-business-backend/app/data/admin_state.json`。
-- 算法服务通过 `flow-runtime-snapshot` 拉取心流策略并做本地缓存。
-- 心流策略命中会在响应 `meta` 与事件流中输出，便于前端与观测侧定位。
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.otel.yml \
+  --profile otel \
+  up -d --build
+```
 
-## Observability & Troubleshooting
+默认协议是 `http/protobuf`，对应 `http://otel-collector:4318`。切换为 gRPC 时，协议和端点必须成对设置：
 
-- 观测系统基于 Mongo 中的 `request_records`、`agent_executions`、`tool_call_records` 分析链路。
-- 若请求卡住，优先检查：
-  - `backend-service` 与 `algorithm-service` 健康状态。
-  - `MAP_LLM_API_KEY` 与模型配置是否有效。
-  - 观测接口 `GET /api/v1/requests` 的 `status` 与 `error` 字段。
+```dotenv
+MAP_OTEL_PROTOCOL=grpc
+MAP_OTEL_ENDPOINT=http://otel-collector:4317
+```
 
-## Security Notice
+`OTEL_SDK_DISABLED=true` 是最高优先级 kill switch。仓库自带 Collector 只配置 traces pipeline；map_core 日志通过 span events 进入链路，不应在该 profile 下打开 native OTLP log export。
 
-- 不要将真实密钥提交到仓库（`.env` 应保持本地私有）。
-- 算法服务请求日志默认对 `api_key/token/authorization` 做脱敏。
-- 生产环境建议限制 CORS 来源并接入企业鉴权网关。
+## API 边界
 
-## Documentation Index
+### 浏览器面向的 BFF API
 
-- 总体架构：[SPEC/ARCHITECTURE.md](SPEC/ARCHITECTURE.md)
-- 工程规范：[SPEC/STANDARDS.md](SPEC/STANDARDS.md)
-- 文档总览：[SPEC/README.md](SPEC/README.md)
-- 算法服务：[map_core/README.md](map_core/README.md)
-- BFF 服务：[map-business-backend/README.md](map-business-backend/README.md)
-- 前端服务：[map-business-frontend/README.md](map-business-frontend/README.md)
-- 观测系统：[map-observability/README.md](map-observability/README.md)
+| 类别 | 主要入口 |
+| --- | --- |
+| 会话 | `POST/GET /api/v1/conversations`、`GET /api/v1/conversations/{id}` |
+| 流式与停止 | `POST /api/v1/conversations/{id}/messages:stream`、`POST /api/v1/messages/{id}:stop` |
+| 反馈 | `/api/v1/messages/{id}/feedback`、会话反馈摘要、管理反馈查询 |
+| 审计 | `GET /api/v1/admin/audit-events`、`GET /api/v1/admin/audit-events/verify` |
+| 管理配置 | `/api/admin/*` |
+| 兼容问答 | `/api/chat`、`/api/chat/stream/v2`、`/api/chat/flow/v1`、`/api/chat/stream/flow/v1` |
 
-## Acknowledgement
+`/api/v1` 使用统一错误 envelope：
 
-本 README 的组织方式参考了多智能体系统项目的最佳实践（例如 [bytedance/deer-flow](https://github.com/bytedance/deer-flow)），并结合 MAP 当前代码实现进行了工程化落地。
+```json
+{
+  "code": "FORBIDDEN",
+  "message": "platform_admin role required",
+  "details": null,
+  "request_id": "..."
+}
+```
+
+旧 `/api/*` 兼容路径仍返回 `{"detail": ...}`。前端不得直接调用 `/global_domain/*` 或 `/flow_domain/*`，这些是 BFF 与 map_core 之间的内部边界。
+
+### map_core 内部入口
+
+- 全域：`/global_domain/chat`、`/global_domain/chat/stream/v2`；
+- 心流：`/flow_domain/chat/v1`、`/flow_domain/chat/stream/v1`；
+- master pipeline：`/master_pipeline/*`；
+- 健康检查：`/health`、`/status`。
+
+map_core 会把请求、智能体、工具和 LLM 运行记录写入 MongoDB，观测服务通过相同 `request_id`/`trace_id` 关联查询。
+
+## 身份与权限
+
+### 用户身份模式
+
+| `MAP_AUTH_MODE` | 用途 | 行为 |
+| --- | --- | --- |
+| `dev` | 本地开发 | 固定 `local-admin/platform_admin`；`MAP_ENV=prod` 时拒绝启动 |
+| `trusted_header` | 企业代理接入 | 必须配置 proxy secret 且保持 required=true，否则 fail-closed |
+| `oidc` | 预留 | 当前未实现，返回 501 `NOT_IMPLEMENTED` |
+
+`trusted_header` 模式只信任通过 `X-Trusted-Proxy-Secret` 验证后的 `X-UserId`、roles 和 workspace。跨 workspace 或跨用户资源统一返回 404，避免泄漏资源是否存在。
+
+### 服务身份
+
+`/internal/v1/*` 只接受 `ServicePrincipal`。服务 token 必须在 `MAP_SERVICE_CREDENTIALS` 中绑定 `key_id`、`service_name`、`audience` 和 scopes；用户身份与服务身份不能互相替代。
+
+完整契约见 [`SPEC/contracts/identity.md`](SPEC/contracts/identity.md)。
+
+## 配置索引
+
+完整模板和优先级说明见 [`.env.example`](.env.example)。常用配置：
+
+| 类别 | 变量 |
+| --- | --- |
+| 端口 | `MAP_FRONTEND_PORT`、`MAP_BFF_PORT`、`MAP_ALGO_PORT`、`MAP_OBS_FRONTEND_PORT`、`MAP_OBS_BACKEND_PORT` |
+| LLM | `MAP_LLM_BASE_URL`、`MAP_LLM_MODEL`、`MAP_LLM_API_KEY` |
+| BFF 数据 | `MAP_CONTROL_DB_DSN`、`MAP_CONTROL_MIGRATION_DSN`、`MAP_DEFAULT_WORKSPACE_ID` |
+| 身份 | `MAP_AUTH_MODE`、`MAP_ENV`、`MAP_TRUSTED_PROXY_SECRET`、`MAP_SERVICE_CREDENTIALS` |
+| Worker | `MAP_WORKER_ID`、`MAP_WORKER_LEASE_SECONDS`、`MAP_WORKER_POLL_SECONDS` |
+| OTel | `MAP_OTEL_ENABLED`、`MAP_OTEL_PROTOCOL`、`MAP_OTEL_ENDPOINT`、`MAP_OTEL_SAMPLING_RATIO`、`OTEL_SDK_DISABLED` |
+| 算法引擎 | `MAP_AGENT_ENGINE=legacy|agentscope` |
+
+新会话 UI 由 `VITE_MAP_CONVERSATIONS_ENABLED=true` 开启，默认关闭并使用旧 `/api/chat*`。直接运行前端时可把它写入 `map-business-frontend/.env.local`；当前基础 Compose 没有透传该变量，如需在容器内启用，应在 `frontend-service.environment` 中显式设置后重建前端服务。
+
+## 本地开发
+
+### 基础设施与迁移
+
+```bash
+docker compose up -d postgres mongo
+
+cd map-business-backend
+uv sync --frozen
+MAP_CONTROL_MIGRATION_DSN=postgresql+asyncpg://map_migrator:map-migrator-local@127.0.0.1:15432/map \
+  uv run alembic upgrade head
+```
+
+### BFF 与 Worker
+
+```bash
+cd map-business-backend
+MAP_CONTROL_DB_DSN=postgresql+asyncpg://map:map@127.0.0.1:15432/map \
+MAP_BFF_STATE_FILE="$PWD/app/data/admin_state.json" \
+  uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 18080
+```
+
+另一个终端：
+
+```bash
+cd map-business-backend
+MAP_CONTROL_DB_DSN=postgresql+asyncpg://map:map@127.0.0.1:15432/map \
+MAP_BFF_STATE_FILE="$PWD/app/data/admin_state.json" \
+  uv run python -m app.workers.main
+```
+
+### map_core
+
+```bash
+cd map_core
+uv sync --frozen
+ENV=dev \
+POSTGRES_DSN=postgresql://map:map@127.0.0.1:15432/map \
+MONGODB_URI='mongodb://map:map@127.0.0.1:27017/?authSource=admin' \
+MONGODB_DATABASE=map_db_dev \
+  uv run python -m map_core.main --host 0.0.0.0 --port 10000
+```
+
+### 前端与观测服务
+
+```bash
+# 业务前端
+cd map-business-frontend
+npm ci
+npm run dev
+
+# 观测后端
+cd map-observability/map-observability-backend
+uv sync --frozen
+MONGO_URI='mongodb://map:map@127.0.0.1:27017/?authSource=admin' \
+MONGO_DB=map_db_dev \
+  uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# 观测前端
+cd map-observability/map-observability-frontend
+npm ci
+VITE_DEV_PROXY_TARGET=http://localhost:8000 npm run dev
+```
+
+## 测试与发布门禁
+
+### 完整 release gate
+
+```bash
+# 日常开发：未设置 baseline 时 committed-range 步骤会明确记录 skipped
+bash scripts/release_gate.sh
+
+# 发布候选：baseline 必填，并检查 worktree 与 baseline..HEAD
+RELEASE_GATE_FINAL=1 \
+GATE_BASELINE_SHA=<approved-base-commit> \
+  bash scripts/release_gate.sh
+```
+
+Gate 覆盖：
+
+- browser E2E fail-closed self-test；
+- worktree 与 committed-range whitespace check；
+- Compose 配置；
+- 三个 Python 服务的 frozen sync、Ruff 和 pytest；
+- 两个前端的 clean install、test 和 build；
+- bundle size；
+- 三个 Python 服务 pip-audit 与两个前端 npm audit。
+
+结果和每步日志位于 `tmp/gate-logs/`，机器可读汇总为 `tmp/gate-logs/gate-summary.json`。
+
+### Compose 跨服务 E2E
+
+```bash
+# PR 稳定子集：真实浏览器 + 身份边界
+MAP_E2E_FINAL=1 python3 e2e/run_e2e.py --suite pr
+
+# 完整故障矩阵：重启、PG 中断、worker kill/lease takeover 等
+MAP_E2E_FINAL=1 python3 e2e/run_e2e.py --suite full
+```
+
+E2E 只在 LLM 边界使用确定性的 fake，其余 PostgreSQL、MongoDB、BFF、worker、map_core、浏览器、Collector 和 Jaeger 都是真实服务。每轮使用随机 Compose project 和全新 volumes，结束后自动清理。报告位于 `e2e/tmp/report-*.json`。
+
+更多说明见 [`e2e/README.md`](e2e/README.md)。
+
+## 运维要点
+
+- Liveness/readiness：用 `/health` 判断进程，用 `/ready` 判断 BFF 是否可接流量。
+- 迁移：Compose 中只能由 `migrate`/`map_migrator` 执行；已有 volume 不会重跑 `docker-entrypoint-initdb.d`。
+- Worker 升级：先向 worker 发送 SIGTERM 并等待安全停止，再升级 BFF/worker 镜像。
+- 多 BFF 实例：`StreamRegistry` 是进程内取消注册表；需要按 message_id 粘性路由，或替换成共享取消通道。
+- 审计验证：调用 `GET /api/v1/admin/audit-events/verify`；链损坏时不要绕过检查或直接修改 append-only 表。
+- 依赖例外：当前登记为空；新增例外必须同时更新 [`SECURITY_EXCEPTIONS.md`](SECURITY_EXCEPTIONS.md) 和 `security/dependency_exceptions.json`，并包含 owner、工单和到期时间。
+
+## 当前明确边界
+
+- `MAP_AUTH_MODE=oidc` 尚未实施，会显式返回 501。
+- feedback 转 evaluation case 依赖尚未实现的 R1-EVAL 事实源，默认 `MAP_EVAL_CONVERT_ENABLED=false` 并返回 501，不会创建伪 case。
+- outbox 当前提供事务性写入和任务事实，未实现通用外部 relay。
+- 新 conversation UI 默认关闭；后端 v1 API 和 E2E 已可用。
+- 基础 Compose 默认关闭 OTel；需要 overlay 才会启动 Collector/Jaeger 并启用 exporter。
+
+## 仓库结构
+
+```text
+MAP/
+├── README.md
+├── docker-compose.yml               # 基础开发栈
+├── docker-compose.otel.yml          # OTel/Jaeger overlay
+├── .env.example                     # 配置模板与优先级
+├── SPEC/
+│   ├── ARCHITECTURE.md
+│   ├── STANDARDS.md
+│   └── contracts/                   # 跨服务权威契约
+├── map-business-frontend/           # 业务 React/Vite 前端
+├── map-business-backend/            # FastAPI BFF + worker + Alembic
+├── map_core/                         # 多智能体算法服务
+├── map-observability/
+│   ├── map-observability-backend/   # Mongo 分析 API
+│   └── map-observability-frontend/  # 观测 React/Vite 前端
+├── packages/map-tree-core/          # 两个前端共享的调用树组件
+├── e2e/                             # 独立 Compose E2E runner
+├── scripts/                         # release、bundle、依赖与证据工具
+├── security/                        # 机器可读安全例外
+└── otel/                            # Collector 配置
+```
+
+## 文档索引
+
+- 架构与规范：[`SPEC/README.md`](SPEC/README.md)
+- 身份与权限：[`SPEC/contracts/identity.md`](SPEC/contracts/identity.md)
+- 会话、SSE 与幂等：[`SPEC/contracts/conversation.md`](SPEC/contracts/conversation.md)
+- 反馈：[`SPEC/contracts/feedback.md`](SPEC/contracts/feedback.md)
+- 审计链：[`SPEC/contracts/audit.md`](SPEC/contracts/audit.md)
+- Worker、effect 与 outbox：[`SPEC/contracts/job-outbox.md`](SPEC/contracts/job-outbox.md)
+- BFF：[`map-business-backend/README.md`](map-business-backend/README.md)
+- 算法服务：[`map_core/README.md`](map_core/README.md)
+- 业务前端：[`map-business-frontend/README.md`](map-business-frontend/README.md)
+- 观测系统：[`map-observability/README.md`](map-observability/README.md)
+- Compose E2E：[`e2e/README.md`](e2e/README.md)
+- 供应链安全例外：[`SECURITY_EXCEPTIONS.md`](SECURITY_EXCEPTIONS.md)
+
+## 变更不变量
+
+提交架构或跨服务变更时，至少保持以下约束：
+
+1. 前端只访问 BFF，不能绕过身份/权限层直连 map_core；
+2. `/api/v1` 契约变化必须同步 OpenAPI snapshot 和 `SPEC/contracts/`；
+3. 所有管理写继续通过 `ConfigMutationService` 和审计链；
+4. worker handler 不自行 commit，外部副作用继续使用稳定 key 和 effect guard；
+5. 新服务、端口、环境变量或数据所有权变化必须同步 Compose、`.env.example` 和 README；
+6. 合并前运行与风险相称的 release gate 和 E2E，不用旧 artifact 覆盖新失败。
