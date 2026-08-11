@@ -541,3 +541,87 @@ import `app.main` 零文件系统副作用（PEP 562 惰性单例，修复前 OS
   self-test 全过；修复为独立提交；final gate 22/22 全绿；final PR
   E2E 一轮 PASS；证据回填本节，不再以第六轮 `49e6295` 作为修复后
   的最终验证 HEAD。
+
+## 14. R7 第七轮整改收口记录
+
+### 14.1 第七轮两个失败复现与修复
+
+- **R7-P2-01 工作树侧 rename（`XY=" R"`）绕过**：第六轮修复只覆盖
+  索引列（`xy[0] == "R"`），而 porcelain rename 合法地出现在 XY 任一
+  列——`mv app.py TODO/app.py.md && git add -N TODO/app.py.md` 在真
+  实仓库稳定产生 `XY=" R"`，此时 origin 被分类层丢弃，
+  `docs_only_dirty=true`、`--require-clean-product` 错误 exit 0。第六
+  轮“R6-P2-01 关闭”的结论仅对暂存态 `git mv`（`R `）成立，工作树
+  侧状态空间未覆盖；本节予以补齐，不再沿用该结论。
+- **R7-P2-02 gate diff-check 不检查已提交范围**：无参
+  `git diff --check` 只查未提交差异，工作树干净时对已进入 HEAD 的
+  trailing whitespace / blank-at-EOF 恒绿；`GATE_BASELINE_SHA` 只被
+  记录、从未驱动校验（旧 artifact `baseline_sha=null`）。本文件自身
+  的 EOF 多余空行即为真实反例（`git diff --check 49e6295..HEAD`
+  exit 2），已在提交 `314b313` 删除，`git diff --check 7d2b813..HEAD`
+  恢复 exit 0。
+- 修复提交：
+  - `5c9088c fix(evidence): R7-P2-01 worktree-side rename (XY=" R")
+    drives classification`——分类改为 `"R" in entry["xy"]`，两列都
+    把 destination 与 origin 计入 `affected_paths`；copy 语义不变
+    （origin 未删除，只按目标分类，origin 留审计）。
+  - `314b313 fix(gate): R7-P2-02 two-step whitespace check over
+    worktree AND committed range`——新增
+    `scripts/gate_diff_check.sh`（worktree / validate / committed 三
+    模式；缺失/不可解析/非祖先 baseline 一律 exit 3 fail-closed，
+    `merge-base --is-ancestor` 固化范围方向）；final 模式在任何步骤
+    前强制要求有效 baseline；gate 拆为 `diff-check` 与
+    `diff-check-committed` 两个可审计步骤；非 final 无 baseline 时
+    committed-range 步骤在 summary 中如实记录 skipped 及原因
+    （`steps_skipped` 字段），不伪装通过；`GATE_LOG_DIR` 可覆盖以免
+    测试触碰证据 artifact。
+- 自动化（全部先红后绿，真实临时仓库）：
+  - `tests/test_source_control_snapshot.py`（26 例）：R7 逐字重放
+    （`XY=" R"`、`dirty_product=['app.py']`、CLI exit 2）；四象限
+    rename × 两种列位置共 8 例（前三象限两形态均 product dirty，
+    仅 docs→docs 可 docs-only）；工作树列 copy；CLI/模块在同一仓库
+    分类一致。
+  - `tests/test_gate_diff_check.py`（9 例）：clean 工作树 + 坏提交
+    范围时 worktree check 为 0 而 committed-range 非零；修复提交后
+    恢复 0；缺失/不可解析/非祖先 baseline 三条 fail-closed 路径；
+    真实 gate 脚本在 `RELEASE_GATE_FINAL=1` 下无 baseline/坏
+    baseline 均非零退出。
+
+### 14.2 R7 最终验证证据（验证 HEAD `97e771b`，工作树完全干净）
+
+- 提交序列：`5c9088c`（R7-P2-01）、`314b313`（R7-P2-02 + EOF 修
+  复）、`97e771b`（docs：第七轮复审报告）；`git diff --check
+  7d2b81342ad96a612ac86091673506e203075c5d..HEAD` exit 0。
+- Release gate（`RELEASE_GATE_FINAL=1
+  GATE_BASELINE_SHA=7d2b81342ad96a612ac86091673506e203075c5d bash
+  scripts/release_gate.sh`）：`tmp/gate-logs/gate-summary.json`
+  （sha256 `e2650ac11c93d10a096460f95bbe8e8ca272ff51f76b9dfa288feec6e4ea90cb`）
+  —— result=PASS，steps_total=23，steps_failed=0，steps_skipped=0，
+  final_mode=true；git_sha=`97e771b2fd36`、tree=`f7caf778da26`、
+  dirty=false、product_dirty=[]；baseline_sha=`7d2b81342ad9…` 已入
+  artifact；`diff-check`（worktree）与 `diff-check-committed`
+  （baseline..HEAD）均 exit 0；2026-08-11T07:13:43Z → 07:26:00Z。
+- Final PR E2E（`MAP_E2E_FINAL=1 python3 e2e/run_e2e.py --suite pr`）：
+  `e2e/tmp/report-map-e2e-8df4a02a.json`（sha256
+  `fa11cf88f42a7a3a8c9d1fa3a4176cbaac8a0a0a86807923088f7b3cebd1845d`）
+  —— result=PASS，suite=pr，final_mode=true，与 gate 同一
+  SHA/tree、dirty=false，4 场景（model_center_redirect /
+  happy_path / browser / identity_boundary）全 PASS，
+  duration_s=242.3；browser 卫生：page_errors=0、
+  unexpected_console=[]、expired_quarantine=[]、
+  unexpected_failed_requests=[]、failed_responses=0。
+- 业务回归证据：本轮仅改共享 source-control 分类、release gate、
+  对应测试与文档，未触碰 effect/worker/browser/身份/数据库等运行
+  时路径（报告 §6 复用条件），继续引用已核验的第六轮两份
+  fresh-volume full E2E：`report-map-e2e-e9f59d91.json`（sha256
+  `74fdba7ed15d27a4a2cf89f2ce380256d88658c808d4de473e44d9b93dbdd7a9`，
+  12/12 PASS）与 `report-map-e2e-d87a796f.json`（sha256
+  `de747372e6dd2710e4c8fbc194145d726c57ef7f516395ceef3f95b4952e24e3`，
+  12/12 PASS）。
+- 第八轮最小验收门槛自检：双形态四象限真实仓库用例全过；两种
+  product→docs CLI 重放均 exit 2 且集合精确；R7-P2-02 失败复现自动
+  化先红后绿；`git diff --check 7d2b813..HEAD` exit 0；snapshot 全
+  套、BFF ruff/全量 pytest（严格 warning）、browser self-test 全
+  绿；两个 P2 分工作包独立提交；final gate 23/23 全绿且 artifact
+  同时证明 worktree 与 committed-range；final PR E2E 一轮 PASS；证
+  据回填本节，交付后不再修改产品/测试/gate/质量记录。
