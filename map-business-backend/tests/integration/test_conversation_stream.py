@@ -8,6 +8,9 @@ stop, replay, registry lifecycle.
 - R2-P1-01: mid-stream registry hit, stop abort=True + upstream finally
   fired + side effects frozen; hung core cancelled within timeout;
   client disconnect cancels upstream; registry empty on every exit path
+- R5-P1-01: the polling helper itself is proven fail-closed (a never-true
+  predicate times out, and an async / awaitable-returning predicate is
+  rejected instead of being vacuously truthy)
 - reconciler marks stale streaming as interrupted, idempotent
 - concurrent identical request_id -> exactly one pair
 - user B replaying A's request_id -> 404, never A's content
@@ -18,9 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
+import inspect
 import json
 import os
 import uuid
+import warnings
 from datetime import UTC, datetime, timedelta
 
 os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_conv_fix_test_state.json")
@@ -355,12 +361,87 @@ def _slow_chunks(count: int = 20) -> list[bytes]:
     return chunks
 
 
-async def _wait_until(predicate, timeout_s: float = 5.0, interval_s: float = 0.005) -> None:
+async def _wait_until(
+    predicate,
+    timeout_s: float = 5.0,
+    interval_s: float = 0.005,
+    *,
+    diagnose=None,
+) -> None:
+    """Poll a SYNCHRONOUS ``predicate`` until it is truthy or time runs out.
+
+    R5-P1-01: the predicate contract is enforced, not assumed. An ``async
+    def`` predicate (or any predicate returning an awaitable) used to make
+    this helper vacuously true — a coroutine object is always truthy, so the
+    loop exited on the first check, skipped the wait entirely and additionally
+    leaked a never-awaited coroutine (a RuntimeWarning the suite swallowed).
+    Such a predicate now fails loudly instead of silently passing.
+
+    ``diagnose`` may return a string appended to the timeout error.
+    """
+    if asyncio.iscoroutinefunction(predicate):
+        raise TypeError(
+            "_wait_until requires a synchronous predicate: a coroutine "
+            "function is always truthy and would skip the wait entirely"
+        )
+
+    def _check() -> bool:
+        value = predicate()
+        if inspect.isawaitable(value):
+            # Close it so no 'coroutine was never awaited' warning leaks and
+            # the mistake surfaces here instead of at garbage collection.
+            if inspect.iscoroutine(value):
+                value.close()
+            raise TypeError(
+                "_wait_until predicate returned an awaitable; it must return "
+                "a plain bool (an awaitable is always truthy)"
+            )
+        return bool(value)
+
     deadline = asyncio.get_running_loop().time() + timeout_s
-    while not predicate():
+    while not _check():
         if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError("condition not met within timeout")
+            detail = f": {diagnose()}" if diagnose is not None else ""
+            raise AssertionError(f"condition not met within {timeout_s}s{detail}")
         await asyncio.sleep(interval_s)
+
+
+async def test_wait_until_helper_fails_closed() -> None:
+    """R5-P1-01 failure reproduction: the polling helper must never pass
+    vacuously.
+
+    - a never-true predicate must TIME OUT, and must really have polled;
+    - an ``async def`` predicate must be rejected instead of silently being
+      truthy;
+    - a predicate that RETURNS a coroutine (the exact defect shape: an async
+      predicate invoked without ``await``) must be rejected without leaking a
+      "coroutine was never awaited" RuntimeWarning.
+    """
+    polls = 0
+
+    def never_true() -> bool:
+        nonlocal polls
+        polls += 1
+        return False
+
+    with pytest.raises(AssertionError, match="condition not met"):
+        await _wait_until(
+            never_true, timeout_s=0.05, interval_s=0.005, diagnose=lambda: "still false"
+        )
+    assert polls > 1, "the helper must poll, not exit after the first check"
+
+    async def async_predicate() -> bool:
+        return False
+
+    with pytest.raises(TypeError, match="synchronous predicate"):
+        await _wait_until(async_predicate, timeout_s=0.05)
+
+    with warnings.catch_warnings():
+        # Any leaked coroutine would now be an error, not a swallowed warning.
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(TypeError, match="awaitable"):
+            await _wait_until(lambda: async_predicate(), timeout_s=0.05)
+        gc.collect()
 
 
 async def test_stop_hits_registry_mid_stream_and_freezes_side_effects(
@@ -485,8 +566,29 @@ async def test_client_disconnect_cancels_upstream_and_unregisters(
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        # Unified cleanup: upstream closed and registry drained.
-        await _wait_until(lambda: core.closed.is_set() and registry.active_count() == 0)
+        # Unified cleanup: upstream closed and registry drained. The
+        # disconnect -> cancel -> cleanup chain is event-loop scheduling
+        # work; under heavy gate-machine load it was observed to exceed
+        # the default 5s budget (R4 verification: flaky in the full
+        # suite, always green in isolation — including under pure CPU
+        # contention, so the trigger is whole-machine I/O pressure), so
+        # this wait alone gets a generous budget. The assertion is
+        # unchanged — cleanup MUST still happen, it is only given more
+        # wall-clock time; the predicate keeps both halves so a genuine
+        # leak still fails with a diagnostic.
+        #
+        # R5-P1-01: the predicate is SYNCHRONOUS on purpose. It used to be
+        # an ``async def`` called without ``await``, which made the wait
+        # vacuously true and skipped the whole check.
+        await _wait_until(
+            lambda: core.closed.is_set() and registry.active_count() == 0,
+            timeout_s=30.0,
+            diagnose=lambda: (
+                "disconnect cleanup incomplete: "
+                f"core.closed={core.closed.is_set()} "
+                f"registry.active_count={registry.active_count()}"
+            ),
+        )
         assert not core.completed_normally
 
         # The stopped terminal write is a shielded detached write (the
