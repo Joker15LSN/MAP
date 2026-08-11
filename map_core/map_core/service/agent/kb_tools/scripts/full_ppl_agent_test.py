@@ -1,6 +1,8 @@
 
 import json
-from httpx import request, HTTPError
+
+from httpx import HTTPError, request
+
 
 def main():
     data = {
@@ -113,14 +115,14 @@ def main():
     }
     headers = {'accept': 'application/json, application/*+json',
                'content-type': 'application/json', ''
-               'x-request-id': '0bb8ed2ca2414bbebb09100281c1e6fc', 
-               'x-request-token': 'Bearer uhE-6Ge3bUrvpMr7gJKfA', 
-               'x-username': 'lienyu', 
-            #    'content-length': '2661', 
-               'host': '10.48.2.201:10000', 
-               'connection': 'Keep-Alive', 
-               'user-agent': 'Apache-HttpClient/4.5.14 (Java/1.8.0_212)', 
-               'accept-encoding': 'gzip,deflate'} 
+               'x-request-id': '0bb8ed2ca2414bbebb09100281c1e6fc',
+               'x-request-token': 'Bearer uhE-6Ge3bUrvpMr7gJKfA',
+               'x-username': 'lienyu',
+            #    'content-length': '2661',
+               'host': '10.48.2.201:10000',
+               'connection': 'Keep-Alive',
+               'user-agent': 'Apache-HttpClient/4.5.14 (Java/1.8.0_212)',
+               'accept-encoding': 'gzip,deflate'}
 
     # url = 'http://localhost:10000/global_domain/debug/scene_agent/run'
     url = 'http://localhost:10000/global_domain/chat/stream/v3'
@@ -144,4 +146,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+

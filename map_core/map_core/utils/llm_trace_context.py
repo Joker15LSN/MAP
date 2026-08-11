@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Any, Iterator
 from zoneinfo import ZoneInfo
 
-
 _LLM_TRACE_CONTEXT: ContextVar[dict[str, Any]] = ContextVar(
     "map_llm_trace_context",
     default={},

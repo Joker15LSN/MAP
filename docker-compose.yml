@@ -5,15 +5,27 @@ services:
     image: postgres:16-alpine
     container_name: map-postgres
     environment:
-      POSTGRES_USER: map
-      POSTGRES_PASSWORD: map
+      # R2-P1-04 three-role separation: the bootstrap user is superuser and
+      # is NEVER used by services; init creates the non-superuser app role
+      # (map) and migration role (map_migrator). Repository password defaults
+      # are local-profile only — override them in production (.env.example).
+      POSTGRES_USER: ${MAP_POSTGRES_ADMIN_USER:-map_admin}
+      POSTGRES_PASSWORD: ${MAP_POSTGRES_ADMIN_PASSWORD:-map-admin-local}
       POSTGRES_DB: map
+      MAP_POSTGRES_APP_USER: ${MAP_POSTGRES_APP_USER:-map}
+      MAP_POSTGRES_APP_PASSWORD: ${MAP_POSTGRES_APP_PASSWORD:-map}
+      MAP_POSTGRES_MIGRATOR_USER: ${MAP_POSTGRES_MIGRATOR_USER:-map_migrator}
+      MAP_POSTGRES_MIGRATOR_PASSWORD: ${MAP_POSTGRES_MIGRATOR_PASSWORD:-map-migrator-local}
     volumes:
       - map_postgres_data:/var/lib/postgresql/data
+      # One-time init (fresh volumes only): create app/migrator roles, demote
+      # the app role from superuser, set split default privileges. Idempotent;
+      # existing volumes are untouched.
+      - ./map-business-backend/db/init:/docker-entrypoint-initdb.d:ro
     ports:
       - "${MAP_POSTGRES_PORT:-15432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U map -d map"]
+      test: ["CMD-SHELL", "pg_isready -U ${MAP_POSTGRES_ADMIN_USER:-map_admin} -d map"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -47,12 +59,29 @@ services:
     container_name: map-algorithm-service
     environment:
       ENV: dev
-      POSTGRES_DSN: postgresql://map:map@postgres:5432/map
+      POSTGRES_DSN: postgresql://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:-map}@postgres:5432/map
       MONGODB_URI: mongodb://map:map@mongo:27017/?authSource=admin
       MONGODB_DATABASE: map_db_dev
       MAP_LLM_BASE_URL: ${MAP_LLM_BASE_URL:-https://api.deepseek.com}
       MAP_LLM_MODEL: ${MAP_LLM_MODEL:-deepseek-v4-flash}
       MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
+      MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
+      MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
+      # Highest-priority kill switch, always passed through: OTEL_SDK_DISABLED
+      # wins over MAP_OTEL_ENABLED in the SDK (see .env.example priority list).
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${MAP_OTEL_PROTOCOL:-http/protobuf}
+      # OTLP endpoint is intentionally NOT set here: endpoints only configure
+      # the export target and must never implicitly enable OTel. To export to
+      # the bundled Collector/Jaeger, merge docker-compose.otel.yml:
+      #   docker compose -f docker-compose.yml -f docker-compose.otel.yml --profile otel up -d
+      #
+      # MAP_OTEL_PROTOCOL and the OTLP endpoint form one configuration pair:
+      #   http/protobuf -> http://otel-collector:4318
+      #   grpc           -> http://otel-collector:4317
+      # docker-compose.otel.yml maps MAP_OTEL_ENDPOINT to the standard
+      # OTEL_EXPORTER_OTLP_ENDPOINT for BOTH services, so switching the
+      # protocol keeps algorithm-service and backend-service in lockstep.
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,6 +99,21 @@ services:
       timeout: 8s
       retries: 10
 
+  # One-shot migration service: applies Alembic revisions to head using the
+  # dedicated migration role (MAP_CONTROL_MIGRATION_DSN). Backend/worker
+  # start only after this service completes successfully.
+  migrate:
+    build:
+      context: ./map-business-backend
+      dockerfile: Dockerfile
+    container_name: map-migrate
+    command: ["uv", "run", "alembic", "upgrade", "head"]
+    environment:
+      MAP_CONTROL_MIGRATION_DSN: postgresql+asyncpg://${MAP_POSTGRES_MIGRATOR_USER:-map_migrator}:${MAP_POSTGRES_MIGRATOR_PASSWORD:-map-migrator-local}@postgres:5432/map
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend-service:
     build:
       context: ./map-business-backend
@@ -78,10 +122,33 @@ services:
     environment:
       MAP_CORE_API_ORIGIN: http://algorithm-service:10000
       MAP_BFF_STATE_FILE: /app/data/admin_state.json
+      MAP_CONTROL_DB_DSN: postgresql+asyncpg://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:-map}@postgres:5432/map
+      MAP_DEFAULT_WORKSPACE_ID: ${MAP_DEFAULT_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
+      # R3-P1-02 secure profile: dev by default (unchanged behaviour for
+      # the local dev stack). The E2E runner recreates this service with
+      # MAP_AUTH_MODE=trusted_header + MAP_SERVICE_CREDENTIALS to run the
+      # identity boundary matrix, then recreates it back to dev.
+      MAP_AUTH_MODE: ${MAP_AUTH_MODE:-dev}
+      MAP_TRUSTED_PROXY_SECRET: ${MAP_TRUSTED_PROXY_SECRET:-}
+      MAP_TRUSTED_PROXY_REQUIRED: ${MAP_TRUSTED_PROXY_REQUIRED:-true}
+      MAP_SERVICE_CREDENTIALS: ${MAP_SERVICE_CREDENTIALS:-}
+      MAP_SERVICE_AUDIENCE: ${MAP_SERVICE_AUDIENCE:-map-bff}
       MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
+      MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
+      MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
+      # Same protocol mapping as algorithm-service: both services must export
+      # with the same protocol, otherwise a MAP_OTEL_PROTOCOL=grpc switch
+      # would split the fleet (BFF stuck on http/protobuf while algorithm
+      # uses gRPC). Endpoint is intentionally left to docker-compose.otel.yml.
+      # OTEL_SDK_DISABLED mirrors algorithm-service so the emergency kill
+      # switch reaches every container regardless of the otel profile.
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${MAP_OTEL_PROTOCOL:-http/protobuf}
     depends_on:
       algorithm-service:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ./map-business-backend/app/data:/app/data
     ports:
@@ -90,11 +157,34 @@ services:
       test:
         [
           "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=5).read()\"",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/ready', timeout=5).read()\"",
         ]
       interval: 15s
       timeout: 8s
       retries: 10
+
+  worker-service:
+    build:
+      context: ./map-business-backend
+      dockerfile: Dockerfile
+    container_name: map-worker-service
+    command: ["uv", "run", "python", "-m", "app.workers.main"]
+    environment:
+      MAP_CONTROL_DB_DSN: postgresql+asyncpg://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:-map}@postgres:5432/map
+      MAP_CORE_API_ORIGIN: http://algorithm-service:10000
+      MAP_BFF_STATE_FILE: /app/data/admin_state.json
+      MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
+      MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
+      MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${MAP_OTEL_PROTOCOL:-http/protobuf}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./map-business-backend/app/data:/app/data
 
   frontend-service:
     image: node:22-bookworm-slim
@@ -179,6 +269,29 @@ services:
       - map_observability_frontend_node_modules:/workspace/map-observability/map-observability-frontend/node_modules
     ports:
       - "${MAP_OBS_FRONTEND_PORT:-15152}:5173"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    container_name: map-otel-collector
+    profiles: ["otel"]
+    command: ["--config", "/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "${MAP_OTEL_GRPC_PORT:-4317}:4317"
+      - "${MAP_OTEL_HTTP_PORT:-4318}:4318"
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    container_name: map-jaeger
+    profiles: ["otel"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${MAP_JAEGER_UI_PORT:-16686}:16686"
+      - "${MAP_JAEGER_OTLP_GRPC_PORT:-14317}:4317"
 
 volumes:
   map_postgres_data:

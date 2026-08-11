@@ -18,20 +18,20 @@ Wenshu split question module (问数问题拆解模块).
 graph TD
     A([用户自然语言提问]) --> B[获取所有可用指标 (Milvus: metric)]
     A --> C[获取可用维度及部分枚举值 (Milvus: dimension)]
-    
+
     A --> D(User Query Embedding 向量化)
     D --> E[语义搜索+模糊匹配获取确切提及的维度值]
     C --> E
-    
+
     B --> F((LLM 指标召回与筛选))
     E --> F
-    
+
     F --> |输出选定的 M 个指标| G{{并行生成子问题}}
-    
+
     G --> |对 指标 1 | H1[LLM改写: 提取必要时间+维度生成问题]
     G --> |对 指标 2 | H2[LLM改写: 提取必要时间+维度生成问题]
     G --> |对 指标 M | HM[LLM改写: 提取必要时间+维度生成问题]
-    
+
     H1 --> I([聚合返回：含不同指标的多个子问题])
     H2 --> I
     HM --> I

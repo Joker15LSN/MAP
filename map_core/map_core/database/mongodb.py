@@ -47,6 +47,14 @@ class MongoClient:
             self._client = None
             logger.info("MongoDB client closed")
 
+    async def verify_startup(self) -> None:
+        """Connect and ping once so boot fails fast."""
+        mongo = await self.connect()
+        try:
+            await mongo.admin.command("ping")
+        except Exception as exc:
+            raise RuntimeError("MongoDB connectivity check failed") from exc
+
     def get_database_name(self) -> str | None:
         return self._database
 
@@ -83,17 +91,8 @@ def setup_mongodb(app: FastAPI, config: Mapping[str, Any] | None = None) -> Mong
     )
 
     app.state.mongodb_client = client
-    app.add_event_handler("startup", client.connect)
-
-    async def _verify_connection() -> None:
-        mongo = await client.connect()
-        try:
-            await mongo.admin.command("ping")
-        except Exception as exc:
-            raise RuntimeError("MongoDB connectivity check failed") from exc
-
-    app.add_event_handler("startup", _verify_connection)
-    app.add_event_handler("shutdown", client.close)
+    # NOTE: FastAPI >= 0.141 removed `add_event_handler`; the app drives
+    # connect/verify/close explicitly from its lifespan (see main.py).
 
     logger.info("MongoClient setup complete")
     return client

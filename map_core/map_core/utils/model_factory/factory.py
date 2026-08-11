@@ -17,8 +17,8 @@ async def aembed_text(text: str):
         embedding_response: SupconEmbedResponse = await asyncio.wait_for(
                 embed_client.aembed(
                     data={
-                        "input": text, 
-                        "model": embed_client_config.model, 
+                        "input": text,
+                        "model": embed_client_config.model,
                     "isNorm": embed_client_config.normalized,
                 },
                 url=embed_client_config.url,
@@ -46,8 +46,8 @@ async def aembed_documents(documents: list[str]):
         embedding_response: SupconEmbedResponse = await asyncio.wait_for(
                 embed_client.aembed(
                     data={
-                        "input": documents, 
-                        "model": embed_client_config.model, 
+                        "input": documents,
+                        "model": embed_client_config.model,
                     "isNorm": embed_client_config.normalized,
                 },
                 url=embed_client_config.url,

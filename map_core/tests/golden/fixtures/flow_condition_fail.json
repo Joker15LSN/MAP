@@ -1,0 +1,122 @@
+{
+  "id": "flow_condition_fail",
+  "mode": "flow",
+  "engine": "legacy",
+  "description": "条件未满足:首节点不确定(缺证据)且禁止 repair,后续节点因条件边不满足被跳过,触发 flow_graph_incomplete。",
+  "request": {
+    "query": "订单确认收入流程怎么走",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy"
+    },
+    "flow_config": {
+      "scenario_policy": {
+        "enabled": true,
+        "mode": "auto",
+        "allow_graph_repair": false,
+        "max_graph_cycles": 2
+      },
+      "skill_policy": {
+        "enabled": true,
+        "mount_mode": "agent_scoped",
+        "runtime_auth_check": true
+      },
+      "max_node_budget": 12,
+      "fallback_to_global": true
+    }
+  },
+  "runtime_config_hash": "sha256:cf54422307c8930a65d0c657327f50fc",
+  "llm_script": [
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_sc_1",
+          "name": "ask_database_agent",
+          "arguments": "{\"query\": \"订单确认收入\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "交付记录缺失,当前无法确认收入。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "asimple_chat_stream",
+      "chunks": [
+        "证据不足,链路未能完整执行。"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "ask_database_agent",
+      "returns": [
+        {
+          "content": "数据不完整。",
+          "data_source": {
+            "source": "fake_db"
+          }
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "meta",
+      "content_delta",
+      "done"
+    ],
+    "meta_phases": [
+      "flow_mode_initialized",
+      "flow_policy_hit",
+      "scenario_resolved",
+      "flow_graph_built",
+      "flow_node_started",
+      "skill_authorization",
+      "flow_node_result",
+      "flow_graph_incomplete"
+    ],
+    "flow": {
+      "scenarios": [
+        "order_revenue_confirmation"
+      ],
+      "node_verdicts": [
+        {
+          "node_contains": "Supply_Chain",
+          "verdict": "uncertain"
+        }
+      ],
+      "repair_count": 0,
+      "graph_incomplete": {
+        "remaining_contains": [
+          "Procurement",
+          "Operations"
+        ],
+        "reason": "dependencies_or_conditions_not_satisfied"
+      },
+      "repair_applied": false
+    },
+    "final_content": {
+      "contains": [
+        "证据不足"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "request.end"
+      ],
+      "request_end_success": true
+    },
+    "engine_parity": false
+  }
+}

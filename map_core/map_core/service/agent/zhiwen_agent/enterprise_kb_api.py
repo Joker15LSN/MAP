@@ -2,8 +2,9 @@ import enum
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
-from pydantic import BaseModel, Field
 from loguru import logger
+from pydantic import BaseModel, Field
+
 
 class SourceName(enum.Enum):
     REPORT_MARKET = 'REPORT_MARKET'

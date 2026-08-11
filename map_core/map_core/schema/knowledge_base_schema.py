@@ -1,4 +1,5 @@
 from typing import Optional
+
 from pydantic import BaseModel, Field
 
 from .rerank_model_schema import RerankModelConfigSchema
@@ -8,7 +9,7 @@ class KnowledgeBaseSchema(BaseModel):
     embed_name: str = Field(..., description="embedding 模型名称")
     embed_url: str = Field(..., description="embedding 模型服务链接")
     embed_auth_token: str = Field(..., description="embedding 模型服务authtoken")
-    
+
     kb_code: str = Field(..., description="知识库编号")
     kb_name: Optional[str] = Field(default=None, description='知识库名称')
     kb_description: Optional[str] = Field(default=None, description='知识库描述')

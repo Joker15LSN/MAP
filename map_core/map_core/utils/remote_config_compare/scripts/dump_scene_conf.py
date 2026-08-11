@@ -20,9 +20,10 @@ from map_core.utils.remote_config_compare.default_consts import (
     SCENE_CODE_2_NAME,
 )
 from map_core.utils.remote_config_compare.sacne_config_fetch import (
-    afetch_agent_configs_by_refs, DEFAULT_SCENES, DEFAULT_ENVS
+    DEFAULT_ENVS,
+    DEFAULT_SCENES,
+    afetch_agent_configs_by_refs,
 )
-
 
 DUMP_DIR = Path(__file__).resolve().parent.parent / "dumped_configs"
 
@@ -185,6 +186,6 @@ if __name__ == "__main__":
     ))
 
     '''
-    
+
      python -m map_core.utils.remote_config_compare.scripts.dump_scene_conf
     '''

@@ -469,7 +469,7 @@ class ZhiwenAgent(TraceableAgent):
             fetch_aggr_retrieve_as_dict(
                 req_id = headers['X-Request-Id'],
                 api_url = self._api_url,
-                payload=payload, 
+                payload=payload,
                 headers=headers,
                 timeout=self.timeout) for payload in payloads
         ]
@@ -623,7 +623,7 @@ class ZhiwenAgent(TraceableAgent):
             summary = item.get("summary", "") or "未生成总结。"
             sections.append(f"{index}. 子问题：{sub_query}\n总结：{summary}")
         return "\n\n".join(sections)
-    
+
 
     @classmethod
     def _compose_content_without_summary(cls, query: str, items: list[dict[str, str]]) -> str:
@@ -669,7 +669,7 @@ class ZhiwenAgent(TraceableAgent):
                 logger.info(f"[TOOL] ZhiwenAgent finishes disassemble_queries, queries: {all_queries}")
 
                 items = await self._run_queries(request, all_queries)
-                logger.info(f"[TOOL] ZhiwenAgent finishes fetch result by sub queries")
+                logger.info("[TOOL] ZhiwenAgent finishes fetch result by sub queries")
 
 
                 do_mult_summary = False

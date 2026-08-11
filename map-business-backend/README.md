@@ -8,6 +8,22 @@
 - 隔离算法细节：封装 `map_core` 路径与 Header 透传。
 - 管理配置托管：维护模型中心、智能体、权限与心流策略配置。
 - 运行时配置注入：根据管理配置自动注入 `scene_selection` 与 `dispatch_config`。
+- 控制面数据（F-03）：会话/反馈/评测/任务/审计等产品数据的 PostgreSQL 事实源与异步作业框架。
+
+## Code Layout (F-01/F-03)
+
+```text
+app/
+├── main.py                  # app factory + middleware + router 注册（约 100 行）
+├── settings.py              # 环境配置（MAP_CORE_API_ORIGIN / MAP_BFF_STATE_FILE）
+├── api/                     # 路由：chat.py / admin_config.py / admin_master.py / admin_assets.py
+├── services/                # payload 构建、幂等处理等 use case
+├── repositories/            # ConfigRepository protocol（AdminState 文件适配）
+├── db/                      # SQLAlchemy 2.x async + Alembic（map_control schema）
+│   ├── models/              # workspaces/users/jobs/outbox_events/idempotency_records
+│   └── migrations/          # Alembic 迁移
+└── workers/                 # 独立进程 `python -m app.workers.main`（job claim/lease/retry）
+```
 
 ## API Overview
 
@@ -68,11 +84,67 @@ cd map-business-backend
 uv run pytest -q
 ```
 
+集成测试需要真实 PostgreSQL（默认 `127.0.0.1:15432`，即根目录 `docker compose up -d postgres`）：
+
+```bash
+docker compose up -d postgres
+MAP_CONTROL_TEST_DSN=postgresql+asyncpg://map:map@127.0.0.1:15432/map uv run pytest tests/integration -q
+```
+
+## Database Migrations (F-03 / FIX-P1-DEPLOY-01)
+
+```bash
+# 升级到 head
+MAP_CONTROL_MIGRATION_DSN=postgresql+asyncpg://map:map@127.0.0.1:15432/map uv run alembic -c alembic.ini upgrade head
+# 降级一版 / 生成新迁移
+uv run alembic -c alembic.ini downgrade -1
+uv run alembic -c alembic.ini revision --autogenerate -m "description"
+```
+
+迁移使用独立 DSN（`MAP_CONTROL_MIGRATION_DSN`），与业务 DSN（`MAP_CONTROL_DB_DSN`）分离：
+
+- **Compose 全新环境**：`migrate` 一次性服务以 `map_migrator` 角色执行 `alembic upgrade head`；`backend-service`/`worker-service` 在迁移成功后启动。`db/init/01-roles.sql` 在首次初始化时创建 `map_migrator` 角色并配置默认权限（业务角色 `map` 仅 DML）。
+- **已有 volume 升级**：`docker-entrypoint-initdb.d` 不会重跑。要么手动创建 `map_migrator` 角色并授权 `map_control` schema，要么把 `MAP_CONTROL_MIGRATION_DSN` 指向有 DDL 权限的角色（例如 `map`）。
+- **回滚边界**：迁移均为 expand/contract 风格（本轮只增表/列/索引/seed，不删除已提交结构）。降级一版只回滚该版本新增对象；`4c9e1f2a8b3d` 的 downgrade 删除 default workspace seed（幂等，仅删稳定 UUID+code 匹配行）。生产回滚顺序：先停 worker → 停 backend → 执行 `alembic downgrade -1` → 重启。
+
+## Readiness / Liveness
+
+- `GET /health`（liveness）：进程存活，不依赖下游。
+- `GET /ready`（readiness）：数据库可达 + Alembic revision == head + default workspace seed 存在，任一失败返回 503。Compose healthcheck 使用 `/ready`。
+
+## Worker (F-03 / FIX-P0-WORKER-01)
+
+```bash
+uv run python -m app.workers.main
+```
+
+SIGTERM 停止领取新任务，向正在执行的 handler 发送 cancel 信号并等待其安全点；Compose 中对应 `worker-service`。
+
+Lease 语义：
+
+- 每次 claim 使 `attempt` 递增并作为 fencing token；heartbeat/complete/fail 都带 `lease_owner + attempt` 条件，失去 lease 的 worker 无法再提交结果或执行新副作用。
+- heartbeat 在独立短事务中提交，间隔 < lease 的 1/3 并带 jitter；数据库超时按 lease 丢失处理（fail-closed），不会静默执行到租约过期。
+- handler 通过 `get_current_job_context()` 读取 `lease_ok`/`cancel`，必须在每个副作用安全点前检查；外部副作用使用稳定 `idempotency_key` 去重。
+- 日志包含 `job_id / workspace_id / worker_id / attempt / lease_expires_at`，不含 payload secret。
+
+运维：
+
+- **worker drain**：向 worker 发送 SIGTERM（`docker compose stop worker-service` 或 `kill -TERM <pid>`），等待日志出现 `worker ... stopped gracefully` 后再升级/回滚应用；运行中 job 的 lease 会在租约到期后由其他 worker 回收。
+- **运行中 job 清点**：`SELECT status, count(*) FROM map_control.jobs GROUP BY status;`，`running` 且 `lease_expires_at < now()` 的行会在下一个 claim 周期被回收。
+- **应用回滚**：先 drain worker，再回滚 BFF/worker 镜像；job 状态与数据保留在 PostgreSQL，回滚后由新 worker 继续。
+
 ## Environment Variables
 
 - `MAP_CORE_API_ORIGIN`：算法服务地址（默认 `http://127.0.0.1:10000`）
 - `MAP_BFF_STATE_FILE`：状态文件路径（默认 `/app/data/admin_state.json`）
 - `MAP_LLM_API_KEY`：用于下发智能体 `llm_config.api_key`
+- `MAP_CONTROL_DB_DSN`：控制面 PostgreSQL DSN（默认 `postgresql+asyncpg://map:map@127.0.0.1:15432/map`，schema `map_control`）
+- `MAP_CONTROL_MIGRATION_DSN`：迁移专用 DSN（默认同上）
+- `MAP_DEFAULT_WORKSPACE_ID`：稳定默认 workspace UUID（默认 `00000000-0000-0000-0000-000000000001`，业务 code=`default`；与 migration seed 同一值）
+- `MAP_AUTH_MODE`：`dev`（仅本地）| `trusted_header` | `oidc`（R3）
+- `MAP_ENV`：`dev` | `prod`；`prod` 下禁止 `MAP_AUTH_MODE=dev`
+- `MAP_TRUSTED_PROXY_SECRET` / `MAP_TRUSTED_PROXY_REQUIRED`：trusted_header 模式的代理验证
+- `MAP_WORKER_ID` / `MAP_WORKER_LEASE_SECONDS` / `MAP_WORKER_POLL_SECONDS`：worker 参数
 
 ## Data File
 

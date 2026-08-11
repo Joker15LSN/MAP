@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "policy": "R3-P2-04: machine-readable supply-chain exceptions. scripts/load_dependency_exceptions.py validates every entry (fields, ISO dates, expiry) and scripts/dependency_audit.sh derives --ignore-vuln ONLY from valid, unexpired entries here. An expired or malformed entry fails the gate. SECURITY_EXCEPTIONS.md remains the human-readable record and must stay in sync with this file.",
+  "exceptions": []
+}

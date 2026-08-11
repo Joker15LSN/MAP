@@ -1,0 +1,143 @@
+{
+  "id": "flow_repair",
+  "mode": "flow",
+  "engine": "legacy",
+  "description": "repair:首节点不确定后生成 repair 节点,由同一 agent 补证通过;后续条件边节点被跳过。",
+  "request": {
+    "query": "订单确认收入流程怎么走",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy"
+    },
+    "flow_config": {
+      "scenario_policy": {
+        "enabled": true,
+        "mode": "auto",
+        "allow_graph_repair": true,
+        "max_graph_cycles": 2
+      },
+      "skill_policy": {
+        "enabled": true,
+        "mount_mode": "agent_scoped",
+        "runtime_auth_check": true
+      },
+      "max_node_budget": 12,
+      "fallback_to_global": true
+    }
+  },
+  "runtime_config_hash": "sha256:2750d6ffe3392062f4775bfffa3c6847",
+  "llm_script": [
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_sc_1",
+          "name": "ask_database_agent",
+          "arguments": "{\"query\": \"交付记录\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "已核对 delivery_record,但 contract_terms 缺失。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_sc_repair",
+          "name": "ask_database_agent",
+          "arguments": "{\"query\": \"补证\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "delivery_record contract_terms invoice_status 补证完成。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "asimple_chat_stream",
+      "chunks": [
+        "经过修复,证据已补全,但后续节点未执行。"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "ask_database_agent",
+      "returns": [
+        {
+          "content": "delivery_record=1, contract_terms=1, invoice_status=1",
+          "data_source": {
+            "source": "fake_db"
+          }
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "meta",
+      "content_delta",
+      "done"
+    ],
+    "meta_phases": [
+      "flow_mode_initialized",
+      "flow_policy_hit",
+      "scenario_resolved",
+      "flow_graph_built",
+      "flow_node_started",
+      "skill_authorization",
+      "flow_node_result",
+      "flow_repair_applied"
+    ],
+    "flow": {
+      "scenarios": [
+        "order_revenue_confirmation"
+      ],
+      "node_verdicts": [
+        {
+          "node_contains": "Supply_Chain",
+          "verdict": "uncertain"
+        },
+        {
+          "node_contains": "_repair_",
+          "verdict": "pass"
+        }
+      ],
+      "repair_count": 1,
+      "graph_incomplete": {
+        "remaining_contains": [
+          "Procurement",
+          "Operations"
+        ],
+        "reason": "dependencies_or_conditions_not_satisfied"
+      },
+      "repair_applied": true
+    },
+    "final_content": {
+      "contains": [
+        "证据已补全"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "flow.agent_case_candidate",
+        "request.end"
+      ],
+      "request_end_success": true
+    },
+    "engine_parity": true
+  }
+}

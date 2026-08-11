@@ -167,7 +167,7 @@ class KnowledgeBaseAPI:
     # def _get_headers(self, request_id: str | None = None) -> dict[str, str]:
     #     """获取请求头"""
     #     headers = {
-    #         "Content-Type": "application/json", 
+    #         "Content-Type": "application/json",
     #         "X-Request-Id": uuid.uuid4().hex,
     #     }
     #     if isinstance(request_id, str) and request_id.strip():
@@ -198,7 +198,7 @@ class KnowledgeBaseAPI:
         """
         url = f"{self.base_url}{path}"
         headers = {
-            "Content-Type": "application/json", 
+            "Content-Type": "application/json",
         }
         if extra_headers:
             headers.update(**extra_headers)
@@ -225,7 +225,7 @@ class KnowledgeBaseAPI:
 
         # print(json.dumps(res_json, ensure_ascii=False))
         return res_json
-    
+
     async def multi_knowledge_search(
         self,
         query: str,
@@ -235,7 +235,7 @@ class KnowledgeBaseAPI:
         request_id: Optional[str],
         task_id: Optional[str],
         search_strategy: dict[str, Any] | None = None,
-  
+
     ) -> SearchResponse:
         """
         多知识库搜索
@@ -505,13 +505,13 @@ if __name__ == '__main__':
                 request_id = str(uuid.uuid4()),
                 search_strategy = {
                     "rerank_param": {
-                        "rerank_model": "jina-reranker-v2-base-multilingual", 
-                        "rerank_model_url": "http://10.50.56.243/v1/rerank", 
-                        "rerank_auth_token": "gpustack_c60ea7b6efa4784c_22039bb6f38836e6a955588a5df04306", 
+                        "rerank_model": "jina-reranker-v2-base-multilingual",
+                        "rerank_model_url": "http://10.50.56.243/v1/rerank",
+                        "rerank_auth_token": "gpustack_c60ea7b6efa4784c_22039bb6f38836e6a955588a5df04306",
                         "rerank_score_threshold": 0.3
                     }
                 }
-            )   
-            
+            )
+
         )
     _search_chunks()

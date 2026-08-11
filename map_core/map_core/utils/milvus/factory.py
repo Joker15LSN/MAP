@@ -69,7 +69,7 @@ async def hybrid_search_with_bm25(
     assert len(anns_fields) == len(search_params) == len(weights) == 2, "anns_fields, search_params, and weights must have length 2"
 
     if index_type == "hnsw":
-        search_param_hnsw: dict[str, Any] = {   
+        search_param_hnsw: dict[str, Any] = {
             "data": [question_embedding],
             "anns_field": anns_fields[0],
             "param": search_params[0],
@@ -82,7 +82,7 @@ async def hybrid_search_with_bm25(
             "limit": 32,
         }
         reqs = [
-            AnnSearchRequest(**params) 
+            AnnSearchRequest(**params)
             for params in [search_param_hnsw, search_param_bm25]
         ]
         ranker = WeightedRanker(0.6, 0.4)
@@ -183,7 +183,7 @@ async def create_collection_with_index(
         raise ValueError("auto_id is True, but pk_field is in fields")
     elif not auto_id and pk_field not in fields:
         raise ValueError("auto_id is False, but pk_field is not in fields")
-    
+
     indexed_fields = {p.get("field_name") for p in index_params_list}
 
     for field_name, field_info in fields.items():
@@ -314,7 +314,7 @@ async def select_all(
     """Select all entities from a collection."""
     if not await client.has_collection(collection_name):
         return []
-    
+
     results = await client.query(
         collection_name=collection_name,
         filter="",

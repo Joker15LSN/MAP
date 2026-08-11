@@ -1,0 +1,31 @@
+# OTel Collector config (activated via `docker compose --profile otel up`).
+#
+# Traces-only pipeline by design: the bundled stack persists logs as span
+# events (MAP_OTEL_LOGS_AS_SPAN_EVENTS) instead of native OTLP logs.
+# Do NOT point OTEL_EXPORTER_OTLP_LOGS_ENDPOINT at this collector unless a
+# logs pipeline and backend are added here first.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 2s
+    send_batch_size: 512
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger]

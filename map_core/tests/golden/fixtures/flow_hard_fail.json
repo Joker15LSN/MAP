@@ -1,0 +1,68 @@
+{
+  "id": "flow_hard_fail",
+  "mode": "flow",
+  "engine": "legacy",
+  "description": "无场景 hard fail:未命中场景且禁回退(fallback_to_global=false),输出 error + done(fallback=false)。",
+  "request": {
+    "query": "今天天气怎么样",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy"
+    },
+    "flow_config": {
+      "scenario_policy": {
+        "enabled": true,
+        "mode": "auto",
+        "allow_graph_repair": true,
+        "max_graph_cycles": 2
+      },
+      "skill_policy": {
+        "enabled": true,
+        "mount_mode": "agent_scoped",
+        "runtime_auth_check": true
+      },
+      "max_node_budget": 12,
+      "fallback_to_global": false
+    }
+  },
+  "runtime_config_hash": "sha256:de6a4ba9e3402d62925f9f171260089c",
+  "llm_script": [],
+  "tools": [],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "error",
+      "done"
+    ],
+    "meta_phases": [
+      "flow_mode_initialized",
+      "flow_policy_hit",
+      "scenario_resolved"
+    ],
+    "flow": {
+      "hard_fail": {
+        "reason": "no_matched_scenario",
+        "fallback": false
+      }
+    },
+    "final_content": {
+      "contains": [
+        "未命中可执行"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "flow.hard_fail",
+        "request.end"
+      ],
+      "request_end_success": false
+    },
+    "engine_parity": false
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "id": "global_multi_tool",
+  "mode": "global",
+  "engine": "legacy",
+  "description": "多工具:单 Agent 一步并发调用两个工具后给出综合答案。",
+  "request": {
+    "query": "综合评估公司经营与研发投入情况",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy",
+      "scene_agent_configs": {
+        "General_Assistant": {
+          "prompt": "你是通用问答助手。",
+          "tool_names": [
+            "general_qa_agent",
+            "web_search_agent"
+          ],
+          "max_steps": 3,
+          "force_tool_call": true
+        }
+      }
+    }
+  },
+  "runtime_config_hash": "sha256:3653f5667daca1c9eae2fca532e99185",
+  "llm_script": [
+    {
+      "kind": "asimple_chat",
+      "schema_name": "direct_sub_agent_route",
+      "content": "{\"agent_routes\":[{\"agent_code\":\"General_Assistant\",\"confidence\":0.9,\"reason\":\"综合评估\"}]}",
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 9
+      }
+    },
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_gqa_1",
+          "name": "general_qa_agent",
+          "arguments": "{\"query\": \"经营数据\"}"
+        },
+        {
+          "id": "call_web_1",
+          "name": "web_search_agent",
+          "arguments": "{\"query\": \"研发投入\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "经营数据与研发投入综合评估:营收增长,研发占比提升。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "asimple_chat_stream",
+      "chunks": [
+        "综合评估结论:公司经营稳健,研发投入占比持续提升。"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "general_qa_agent",
+      "returns": [
+        {
+          "content": "营收同比增长 12%。",
+          "data_source": {
+            "source": "fake"
+          }
+        }
+      ]
+    },
+    {
+      "name": "web_search_agent",
+      "returns": [
+        {
+          "content": "研发投入占比 8%。",
+          "data_source": {
+            "source": "fake_web"
+          }
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "content_delta",
+      "meta",
+      "done"
+    ],
+    "meta_phases": [
+      "scene_selected",
+      "agent_action",
+      "agent_result",
+      "post_dispatch"
+    ],
+    "scene_selected_agents": [
+      "General_Assistant"
+    ],
+    "agent_result_agents": [
+      "General_Assistant"
+    ],
+    "tool_io": [
+      {
+        "tool": "general_qa_agent",
+        "action": "tool_call",
+        "count": 1
+      },
+      {
+        "tool": "web_search_agent",
+        "action": "tool_call",
+        "count": 1
+      }
+    ],
+    "final_content": {
+      "contains": [
+        "研发投入"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "request.end"
+      ],
+      "request_end_success": true
+    },
+    "engine_parity": false
+  }
+}

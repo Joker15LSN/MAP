@@ -16,8 +16,8 @@ import json
 from pathlib import Path
 
 from map_core.utils.remote_config_compare.config_compare import (
-    compare_configs,
     ConfigComparator,
+    compare_configs,
 )
 from map_core.utils.remote_config_compare.highlight import auto_highlight
 
@@ -49,7 +49,7 @@ def compare_scene_selection(
     print(f"\n{'='*60}")
     print(f"Comparing: {left_path}")
     print(f"     with: {right_path}")
-    print(f"Focus: scene_selection")
+    print("Focus: scene_selection")
     print(f"{'='*60}")
 
     if not diffs:
@@ -103,9 +103,9 @@ if __name__ == "__main__":
     main()
     '''
     --ignore enabled_agent_codes.IPD_RD enabled_agent_codes.Financial_Assistant
-    
+
     '''
-    
+
     '''
     python -m map_core.utils.remote_config_compare.scripts.compare_scene_selection --right /Users/ley/work_space/supcon/dev_projects/map-core/map_core/utils/remote_config_compare/dumped_configs/ubddev/scene_selection.json --left /Users/ley/work_space/supcon/dev_projects/map-core/map_core/eval/scene_classify/current_config/update_company_news_20260515.json  --ignore enabled_agent_codes.IPD_RD enabled_agent_codes.Financial_Assistant enabled_agent_codes.MASTER
     '''

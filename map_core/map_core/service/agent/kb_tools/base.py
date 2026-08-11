@@ -108,7 +108,7 @@ def to_tool_result(tool_name:str, search_chunk_output: SearchKbChunkOutput) -> T
             "source": f"{tool_name}_source",
             "data": [item.model_dump() for item in search_chunk_output.results],
         }
-                                
+
     else:
         tool_result.error = search_chunk_output.error
         tool_result.success = search_chunk_output.success

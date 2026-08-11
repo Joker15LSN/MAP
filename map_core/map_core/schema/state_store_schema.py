@@ -26,6 +26,8 @@ class AgentExecutionDocument:
     ts: datetime = field(
         default_factory=lambda: datetime.now(ZoneInfo("Asia/Shanghai"))
     )
+    trace_id: str | None = None
+    span_id: str | None = None
 
 
 @dataclass
@@ -50,6 +52,8 @@ class ToolCallRecordDocument:
     status: str | None = None
     duration_s: float | None = None
     error: Any = None
+    trace_id: str | None = None
+    span_id: str | None = None
 
 
 @dataclass
@@ -82,6 +86,8 @@ class LLMCallRecordDocument:
     ts: datetime = field(
         default_factory=lambda: datetime.now(ZoneInfo("Asia/Shanghai"))
     )
+    trace_id: str | None = None
+    span_id: str | None = None
 
 
 @dataclass
@@ -91,6 +97,7 @@ class RequestRecordDocument:
     state_id: str
     request_id: str
     session_id: str | None = None
+    workspace_id: str | None = None
     staff_code: str | None = None
     query: str | None = None
     start_ts: datetime | None = None
@@ -101,3 +108,5 @@ class RequestRecordDocument:
     agents_called: list[str] | Any = None
     token_usage_total: Any = None
     error: Any = None
+    trace_id: str | None = None
+    span_id: str | None = None

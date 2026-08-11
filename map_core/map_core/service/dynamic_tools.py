@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 import httpx
+from opentelemetry.propagate import inject as otel_inject
 
 from ..utils.llm_engine import LLMEngine
 from .agent.base import AgentRequest, ToolResult
@@ -49,6 +50,22 @@ async def _call_http_mcp_tool(
         for key, value in (server.get("headers") or {}).items()
         if value
     }
+    # Propagate the current Tool span to the MCP service. Business headers
+    # configured by admins win, but W3C propagation fields must always be
+    # generated dynamically: a statically configured traceparent would pin
+    # the call to a stale/non-existent trace and break end-to-end linking.
+    propagation_keys = {"traceparent", "tracestate", "baggage"}
+    headers = {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in propagation_keys
+    }
+    propagation_headers: dict[str, str] = {}
+    try:
+        otel_inject(propagation_headers)
+    except Exception:
+        propagation_headers = {}
+    headers.update(propagation_headers)
     payload = {
         "jsonrpc": "2.0",
         "id": "map-mcp-tool-call",

@@ -133,7 +133,7 @@ async def process_atomize_pipeline(
 
     tasks = [_process_single_data_model(model) for model in selected_models]
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     final_tasks: list[DecomposedTask] = []
     for result in results_list:
         if isinstance(result, BaseException):
@@ -143,5 +143,5 @@ async def process_atomize_pipeline(
 
     total_elapsed = time.perf_counter() - start_time
     logger.info(f"Pipeline completed in {total_elapsed:.2f}s. Total sub-tasks generated: {len(final_tasks)}")
-    
+
     return final_tasks

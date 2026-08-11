@@ -54,12 +54,12 @@ TODO
 
 - 问题：str
 - 原始数据：list[dict[str, Any]]
-    - time: str 
+    - time: str
     - value: int | float
 
 输出为：
 {
-    "metric": str, 
+    "metric": str,
     "calculation_type": str,
     "results": dict[str, Any],  # key 所有可算的统计结果，value对应的计算结果
 }

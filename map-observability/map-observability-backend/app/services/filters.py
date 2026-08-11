@@ -2,39 +2,38 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from datetime import UTC, datetime, timedelta
 
 
 @dataclass
 class FilterOptions:
     start_ts: datetime
     end_ts: datetime
-    container: Optional[str] = None
-    staff_code: Optional[str] = None
-    session_id: Optional[str] = None
-    request_id: Optional[str] = None
-    status: Optional[str] = None
-    agent_code: Optional[str] = None
-    tool: Optional[str] = None
-    query_like: Optional[str] = None
+    container: str | None = None
+    staff_code: str | None = None
+    session_id: str | None = None
+    request_id: str | None = None
+    status: str | None = None
+    agent_code: str | None = None
+    tool: str | None = None
+    query_like: str | None = None
 
 
 def normalize_time_range(
-    start_ts: Optional[datetime],
-    end_ts: Optional[datetime],
+    start_ts: datetime | None,
+    end_ts: datetime | None,
     default_hours: int,
     max_days: int,
 ) -> (datetime, datetime):
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
 
     end = end_ts or now_utc
     start = start_ts or (end - timedelta(hours=default_hours))
 
     if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
+        start = start.replace(tzinfo=UTC)
     if end.tzinfo is None:
-        end = end.replace(tzinfo=timezone.utc)
+        end = end.replace(tzinfo=UTC)
 
     if end < start:
         raise ValueError("end_ts must be greater than or equal to start_ts")
@@ -42,10 +41,10 @@ def normalize_time_range(
     if end - start > timedelta(days=max_days):
         raise ValueError(f"time range exceeds MAX_QUERY_DAYS={max_days}")
 
-    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+    return start.astimezone(UTC), end.astimezone(UTC)
 
 
-def build_request_match(filters: FilterOptions) -> Dict:
+def build_request_match(filters: FilterOptions) -> dict:
     match = {
         "start_ts": {
             "$gte": filters.start_ts,
@@ -69,7 +68,7 @@ def build_request_match(filters: FilterOptions) -> Dict:
     return match
 
 
-def build_agent_match(filters: FilterOptions) -> Dict:
+def build_agent_match(filters: FilterOptions) -> dict:
     match = {
         "ts": {
             "$gte": filters.start_ts,
@@ -89,7 +88,7 @@ def build_agent_match(filters: FilterOptions) -> Dict:
     return match
 
 
-def build_tool_match(filters: FilterOptions) -> Dict:
+def build_tool_match(filters: FilterOptions) -> dict:
     match = {
         "ts": {
             "$gte": filters.start_ts,

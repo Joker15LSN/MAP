@@ -1,0 +1,116 @@
+{
+  "id": "flow_fallback",
+  "mode": "flow",
+  "engine": "legacy",
+  "description": "fallback:未命中任何场景时回退到 GlobalDomain 全域链路,并透传 global 事件。",
+  "request": {
+    "query": "今天天气怎么样",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy"
+    },
+    "flow_config": {
+      "scenario_policy": {
+        "enabled": true,
+        "mode": "auto",
+        "allow_graph_repair": true,
+        "max_graph_cycles": 2
+      },
+      "skill_policy": {
+        "enabled": true,
+        "mount_mode": "agent_scoped",
+        "runtime_auth_check": true
+      },
+      "max_node_budget": 12,
+      "fallback_to_global": true
+    }
+  },
+  "runtime_config_hash": "sha256:88edd6714d53c0a56e293d1206efd332",
+  "llm_script": [
+    {
+      "kind": "asimple_chat",
+      "schema_name": "direct_sub_agent_route",
+      "content": "{\"agent_routes\":[{\"agent_code\":\"General_Assistant\",\"confidence\":0.8,\"reason\":\"天气问答\"}]}",
+      "usage": {
+        "prompt_tokens": 20,
+        "completion_tokens": 8
+      }
+    },
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_gqa_fb",
+          "name": "general_qa_agent",
+          "arguments": "{\"query\": \"天气\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "今天天气晴朗。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "asimple_chat_stream",
+      "chunks": [
+        "回退全域回答:今天天气晴朗,适合出行。"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "general_qa_agent",
+      "returns": [
+        {
+          "content": "天气数据:晴朗。",
+          "data_source": {
+            "source": "fake"
+          }
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "content_delta",
+      "meta",
+      "done"
+    ],
+    "meta_phases": [
+      "flow_mode_initialized",
+      "flow_policy_hit",
+      "scenario_resolved",
+      "flow_fallback",
+      "scene_selected",
+      "agent_result",
+      "summarize_finished"
+    ],
+    "flow": {
+      "fallback_reason": "no_matched_scenario"
+    },
+    "final_content": {
+      "contains": [
+        "晴朗"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "request.end"
+      ],
+      "request_end_success": true,
+      "not_contains_event_types": [
+        "flow.hard_fail"
+      ]
+    },
+    "engine_parity": true
+  }
+}

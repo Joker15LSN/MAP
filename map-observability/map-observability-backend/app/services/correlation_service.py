@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 from pymongo.database import Database
 
@@ -14,7 +15,11 @@ from app.services.container_mapping import (
     infer_cbb_container_by_tool,
     infer_main_flow_container,
 )
-from app.services.log_parser import normalize_levels, parse_log_context, resolve_correlation_id
+from app.services.log_parser import (
+    normalize_levels,
+    parse_log_context,
+    resolve_correlation_id,
+)
 from app.services.loki_query_service import LokiQueryService
 from app.services.math_utils import to_float
 from app.services.time_align_service import AlignedRange, TimeAlignService
@@ -50,15 +55,15 @@ class CorrelationService:
         return assert_container_supported(container)
 
     @staticmethod
-    def _dt(value: Optional[datetime]) -> Optional[datetime]:
+    def _dt(value: datetime | None) -> datetime | None:
         if not isinstance(value, datetime):
             return None
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
     @staticmethod
-    def _token_total(request_doc: Dict[str, Any]) -> float:
+    def _token_total(request_doc: dict[str, Any]) -> float:
         usage = request_doc.get("token_usage_total") or {}
         total = usage.get("total") if isinstance(usage, dict) else {}
         if not isinstance(total, dict):
@@ -66,8 +71,8 @@ class CorrelationService:
         return to_float(total.get("total_tokens"), 0.0)
 
     @staticmethod
-    def _build_timeline(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        grouped: Dict[Any, Dict[str, Any]] = {}
+    def _build_timeline(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[Any, dict[str, Any]] = {}
         for event in events:
             key = (event.get("state_id"), event.get("agent_code"), event.get("seq", 0))
             row = grouped.setdefault(
@@ -84,16 +89,18 @@ class CorrelationService:
             )
             stage = str(event.get("stage") or "").lower()
             ts = event.get("ts")
-            if stage == "start" and isinstance(ts, datetime):
-                if row["start_ts"] is None or ts < row["start_ts"]:
-                    row["start_ts"] = ts
-            if stage == "end" and isinstance(ts, datetime):
-                if row["end_ts"] is None or ts > row["end_ts"]:
-                    row["end_ts"] = ts
+            if stage == "start" and isinstance(ts, datetime) and (
+                row["start_ts"] is None or ts < row["start_ts"]
+            ):
+                row["start_ts"] = ts
+            if stage == "end" and isinstance(ts, datetime) and (
+                row["end_ts"] is None or ts > row["end_ts"]
+            ):
+                row["end_ts"] = ts
             if event.get("status") is not None:
                 row["status"] = event.get("status")
 
-        timeline: List[Dict[str, Any]] = []
+        timeline: list[dict[str, Any]] = []
         for row in grouped.values():
             start_ts = row.get("start_ts")
             end_ts = row.get("end_ts")
@@ -109,17 +116,17 @@ class CorrelationService:
                 }
             )
 
-        min_utc = datetime.min.replace(tzinfo=timezone.utc)
+        min_utc = datetime.min.replace(tzinfo=UTC)
         timeline.sort(key=lambda item: (item.get("start_ts") or min_utc, item.get("seq", 0)))
         return timeline
 
     @staticmethod
-    def _extract_rid(line: str) -> Optional[str]:
+    def _extract_rid(line: str) -> str | None:
         match = RID_PATTERN.search(line or "")
         return match.group(1) if match else None
 
     @staticmethod
-    def _extract_sid(line: str) -> Optional[str]:
+    def _extract_sid(line: str) -> str | None:
         match = SID_PATTERN.search(line or "")
         return match.group(1) if match else None
 
@@ -143,7 +150,7 @@ class CorrelationService:
         return "Unknown"
 
     @staticmethod
-    def _root_cause_hint(error_hits: List[Dict[str, Any]], request_status: str) -> str:
+    def _root_cause_hint(error_hits: list[dict[str, Any]], request_status: str) -> str:
         if not error_hits:
             if request_status == "success":
                 return "no_error_detected"
@@ -161,26 +168,26 @@ class CorrelationService:
         return "unknown_failure"
 
     @staticmethod
-    def _normalize_page_size(page_size: Optional[int]) -> int:
+    def _normalize_page_size(page_size: int | None) -> int:
         if not page_size:
             return DEFAULT_PAGE_SIZE
         return max(1, min(int(page_size), MAX_PAGE_SIZE))
 
     @classmethod
-    def _paginate(cls, items: List[Dict[str, Any]], page: int, page_size: int) -> Dict[str, Any]:
+    def _paginate(cls, items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
         safe_page = max(1, int(page or 1))
         safe_page_size = cls._normalize_page_size(page_size)
         total = len(items)
         offset = (safe_page - 1) * safe_page_size
         return {
-            "items": items[offset: offset + safe_page_size],
+            "items": items[offset : offset + safe_page_size],
             "total": total,
             "page": safe_page,
             "page_size": safe_page_size,
         }
 
     @staticmethod
-    def _build_selector(container: str, levels: List[str]) -> str:
+    def _build_selector(container: str, levels: list[str]) -> str:
         selector = f'{{container="{container}"}}'
         label_levels = sorted({level.lower() for level in levels if level != "UNKNOWN"})
         if label_levels:
@@ -189,8 +196,8 @@ class CorrelationService:
         return selector
 
     @staticmethod
-    def _prepare_logs(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        prepared_rows: List[Dict[str, Any]] = []
+    def _prepare_logs(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+        prepared_rows: list[dict[str, Any]] = []
         for row in rows:
             raw_line = str(row.get("line") or "")
             stream = row.get("stream") if isinstance(row.get("stream"), dict) else {}
@@ -219,21 +226,21 @@ class CorrelationService:
         return prepared_rows
 
     @staticmethod
-    def _filter_logs(logs: List[Dict[str, Any]], levels: List[str]) -> List[Dict[str, Any]]:
+    def _filter_logs(logs: list[dict[str, Any]], levels: list[str]) -> list[dict[str, Any]]:
         if not levels:
             return logs
         accepted = set(levels)
         return [row for row in logs if row.get("level") in accepted]
 
     @staticmethod
-    def _select_main_chain_aids(trace_chain: Dict[str, Any]) -> List[str]:
+    def _select_main_chain_aids(trace_chain: dict[str, Any]) -> list[str]:
         nodes = trace_chain.get("nodes") if isinstance(trace_chain, dict) else []
         edges = trace_chain.get("edges") if isinstance(trace_chain, dict) else []
         root_nodes = trace_chain.get("root_nodes") if isinstance(trace_chain, dict) else []
         if not isinstance(nodes, list) or not nodes:
             return []
 
-        node_map: Dict[str, Dict[str, Any]] = {
+        node_map: dict[str, dict[str, Any]] = {
             str(node.get("aid")): node
             for node in nodes
             if isinstance(node, dict) and node.get("aid")
@@ -250,7 +257,7 @@ class CorrelationService:
             candidate_roots = list(node_map.keys())
         start = sorted(candidate_roots, key=lambda aid: (-_node_weight(aid), aid))[0]
 
-        children_map: Dict[str, List[tuple[str, int]]] = defaultdict(list)
+        children_map: dict[str, list[tuple[str, int]]] = defaultdict(list)
         for edge in edges if isinstance(edges, list) else []:
             if not isinstance(edge, dict):
                 continue
@@ -260,7 +267,7 @@ class CorrelationService:
             if parent and child and parent in node_map and child in node_map:
                 children_map[parent].append((child, count))
 
-        main_chain: List[str] = []
+        main_chain: list[str] = []
         visited = set()
         current = start
         while current and current not in visited:
@@ -269,7 +276,9 @@ class CorrelationService:
             children = children_map.get(current, [])
             if not children:
                 break
-            children = sorted(children, key=lambda item: (-item[1], -_node_weight(item[0]), item[0]))
+            children = sorted(
+                children, key=lambda item: (-item[1], -_node_weight(item[0]), item[0])
+            )
             next_child = None
             for child, _ in children:
                 if child not in visited:
@@ -283,13 +292,13 @@ class CorrelationService:
 
     @staticmethod
     def _mark_main_chain_logs(
-        logs: List[Dict[str, Any]],
+        logs: list[dict[str, Any]],
         request_id: str,
         session_id: str,
-        main_chain_aids: List[str],
-    ) -> List[Dict[str, Any]]:
+        main_chain_aids: list[str],
+    ) -> list[dict[str, Any]]:
         main_aid_set = set(main_chain_aids)
-        marked: List[Dict[str, Any]] = []
+        marked: list[dict[str, Any]] = []
         for row in logs:
             aid = str(row.get("aid") or "").strip()
             resolved_id = str(row.get("correlation_id") or "").strip()
@@ -297,11 +306,7 @@ class CorrelationService:
             level = str(row.get("level") or "UNKNOWN")
             is_main_chain = bool(
                 (aid and aid in main_aid_set)
-                or (
-                    not aid
-                    and resolved_id == request_id
-                    and (not session_id or sid == session_id)
-                )
+                or (not aid and resolved_id == request_id and (not session_id or sid == session_id))
             )
             marked.append(
                 {
@@ -314,11 +319,11 @@ class CorrelationService:
 
     @staticmethod
     def _build_main_chain_alerts(
-        logs: List[Dict[str, Any]],
+        logs: list[dict[str, Any]],
         request_id: str,
         session_id: str,
-        main_chain_aids: List[str],
-    ) -> Dict[str, Any]:
+        main_chain_aids: list[str],
+    ) -> dict[str, Any]:
         marked = CorrelationService._mark_main_chain_logs(
             logs=logs,
             request_id=request_id,
@@ -343,11 +348,11 @@ class CorrelationService:
     def _collect_request_ids_for_scope(
         self,
         aligned: AlignedRange,
-        staff_code: Optional[str],
-        session_id: Optional[str],
-        request_id: Optional[str],
+        staff_code: str | None,
+        session_id: str | None,
+        request_id: str | None,
     ) -> set[str]:
-        match: Dict[str, Any] = {
+        match: dict[str, Any] = {
             "start_ts": {
                 "$gte": aligned.start_utc,
                 "$lte": aligned.end_utc,
@@ -364,7 +369,7 @@ class CorrelationService:
         return {str(item) for item in ids if item}
 
     @staticmethod
-    def _update_time_range(node: Dict[str, Any], ts_utc: Optional[str]) -> None:
+    def _update_time_range(node: dict[str, Any], ts_utc: str | None) -> None:
         if not ts_utc:
             return
         if not node.get("first_ts_utc") or ts_utc < node["first_ts_utc"]:
@@ -375,15 +380,15 @@ class CorrelationService:
     def _build_trace_chain(
         self,
         request_id: str,
-        logs: List[Dict[str, Any]],
-        request_doc: Dict[str, Any],
-        agent_events: List[Dict[str, Any]],
-        tool_calls: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        nodes_map: Dict[str, Dict[str, Any]] = {}
+        logs: list[dict[str, Any]],
+        request_doc: dict[str, Any],
+        agent_events: list[dict[str, Any]],
+        tool_calls: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        nodes_map: dict[str, dict[str, Any]] = {}
         edges_counter: Counter = Counter()
 
-        agent_by_aid: Dict[str, Dict[str, Any]] = defaultdict(
+        agent_by_aid: dict[str, dict[str, Any]] = defaultdict(
             lambda: {"count": 0, "agent_codes": set(), "agent_names": set()}
         )
         for event in agent_events:
@@ -398,7 +403,7 @@ class CorrelationService:
             if event.get("agent_name"):
                 entry["agent_names"].add(str(event.get("agent_name")))
 
-        tool_by_aid: Dict[str, Dict[str, Any]] = defaultdict(
+        tool_by_aid: dict[str, dict[str, Any]] = defaultdict(
             lambda: {"count": 0, "agent_codes": set(), "agent_names": set(), "tools": set()}
         )
         for row in tool_calls:
@@ -480,7 +485,7 @@ class CorrelationService:
             if node.get("parid") and node.get("parid") != "-" and node["parid"] not in nodes_map
         }
 
-        nodes: List[Dict[str, Any]] = []
+        nodes: list[dict[str, Any]] = []
         for node in nodes_map.values():
             nodes.append(
                 {
@@ -510,34 +515,39 @@ class CorrelationService:
             [
                 node["aid"]
                 for node in nodes
-                if not node.get("parid") or node.get("parid") == "-" or node.get("parid") not in nodes_map
+                if not node.get("parid")
+                or node.get("parid") == "-"
+                or node.get("parid") not in nodes_map
             ]
         )
 
         session_candidates = sorted(
-            {
-                sid
-                for node in nodes
-                for sid in node.get("sid_candidates", [])
-                if sid
-            }
+            {sid for node in nodes for sid in node.get("sid_candidates", []) if sid}
         )
-        session_id = str(request_doc.get("session_id") or "") or (session_candidates[0] if session_candidates else "")
+        session_id = str(request_doc.get("session_id") or "") or (
+            session_candidates[0] if session_candidates else ""
+        )
 
         mongo_link_stats = {
             "aid_total": len(nodes),
-            "aid_matched_in_agent_payload": sum(1 for node in nodes if node["source_hits"].get("agent_payload", 0) > 0),
-            "aid_matched_in_tool_calls": sum(1 for node in nodes if node["source_hits"].get("tool_call", 0) > 0),
+            "aid_matched_in_agent_payload": sum(
+                1 for node in nodes if node["source_hits"].get("agent_payload", 0) > 0
+            ),
+            "aid_matched_in_tool_calls": sum(
+                1 for node in nodes if node["source_hits"].get("tool_call", 0) > 0
+            ),
             "aid_matched_in_any_mongo": sum(
                 1
                 for node in nodes
-                if node["source_hits"].get("agent_payload", 0) > 0 or node["source_hits"].get("tool_call", 0) > 0
+                if node["source_hits"].get("agent_payload", 0) > 0
+                or node["source_hits"].get("tool_call", 0) > 0
             ),
             "unmatched_aids": sorted(
                 [
                     node["aid"]
                     for node in nodes
-                    if node["source_hits"].get("agent_payload", 0) == 0 and node["source_hits"].get("tool_call", 0) == 0
+                    if node["source_hits"].get("agent_payload", 0) == 0
+                    and node["source_hits"].get("tool_call", 0) == 0
                 ]
             ),
         }
@@ -552,7 +562,9 @@ class CorrelationService:
             "mongo_link_stats": mongo_link_stats,
         }
 
-    def time_align(self, start_local: str, end_local: str, tz: Optional[str], buffer_seconds: int) -> Dict[str, Any]:
+    def time_align(
+        self, start_local: str, end_local: str, tz: str | None, buffer_seconds: int
+    ) -> dict[str, Any]:
         aligned = self.time_align_service.align_range(
             start_local=start_local,
             end_local=end_local,
@@ -567,12 +579,13 @@ class CorrelationService:
         request_id: str,
         start_ns: int,
         end_ns: int,
-        levels: Optional[List[str]] = None,
+        levels: list[str] | None = None,
         limit: int = 2500,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         normalized_levels = normalize_levels(levels)
         selector = self._build_selector(container, normalized_levels)
-        # Use request_id literal instead of `rid=<id>` because some logs wrap values with ANSI codes.
+        # Use request_id literal instead of `rid=<id>` because some logs wrap
+        # values with ANSI codes.
         query = f'{selector} |= "{request_id}"'
         rows = self.loki_query_service.query_range(
             query=query,
@@ -599,10 +612,10 @@ class CorrelationService:
         request_id: str,
         container: str,
         window_sec: int = 120,
-        levels: Optional[List[str]] = None,
+        levels: list[str] | None = None,
         page: int = 1,
         page_size: int = DEFAULT_PAGE_SIZE,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         normalized_container = self._assert_container(container)
         normalized_levels = normalize_levels(levels)
         safe_page_size = self._normalize_page_size(page_size)
@@ -686,7 +699,9 @@ class CorrelationService:
         )
 
         level_breakdown = Counter(str(row.get("level") or "UNKNOWN") for row in logs)
-        correlation_source_breakdown = Counter(str(row.get("correlation_id_source") or "unknown") for row in logs)
+        correlation_source_breakdown = Counter(
+            str(row.get("correlation_id_source") or "unknown") for row in logs
+        )
 
         session_id = str(request_doc.get("session_id") or "")
         rid_matches = sum(1 for row in logs if row.get("correlation_id") == request_id)
@@ -754,7 +769,7 @@ class CorrelationService:
         }
 
     @staticmethod
-    def _is_alert_row(row: Dict[str, Any]) -> bool:
+    def _is_alert_row(row: dict[str, Any]) -> bool:
         level = str(row.get("level") or "UNKNOWN")
         if level in ALERT_LEVELS:
             return True
@@ -767,9 +782,9 @@ class CorrelationService:
         request_id: str,
         start_ns: int,
         end_ns: int,
-        levels: List[str],
+        levels: list[str],
         limit: int = 3000,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         selector = self._build_selector(container, levels)
         query = f'{selector} |= "{request_id}"'
         rows = self.loki_query_service.query_range(
@@ -784,12 +799,11 @@ class CorrelationService:
         return [
             row
             for row in filtered
-            if row.get("correlation_id") == request_id
-            or request_id in str(row.get("line") or "")
+            if row.get("correlation_id") == request_id or request_id in str(row.get("line") or "")
         ]
 
     @staticmethod
-    def _resolve_correlation_id(logs: List[Dict[str, Any]], request_id: str) -> Dict[str, Any]:
+    def _resolve_correlation_id(logs: list[dict[str, Any]], request_id: str) -> dict[str, Any]:
         source_counts = Counter()
         for row in logs:
             if row.get("correlation_id") != request_id:
@@ -813,9 +827,9 @@ class CorrelationService:
 
     def _build_error_summary(
         self,
-        main_logs: List[Dict[str, Any]],
-        cbb_logs: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        main_logs: list[dict[str, Any]],
+        cbb_logs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         merged = [
             *[{**row, "channel": "main"} for row in main_logs],
             *[{**row, "channel": "cbb"} for row in cbb_logs],
@@ -826,8 +840,7 @@ class CorrelationService:
         level_breakdown = Counter(str(row.get("level") or "UNKNOWN") for row in alert_logs)
         channel_breakdown = Counter(str(row.get("channel") or "unknown") for row in alert_logs)
         signature_breakdown = Counter(
-            self._error_signature(str(row.get("line") or ""))
-            for row in alert_logs
+            self._error_signature(str(row.get("line") or "")) for row in alert_logs
         )
         keywords = sorted(
             {
@@ -856,13 +869,13 @@ class CorrelationService:
         request_id: str,
         container: str,
         tool: str,
-        tool_id: Optional[str] = None,
-        step: Optional[int] = None,
-        levels: Optional[List[str]] = None,
+        tool_id: str | None = None,
+        step: int | None = None,
+        levels: list[str] | None = None,
         page: int = 1,
         page_size: int = DEFAULT_PAGE_SIZE,
         window_sec: int = 120,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         normalized_container = self._assert_container(container)
         effective_tool = enforce_container_tool(normalized_container, tool)
         if not effective_tool:
@@ -876,22 +889,25 @@ class CorrelationService:
         normalized_levels = normalize_levels(levels)
         safe_page_size = self._normalize_page_size(page_size)
 
-        request_doc = self.request_collection.find_one(
-            {"request_id": request_id},
-            {
-                "_id": 0,
-                "request_id": 1,
-                "state_id": 1,
-                "session_id": 1,
-                "status": 1,
-                "query": 1,
-                "start_ts": 1,
-                "end_ts": 1,
-                "error": 1,
-            },
-        ) or {}
+        request_doc = (
+            self.request_collection.find_one(
+                {"request_id": request_id},
+                {
+                    "_id": 0,
+                    "request_id": 1,
+                    "state_id": 1,
+                    "session_id": 1,
+                    "status": 1,
+                    "query": 1,
+                    "start_ts": 1,
+                    "end_ts": 1,
+                    "error": 1,
+                },
+            )
+            or {}
+        )
 
-        tool_match: Dict[str, Any] = {
+        tool_match: dict[str, Any] = {
             "request_id": request_id,
             "tool": effective_tool,
         }
@@ -914,7 +930,7 @@ class CorrelationService:
             start_utc = min(ts_values)
             end_utc = max(ts_values)
         else:
-            now_utc = datetime.now(timezone.utc)
+            now_utc = datetime.now(UTC)
             start_utc = now_utc
             end_utc = now_utc
 
@@ -970,16 +986,16 @@ class CorrelationService:
         container: str,
         start_local: str,
         end_local: str,
-        tz: Optional[str],
-        keywords: Optional[List[str]] = None,
-        levels: Optional[List[str]] = None,
-        staff_code: Optional[str] = None,
-        session_id: Optional[str] = None,
-        request_id: Optional[str] = None,
+        tz: str | None,
+        keywords: list[str] | None = None,
+        levels: list[str] | None = None,
+        staff_code: str | None = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
         page: int = 1,
         page_size: int = DEFAULT_PAGE_SIZE,
         buffer_seconds: int = 120,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         normalized_container = self._assert_container(container)
         normalized_levels = normalize_levels(levels)
         safe_page_size = self._normalize_page_size(page_size)
@@ -1038,14 +1054,17 @@ class CorrelationService:
             filtered_logs = [
                 row
                 for row in filtered_logs
-                if row.get("correlation_id") and str(row.get("correlation_id")) in scoped_request_ids
+                if row.get("correlation_id")
+                and str(row.get("correlation_id")) in scoped_request_ids
             ]
         if request_id:
-            filtered_logs = [row for row in filtered_logs if row.get("correlation_id") == request_id]
+            filtered_logs = [
+                row for row in filtered_logs if row.get("correlation_id") == request_id
+            ]
         if session_id:
             filtered_logs = [row for row in filtered_logs if row.get("sid") == session_id]
 
-        grouped: Dict[str, Dict[str, Any]] = defaultdict(
+        grouped: dict[str, dict[str, Any]] = defaultdict(
             lambda: {
                 "error_type": "",
                 "count": 0,

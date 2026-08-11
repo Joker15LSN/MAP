@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Optional
 
 from fastapi import HTTPException, Query
 
@@ -32,16 +31,16 @@ class QueryContext:
 
 
 def parse_query_context(
-    start_ts: Optional[datetime] = Query(default=None),
-    end_ts: Optional[datetime] = Query(default=None),
-    container: Optional[str] = Query(default=None),
-    staff_code: Optional[str] = Query(default=None),
-    session_id: Optional[str] = Query(default=None),
-    request_id: Optional[str] = Query(default=None),
-    query_like: Optional[str] = Query(default=None),
-    status: Optional[str] = Query(default=None),
-    agent_code: Optional[str] = Query(default=None),
-    tool: Optional[str] = Query(default=None),
+    start_ts: datetime | None = Query(default=None),
+    end_ts: datetime | None = Query(default=None),
+    container: str | None = Query(default=None),
+    staff_code: str | None = Query(default=None),
+    session_id: str | None = Query(default=None),
+    request_id: str | None = Query(default=None),
+    query_like: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    agent_code: str | None = Query(default=None),
+    tool: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=10),
     sort_by: str = Query(default="start_ts"),

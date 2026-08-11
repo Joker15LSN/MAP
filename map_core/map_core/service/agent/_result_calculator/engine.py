@@ -58,7 +58,7 @@ def get_previous_time_str(time_str: str, calculation_type: str) -> str | None:
         return prev_dt.strftime("%Y-%m")
     elif len(time_str) == 10:
         return prev_dt.strftime("%Y-%m-%d")
-    
+
     return None
 
 
@@ -136,7 +136,7 @@ def run_calculation(
             continue
         try:
             clean_data.append({
-                "time": t_str, 
+                "time": t_str,
                 "value": float(val),
                 "extra": item.get("extra"),
                 "type": item.get("type")
@@ -176,14 +176,14 @@ def run_calculation(
                 for item in aggregated_data
                 if isinstance(item.get("value"), (int, float))
             )
-            
+
         if total == 0:
             return {}
-            
+
         for item in aggregated_data:
             if item.get("type") == "sum":
                 continue
-                
+
             val = item.get("value")
             if isinstance(val, (int, float)):
                 extra = item.get("extra")

@@ -1,7 +1,8 @@
 import json
 import os
-import secrets
+import re
 import sys
+import uuid
 from argparse import ArgumentParser
 from contextlib import asynccontextmanager
 from importlib import import_module
@@ -22,6 +23,20 @@ _PROJECT_ROOT = str(Path(__file__).parents[1].absolute())
 MAX_LOGGED_REQUEST_BODY_CHARS = 13000
 MAX_LOGGED_JSON_FIELD_CHARS = 5000
 LOG_REDACTED_VALUE = "***REDACTED***"
+
+# Shared ID contract with the routers and the BFF (F-04): non-empty,
+# <=128 chars, restricted charset; illegal/missing request ids are replaced
+# with uuid4().hex, missing session ids stay None.
+_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
+
+
+def _validated_id_header(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if cleaned and _ID_PATTERN.fullmatch(cleaned):
+        return cleaned
+    return None
 SENSITIVE_KEYWORDS: tuple[str, ...] = (
     "api_key",
     "apikey",
@@ -163,19 +178,31 @@ async def lifespan(app: FastAPI):
     cfg = load_config()
     app.state.cfg = cfg
 
+    from .observability import configure_telemetry, shutdown_telemetry
+
+    configure_telemetry(
+        service_name="map-core",
+        service_version=app.version,
+        deployment_environment=env,
+    )
+
     from .database.mongodb import setup_mongodb
     from .database.postgre import setup_postgres
 
-    setup_postgres(app, config=cfg.POSTGRES_CONFIG)
-    setup_mongodb(app, config=cfg.MONGODB_CONFIG)
+    # FastAPI >= 0.141 removed `add_event_handler`, so startup connectivity
+    # verification and shutdown cleanup are driven explicitly from lifespan.
+    pg_client = setup_postgres(app, config=cfg.POSTGRES_CONFIG)
+    mongo_client = setup_mongodb(app, config=cfg.MONGODB_CONFIG)
+    await pg_client.verify_startup()
+    await mongo_client.verify_startup()
 
     from .utils.map_logger import init_logger
 
     app.state.logger = init_logger(path=LOG_DIR)
     logger.info(f"[PID: {os.getpid()}] application start. ENV='{env}'")
 
-    from .routers.global_domain_router import global_domain_router
     from .routers.flow_domain_router import flow_domain_router
+    from .routers.global_domain_router import global_domain_router
     from .routers.master_pipeline_router import master_pipeline_router
     from .routers.openapi_router import openapi_router
     from .routers.system_router import system_router
@@ -196,6 +223,15 @@ async def lifespan(app: FastAPI):
         state_store = GlobalAgentStateStore.maybe_instance()
         if state_store is not None:
             await state_store.close()
+
+        pg_client = getattr(app.state, "postgres_client", None)
+        if pg_client is not None:
+            await pg_client.close()
+        mongo_client = getattr(app.state, "mongodb_client", None)
+        if mongo_client is not None:
+            await mongo_client.close()
+
+        shutdown_telemetry()
 
         # Ensure loguru queued sinks (`enqueue=True`) flush and release IPC resources.
         app_logger = getattr(app.state, "logger", None)
@@ -228,8 +264,8 @@ class RequestContextMiddleware:
             return
 
         headers = Headers(scope=scope)
-        rid = headers.get("X-Request-ID") or secrets.token_hex(8)
-        sid = headers.get("X-Session-ID") or secrets.token_hex(8)
+        rid = _validated_id_header(headers.get("X-Request-ID")) or uuid.uuid4().hex
+        sid = _validated_id_header(headers.get("X-Session-ID"))
         path = str(scope.get("path") or "")
         request_log_enabled = path != "/health"
         state = scope.setdefault("state", {})
@@ -305,7 +341,8 @@ class RequestContextMiddleware:
                 state["_response_started"] = True
                 response_headers = MutableHeaders(scope=message)
                 response_headers["X-Request-ID"] = rid
-                response_headers["X-Session-ID"] = sid
+                if sid:
+                    response_headers["X-Session-ID"] = sid
             elif message["type"] == "http.response.body" and not message.get(
                 "more_body",
                 False,
@@ -374,6 +411,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RequestContextMiddleware)
+# OTel SERVER span middleware wraps the whole request lifecycle (outermost).
+from .observability import OpenTelemetryASGIMiddleware  # noqa: E402
+
+app.add_middleware(OpenTelemetryASGIMiddleware)
 
 
 @app.exception_handler(HTTPException)

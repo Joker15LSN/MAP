@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 
 def safe_div(numerator: float, denominator: float) -> float:
@@ -19,7 +19,7 @@ def to_float(value: object, default: float = 0.0) -> float:
         return float(value)
     try:
         return float(value)
-    except Exception:
+    except Exception:  # noqa: BLE001 - boundary catch
         return default
 
 
@@ -52,13 +52,13 @@ def average(values: Iterable[float]) -> float:
     return sum(nums) / len(nums)
 
 
-def compact_confidences(confidences: Iterable[Optional[float]]) -> List[float]:
+def compact_confidences(confidences: Iterable[float | None]) -> list[float]:
     values = []
     for value in confidences:
         if value is None:
             continue
         try:
             values.append(float(value))
-        except Exception:
+        except Exception:  # noqa: BLE001 - boundary catch
             continue
     return values

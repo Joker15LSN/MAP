@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
-from datetime import datetime, timedelta, timezone
+from collections.abc import AsyncIterator, Callable, Iterator
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Optional
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -14,7 +14,10 @@ from zoneinfo import ZoneInfo
 
 from app.core.config import Settings
 from app.services.analytics_service import AnalyticsService
-from app.services.container_mapping import MAIN_FLOW_CONTAINERS, assert_container_supported
+from app.services.container_mapping import (
+    MAIN_FLOW_CONTAINERS,
+    assert_container_supported,
+)
 from app.services.correlation_service import CorrelationService
 from app.services.filters import FilterOptions
 
@@ -22,7 +25,9 @@ DEFAULT_LOOKBACK_DAYS = 30
 DEFAULT_SLOW_THRESHOLD_S = 5.0
 DEFAULT_STAGE_TIMEOUT_S = 20
 ERROR_KEYWORDS = ["error", "exception", "failed", "traceback", "timeout"]
-RID_IN_LINE_PATTERN = re.compile(r"(?:rid|request_id|req_id|task_id)\s*[:=]\s*([A-Za-z0-9_-]{8,128})", re.IGNORECASE)
+RID_IN_LINE_PATTERN = re.compile(
+    r"(?:rid|request_id|req_id|task_id)\s*[:=]\s*([A-Za-z0-9_-]{8,128})", re.IGNORECASE
+)
 
 
 class FridayService:
@@ -31,7 +36,7 @@ class FridayService:
         settings: Settings,
         analytics_service: AnalyticsService,
         correlation_service: CorrelationService,
-        completion_client: Optional[Callable[[str, str, List[Dict[str, str]]], str]] = None,
+        completion_client: Callable[[str, str, list[dict[str, str]]], str] | None = None,
     ) -> None:
         self.settings = settings
         self.analytics_service = analytics_service
@@ -47,7 +52,7 @@ class FridayService:
         value = str(raw or "").strip()
         if not value:
             raise ValueError("base_url 不能为空")
-        if not (value.startswith("http://") or value.startswith("https://")):
+        if not value.startswith(("http://", "https://")):
             raise ValueError("base_url 必须以 http:// 或 https:// 开头")
         return value.rstrip("/")
 
@@ -63,11 +68,11 @@ class FridayService:
         return Path(self.settings.friday_model_env_file).expanduser()
 
     @staticmethod
-    def _read_env_file(path: Path) -> Dict[str, str]:
+    def _read_env_file(path: Path) -> dict[str, str]:
         if not path.exists():
             return {}
 
-        result: Dict[str, str] = {}
+        result: dict[str, str] = {}
         for line in path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if not stripped or stripped.startswith("#") or "=" not in stripped:
@@ -77,7 +82,7 @@ class FridayService:
         return result
 
     @staticmethod
-    def _write_env_file(path: Path, values: Dict[str, str]) -> None:
+    def _write_env_file(path: Path, values: dict[str, str]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         content = [
             "# Friday model config (saved by Settings UI)",
@@ -87,7 +92,7 @@ class FridayService:
         ]
         path.write_text("\n".join(content), encoding="utf-8")
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         file_values = self._read_env_file(self._config_file)
 
         active_base_url = str(self.settings.friday_model_base_url or "").strip()
@@ -113,7 +118,7 @@ class FridayService:
             "config_file": str(self._config_file),
         }
 
-    def update_config(self, base_url: str, model: str) -> Dict[str, Any]:
+    def update_config(self, base_url: str, model: str) -> dict[str, Any]:
         normalized_base_url = self._normalize_base_url(base_url)
         normalized_model = self._normalize_model(model)
 
@@ -136,10 +141,11 @@ class FridayService:
         return str(value)
 
     @staticmethod
-    def _build_sse(event: str, payload: Dict[str, Any]) -> str:
-        return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, default=FridayService._json_default)}\n\n"
+    def _build_sse(event: str, payload: dict[str, Any]) -> str:
+        body = json.dumps(payload, ensure_ascii=False, default=FridayService._json_default)
+        return f"event: {event}\ndata: {body}\n\n"
 
-    def get_report_config(self) -> Dict[str, Any]:
+    def get_report_config(self) -> dict[str, Any]:
         existing = self.report_config_collection.find_one({"_id": "default"}, {"_id": 0})
         if existing:
             return existing
@@ -154,9 +160,9 @@ class FridayService:
             "slow_threshold_s": DEFAULT_SLOW_THRESHOLD_S,
         }
 
-    def update_report_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def update_report_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         current = self.get_report_config()
-        updated = {**current, **payload, "updated_at": datetime.now(timezone.utc)}
+        updated = {**current, **payload, "updated_at": datetime.now(UTC)}
         self.report_config_collection.update_one(
             {"_id": "default"},
             {"$set": updated},
@@ -165,8 +171,8 @@ class FridayService:
         updated.pop("_id", None)
         return updated
 
-    def list_reports(self, report_type: str | None = None, limit: int = 20) -> Dict[str, Any]:
-        match: Dict[str, Any] = {}
+    def list_reports(self, report_type: str | None = None, limit: int = 20) -> dict[str, Any]:
+        match: dict[str, Any] = {}
         if report_type:
             match["report_type"] = report_type
         rows = list(
@@ -186,17 +192,19 @@ class FridayService:
                     "summary": 1,
                     "metrics": 1,
                 },
-            ).sort("created_at", -1).limit(max(1, min(limit, 100)))
+            )
+            .sort("created_at", -1)
+            .limit(max(1, min(limit, 100)))
         )
         return {"items": rows}
 
-    def get_report(self, report_id: str) -> Dict[str, Any]:
+    def get_report(self, report_id: str) -> dict[str, Any]:
         doc = self.report_collection.find_one({"report_id": report_id}, {"_id": 0})
         if not doc:
             raise KeyError(f"report_id={report_id} not found")
         return doc
 
-    def run_report(self, report_type: str = "weekly", lookback_days: int = 7) -> Dict[str, Any]:
+    def run_report(self, report_type: str = "weekly", lookback_days: int = 7) -> dict[str, Any]:
         return self._generate_report(report_type=report_type, lookback_days=lookback_days)
 
     def start_scheduler(self) -> None:
@@ -218,11 +226,11 @@ class FridayService:
         while not self._scheduler_stop.is_set():
             try:
                 self._run_due_reports()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001 - scheduler loop must survive
+                continue
             try:
                 await asyncio.wait_for(self._scheduler_stop.wait(), timeout=60)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     def _run_due_reports(self) -> None:
@@ -231,9 +239,8 @@ class FridayService:
             return
         tz = self._safe_zoneinfo(str(cfg.get("timezone") or "Asia/Shanghai"))
         now = datetime.now(tz)
-        weekly_due = (
-            now.weekday() == int(cfg.get("weekly_day", 0))
-            and now.hour == int(cfg.get("weekly_hour", 9))
+        weekly_due = now.weekday() == int(cfg.get("weekly_day", 0)) and now.hour == int(
+            cfg.get("weekly_hour", 9)
         )
         monthly_due = (
             now.day == int(cfg.get("monthly_day", 1))
@@ -245,11 +252,15 @@ class FridayService:
         if monthly_due:
             self._generate_report_once_per_day("monthly", 31, now)
 
-    def _generate_report_once_per_day(self, report_type: str, lookback_days: int, now: datetime) -> None:
+    def _generate_report_once_per_day(
+        self, report_type: str, lookback_days: int, now: datetime
+    ) -> None:
         key = f"{report_type}-{now.date().isoformat()}"
         if self.report_collection.find_one({"schedule_key": key}, {"_id": 1}):
             return
-        self._generate_report(report_type=report_type, lookback_days=lookback_days, schedule_key=key)
+        self._generate_report(
+            report_type=report_type, lookback_days=lookback_days, schedule_key=key
+        )
 
     def _generate_report(
         self,
@@ -257,13 +268,13 @@ class FridayService:
         report_type: str,
         lookback_days: int,
         schedule_key: str | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         cfg = self.get_report_config()
         tz = self._safe_zoneinfo(str(cfg.get("timezone") or "Asia/Shanghai"))
         period_end = datetime.now(tz)
         period_start = period_end - timedelta(days=lookback_days)
-        start_utc = period_start.astimezone(timezone.utc)
-        end_utc = period_end.astimezone(timezone.utc)
+        start_utc = period_start.astimezone(UTC)
+        end_utc = period_end.astimezone(UTC)
         slow_threshold_s = float(cfg.get("slow_threshold_s") or DEFAULT_SLOW_THRESHOLD_S)
         evidence = self._collect_report_evidence(start_utc, end_utc, slow_threshold_s)
         title = (
@@ -272,7 +283,7 @@ class FridayService:
             else f"MAP 调用质量月报（过去 {lookback_days} 天）"
         )
         markdown = self._build_report_markdown(title, evidence, slow_threshold_s)
-        generated_at = datetime.now(timezone.utc)
+        generated_at = datetime.now(UTC)
         report = {
             "report_id": f"friday-{uuid4().hex[:12]}",
             "schedule_key": schedule_key,
@@ -298,7 +309,7 @@ class FridayService:
         start_utc: datetime,
         end_utc: datetime,
         slow_threshold_s: float,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         request_match = {"start_ts": {"$gte": start_utc, "$lte": end_utc}}
         request_docs = list(
             self.analytics_service.request_collection.find(
@@ -380,9 +391,7 @@ class FridayService:
         slow_llm = [
             doc for doc in llm_docs if float(doc.get("duration_s") or 0) >= slow_threshold_s
         ]
-        llm_failures = [
-            doc for doc in llm_docs if str(doc.get("status")).lower() != "success"
-        ]
+        llm_failures = [doc for doc in llm_docs if str(doc.get("status")).lower() != "success"]
 
         error_clusters = self._cluster_errors(
             [doc.get("error") for doc in failed_requests]
@@ -409,17 +418,23 @@ class FridayService:
             "tool_failures": tool_failures[:30],
             "data_failures": data_failures[:30],
             "llm_failures": llm_failures[:30],
-            "slow_requests": sorted(slow_requests, key=lambda x: float(x.get("duration_s") or 0), reverse=True)[:30],
-            "slow_tools": sorted(slow_tools, key=lambda x: float(x.get("duration_s") or 0), reverse=True)[:30],
-            "slow_llm": sorted(slow_llm, key=lambda x: float(x.get("duration_s") or 0), reverse=True)[:30],
+            "slow_requests": sorted(
+                slow_requests, key=lambda x: float(x.get("duration_s") or 0), reverse=True
+            )[:30],
+            "slow_tools": sorted(
+                slow_tools, key=lambda x: float(x.get("duration_s") or 0), reverse=True
+            )[:30],
+            "slow_llm": sorted(
+                slow_llm, key=lambda x: float(x.get("duration_s") or 0), reverse=True
+            )[:30],
             "failed_requests": failed_requests,
             "error_clusters": error_clusters,
             "suggested_actions": self._suggest_report_actions(summary, error_clusters),
         }
 
     @staticmethod
-    def _cluster_errors(errors: List[Any]) -> List[Dict[str, Any]]:
-        clusters: Dict[str, Dict[str, Any]] = {}
+    def _cluster_errors(errors: list[Any]) -> list[dict[str, Any]]:
+        clusters: dict[str, dict[str, Any]] = {}
         for error in errors:
             text = str(error or "").strip()
             if not text:
@@ -432,20 +447,26 @@ class FridayService:
         return rows[:20]
 
     @staticmethod
-    def _suggest_report_actions(summary: Dict[str, int], clusters: List[Dict[str, Any]]) -> List[str]:
-        actions: List[str] = []
+    def _suggest_report_actions(
+        summary: dict[str, int], clusters: list[dict[str, Any]]
+    ) -> list[str]:
+        actions: list[str] = []
         if summary.get("tool_failure_count", 0) > 0:
             actions.append("优先查看失败次数最高的工具，补充超时、鉴权和入参校验日志。")
         if summary.get("data_failure_count", 0) > 0:
             actions.append("对知识库/问表/问数类数据源增加可用性探针和空结果区分。")
         if summary.get("slow_llm_count", 0) > 0:
-            actions.append("按 phase 检查慢 LLM 调用，优先优化 Master 路由和 sub-agent 工具选择提示词。")
+            actions.append(
+                "按 phase 检查慢 LLM 调用，优先优化 Master 路由和 sub-agent 工具选择提示词。"
+            )
         if clusters:
             actions.append(f"聚类最高错误为：{clusters[0]['reason']}，建议作为本周首个排障主题。")
         return actions or ["本周期未发现显著失败或慢调用，可继续观察趋势。"]
 
     @staticmethod
-    def _build_report_markdown(title: str, evidence: Dict[str, Any], slow_threshold_s: float) -> str:
+    def _build_report_markdown(
+        title: str, evidence: dict[str, Any], slow_threshold_s: float
+    ) -> str:
         summary = evidence["summary"]
         lines = [
             f"# {title}",
@@ -453,8 +474,11 @@ class FridayService:
             "## 概览",
             f"- 请求总数：{summary['request_count']}",
             f"- 失败请求：{summary['failed_request_count']}",
-            f"- 工具失败：{summary['tool_failure_count']}，数据获取失败：{summary['data_failure_count']}",
-            f"- 慢调用阈值：{slow_threshold_s}s；慢请求/工具/LLM：{summary['slow_request_count']}/{summary['slow_tool_count']}/{summary['slow_llm_count']}",
+            f"- 工具失败：{summary['tool_failure_count']}，"
+            f"数据获取失败：{summary['data_failure_count']}",
+            f"- 慢调用阈值：{slow_threshold_s}s；慢请求/工具/LLM："
+            f"{summary['slow_request_count']}/{summary['slow_tool_count']}/"
+            f"{summary['slow_llm_count']}",
             "",
             "## 错误聚类",
         ]
@@ -468,13 +492,13 @@ class FridayService:
         return "\n".join(lines)
 
     @staticmethod
-    def _split_text_chunks(text: str, chunk_size: int = 18) -> List[str]:
+    def _split_text_chunks(text: str, chunk_size: int = 18) -> list[str]:
         raw = str(text or "")
         if not raw:
             return []
-        return [raw[i:i + chunk_size] for i in range(0, len(raw), chunk_size)]
+        return [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
 
-    def _resolve_model_config(self) -> Dict[str, str]:
+    def _resolve_model_config(self) -> dict[str, str]:
         cfg = self.get_config()
         base_url = str(cfg.get("active_base_url") or "").strip()
         model = str(cfg.get("active_model") or "").strip()
@@ -487,7 +511,18 @@ class FridayService:
     @staticmethod
     def _is_error_intent(message: str) -> bool:
         lower = message.lower()
-        keywords = ["error", "exception", "failed", "traceback", "timeout", "报错", "失败", "异常", "告警", "warning"]
+        keywords = [
+            "error",
+            "exception",
+            "failed",
+            "traceback",
+            "timeout",
+            "报错",
+            "失败",
+            "异常",
+            "告警",
+            "warning",
+        ]
         return any(item in lower for item in keywords)
 
     @staticmethod
@@ -508,7 +543,7 @@ class FridayService:
         return "mixed"
 
     @staticmethod
-    def _extract_request_id(message: str, context_overrides: Optional[Dict[str, Any]]) -> Optional[str]:
+    def _extract_request_id(message: str, context_overrides: dict[str, Any] | None) -> str | None:
         if context_overrides:
             for key in ("request_id", "rid"):
                 value = str(context_overrides.get(key) or "").strip()
@@ -538,11 +573,13 @@ class FridayService:
     def _safe_zoneinfo(self, tz_name: str) -> timezone:
         try:
             return ZoneInfo(tz_name)
-        except Exception:
-            return timezone.utc
+        except Exception:  # noqa: BLE001 - boundary catch
+            return UTC
 
-    def _collect_slow_evidence(self, start_utc: datetime, end_utc: datetime) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
+    def _collect_slow_evidence(
+        self, start_utc: datetime, end_utc: datetime
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
 
         for container in sorted(MAIN_FLOW_CONTAINERS):
             try:
@@ -553,7 +590,7 @@ class FridayService:
                     sort_by="duration_s",
                     sort_order="desc",
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - boundary catch
                 continue
             for item in payload.get("items", []):
                 duration = float(item.get("duration_s") or 0.0)
@@ -573,17 +610,19 @@ class FridayService:
         rows.sort(key=lambda item: float(item.get("duration_s") or 0.0), reverse=True)
         return rows[:10]
 
-    def _collect_overview_evidence(self, start_utc: datetime, end_utc: datetime) -> List[Dict[str, Any]]:
+    def _collect_overview_evidence(
+        self, start_utc: datetime, end_utc: datetime
+    ) -> list[dict[str, Any]]:
         if not hasattr(self.analytics_service, "get_overview"):
             return []
 
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for container in sorted(MAIN_FLOW_CONTAINERS):
             try:
                 payload = self.analytics_service.get_overview(
                     self._make_filter(start_utc, end_utc, container)
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - boundary catch
                 continue
 
             rows.append(
@@ -600,8 +639,8 @@ class FridayService:
 
         return rows
 
-    def _collect_error_evidence(self, start_local: str, end_local: str) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
+    def _collect_error_evidence(self, start_local: str, end_local: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
 
         for container in sorted(MAIN_FLOW_CONTAINERS):
             try:
@@ -619,7 +658,7 @@ class FridayService:
                     page_size=10,
                     buffer_seconds=120,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - boundary catch
                 continue
             for item in payload.get("clusters_page", {}).get("items", []):
                 rows.append(
@@ -639,9 +678,9 @@ class FridayService:
     def _collect_request_trace_evidence(
         self,
         request_id: str,
-        preferred_container: Optional[str],
-    ) -> Optional[Dict[str, Any]]:
-        candidates: List[str] = []
+        preferred_container: str | None,
+    ) -> dict[str, Any] | None:
+        candidates: list[str] = []
         if preferred_container:
             try:
                 normalized = assert_container_supported(preferred_container)
@@ -652,7 +691,7 @@ class FridayService:
             if fallback not in candidates:
                 candidates.append(fallback)
 
-        selected_payload: Optional[Dict[str, Any]] = None
+        selected_payload: dict[str, Any] | None = None
         for container in candidates:
             try:
                 payload = self.correlation_service.get_rid_correlation(
@@ -663,7 +702,7 @@ class FridayService:
                     page=1,
                     page_size=10,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - boundary catch
                 continue
             selected_payload = payload
             total_logs = int(payload.get("logs_page", {}).get("total") or 0)
@@ -679,7 +718,9 @@ class FridayService:
             "container": selected_payload.get("container"),
             "root_cause_hint": selected_payload.get("root_cause_hint"),
             "error_hits": int(selected_payload.get("log_summary", {}).get("error_hits") or 0),
-            "rid_match_count": int(selected_payload.get("correlation_checks", {}).get("rid_match_count") or 0),
+            "rid_match_count": int(
+                selected_payload.get("correlation_checks", {}).get("rid_match_count") or 0
+            ),
             "sample_logs": [item.get("line") for item in logs[:3] if item.get("line")],
             "tool_calls_brief": [
                 {
@@ -693,7 +734,9 @@ class FridayService:
             ],
         }
 
-    def _collect_tool_call_evidence(self, trace_row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _collect_tool_call_evidence(
+        self, trace_row: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
         if not trace_row:
             return None
         if not hasattr(self.correlation_service, "get_tool_call_correlation"):
@@ -734,7 +777,7 @@ class FridayService:
                 page_size=10,
                 window_sec=120,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - boundary catch
             return {"request_id": request_id, "tool": tool, "error": str(exc)}
 
         return {
@@ -760,11 +803,11 @@ class FridayService:
 
     def _build_actions(
         self,
-        slow_rows: List[Dict[str, Any]],
-        error_rows: List[Dict[str, Any]],
-        trace_row: Optional[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        actions: List[Dict[str, Any]] = []
+        slow_rows: list[dict[str, Any]],
+        error_rows: list[dict[str, Any]],
+        trace_row: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
 
         if trace_row and trace_row.get("request_id"):
             actions.append(
@@ -801,7 +844,7 @@ class FridayService:
                 }
             )
 
-        unique: Dict[str, Dict[str, Any]] = {}
+        unique: dict[str, dict[str, Any]] = {}
         for action in actions:
             key = f"{action.get('type')}::{action.get('request_id')}::{action.get('container')}"
             unique[key] = action
@@ -811,13 +854,18 @@ class FridayService:
         self,
         message: str,
         intent: str,
-        evidence_payload: Dict[str, Any],
-        history: List[Dict[str, Any]],
-    ) -> List[Dict[str, str]]:
+        evidence_payload: dict[str, Any],
+        history: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
         compact_evidence = {
             "scope": {
-                "lookback_days": int(evidence_payload.get("scope", {}).get("lookback_days") or DEFAULT_LOOKBACK_DAYS),
-                "slow_threshold_s": float(evidence_payload.get("scope", {}).get("slow_threshold_s") or DEFAULT_SLOW_THRESHOLD_S),
+                "lookback_days": int(
+                    evidence_payload.get("scope", {}).get("lookback_days") or DEFAULT_LOOKBACK_DAYS
+                ),
+                "slow_threshold_s": float(
+                    evidence_payload.get("scope", {}).get("slow_threshold_s")
+                    or DEFAULT_SLOW_THRESHOLD_S
+                ),
             },
             "intent": str(evidence_payload.get("intent") or intent),
             "request_id": evidence_payload.get("request_id"),
@@ -853,7 +901,7 @@ class FridayService:
             "tool_call_trace": evidence_payload.get("tool_call_trace") or None,
         }
 
-        messages: List[Dict[str, str]] = [
+        messages: list[dict[str, str]] = [
             {
                 "role": "system",
                 "content": (
@@ -874,13 +922,16 @@ class FridayService:
             if content:
                 messages.append({"role": role, "content": content})
 
+        evidence_json = json.dumps(
+            compact_evidence, ensure_ascii=False, default=self._json_default
+        )
         messages.append(
             {
                 "role": "user",
                 "content": (
                     f"用户问题：{message}\n"
                     f"诊断意图：{intent}\n"
-                    f"诊断证据(JSON)：{json.dumps(compact_evidence, ensure_ascii=False, default=self._json_default)}\n"
+                    f"诊断证据(JSON)：{evidence_json}\n"
                     "请严格根据证据给出分析，不要编造未出现的日志。"
                 ),
             }
@@ -895,7 +946,9 @@ class FridayService:
             return f"{raw}/chat/completions"
         return f"{raw}/v1/chat/completions"
 
-    def _stream_openai_compatible(self, base_url: str, model: str, messages: List[Dict[str, str]]) -> Iterator[str]:
+    def _stream_openai_compatible(
+        self, base_url: str, model: str, messages: list[dict[str, str]]
+    ) -> Iterator[str]:
         endpoint = self._resolve_chat_endpoint(base_url)
         payload = {
             "model": model,
@@ -916,7 +969,9 @@ class FridayService:
         )
 
         try:
-            with urlopen(request, timeout=max(30, int(self.settings.friday_model_timeout_s))) as response:
+            with urlopen(
+                request, timeout=max(30, int(self.settings.friday_model_timeout_s))
+            ) as response:
                 for raw in response:
                     line = raw.decode("utf-8", errors="ignore").strip()
                     if not line or not line.startswith("data:"):
@@ -963,7 +1018,9 @@ class FridayService:
         except TimeoutError as exc:
             raise RuntimeError("模型流式调用超时") from exc
 
-    def _call_openai_compatible(self, base_url: str, model: str, messages: List[Dict[str, str]]) -> str:
+    def _call_openai_compatible(
+        self, base_url: str, model: str, messages: list[dict[str, str]]
+    ) -> str:
         endpoint = self._resolve_chat_endpoint(base_url)
         payload = {
             "model": model,
@@ -980,7 +1037,9 @@ class FridayService:
         )
 
         try:
-            with urlopen(request, timeout=max(30, int(self.settings.friday_model_timeout_s))) as response:
+            with urlopen(
+                request, timeout=max(30, int(self.settings.friday_model_timeout_s))
+            ) as response:
                 raw_body = response.read().decode("utf-8")
         except HTTPError as exc:
             detail = exc.read().decode("utf-8") if exc.fp else str(exc)
@@ -1011,7 +1070,7 @@ class FridayService:
             raise RuntimeError("模型返回文本为空")
         return text
 
-    async def stream_chat(self, payload: Dict[str, Any]) -> AsyncIterator[str]:
+    async def stream_chat(self, payload: dict[str, Any]) -> AsyncIterator[str]:
         conversation_id = str(payload.get("conversation_id") or uuid4().hex)
         message = str(payload.get("message") or "").strip()
         if not message:
@@ -1020,9 +1079,13 @@ class FridayService:
             return
 
         history = payload.get("history") if isinstance(payload.get("history"), list) else []
-        context_overrides = payload.get("context_overrides") if isinstance(payload.get("context_overrides"), dict) else {}
+        context_overrides = (
+            payload.get("context_overrides")
+            if isinstance(payload.get("context_overrides"), dict)
+            else {}
+        )
 
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         start_utc = now_utc - timedelta(days=DEFAULT_LOOKBACK_DAYS)
         tz_obj = self._safe_zoneinfo(self.settings.default_tz)
         start_local = start_utc.astimezone(tz_obj).isoformat()
@@ -1040,7 +1103,7 @@ class FridayService:
             )
             await asyncio.sleep(0)
 
-            warnings: List[str] = []
+            warnings: list[str] = []
 
             stage = "collect_slow"
             yield self._build_sse(
@@ -1053,7 +1116,7 @@ class FridayService:
                     asyncio.to_thread(self._collect_slow_evidence, start_utc, now_utc),
                     timeout=DEFAULT_STAGE_TIMEOUT_S,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - boundary catch
                 slow_rows = []
                 warnings.append(f"{stage}: {exc}")
                 yield self._build_sse(
@@ -1073,7 +1136,7 @@ class FridayService:
                     asyncio.to_thread(self._collect_overview_evidence, start_utc, now_utc),
                     timeout=DEFAULT_STAGE_TIMEOUT_S,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - boundary catch
                 overview_rows = []
                 warnings.append(f"{stage}: {exc}")
                 yield self._build_sse(
@@ -1093,7 +1156,7 @@ class FridayService:
                     asyncio.to_thread(self._collect_error_evidence, start_local, end_local),
                     timeout=DEFAULT_STAGE_TIMEOUT_S,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - boundary catch
                 error_rows = []
                 warnings.append(f"{stage}: {exc}")
                 yield self._build_sse(
@@ -1110,11 +1173,14 @@ class FridayService:
                         asyncio.to_thread(
                             self._collect_request_trace_evidence,
                             request_id=request_id,
-                            preferred_container=str(context_overrides.get("container") or "").strip() or None,
+                            preferred_container=str(
+                                context_overrides.get("container") or ""
+                            ).strip()
+                            or None,
                         ),
                         timeout=DEFAULT_STAGE_TIMEOUT_S,
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - boundary catch
                     warnings.append(f"{stage}: {exc}")
                     yield self._build_sse(
                         "progress",
@@ -1132,7 +1198,7 @@ class FridayService:
                     asyncio.to_thread(self._collect_tool_call_evidence, trace_row),
                     timeout=DEFAULT_STAGE_TIMEOUT_S,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - boundary catch
                 tool_call_row = None
                 warnings.append(f"{stage}: {exc}")
                 yield self._build_sse(
@@ -1160,7 +1226,9 @@ class FridayService:
             stage = "emit_evidence"
             yield self._build_sse("evidence", evidence_payload)
 
-            actions = self._build_actions(slow_rows=slow_rows, error_rows=error_rows, trace_row=trace_row)
+            actions = self._build_actions(
+                slow_rows=slow_rows, error_rows=error_rows, trace_row=trace_row
+            )
 
             stage = "resolve_model_config"
             model_cfg = self._resolve_model_config()
@@ -1179,7 +1247,7 @@ class FridayService:
             )
             await asyncio.sleep(0)
             streamed_chunks = 0
-            stream_error: Optional[Exception] = None
+            stream_error: Exception | None = None
             try:
                 for piece in self._stream_openai_compatible(
                     model_cfg["base_url"],
@@ -1192,7 +1260,7 @@ class FridayService:
                     stage = "emit_tokens"
                     yield self._build_sse("token", {"text": piece})
                     await asyncio.sleep(0)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - boundary catch
                 stream_error = exc
 
             if streamed_chunks == 0:
@@ -1203,9 +1271,9 @@ class FridayService:
                         model_cfg["model"],
                         model_messages,
                     )
-                except Exception:
+                except Exception:  # boundary catch, re-raise original
                     if stream_error is not None:
-                        raise stream_error
+                        raise stream_error from None
                     raise
 
                 stage = "emit_tokens"
@@ -1226,6 +1294,6 @@ class FridayService:
                     "request_id": request_id,
                 },
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - boundary catch
             yield self._build_sse("error", {"message": f"{stage}: {exc}"})
             yield self._build_sse("done", {"conversation_id": conversation_id})

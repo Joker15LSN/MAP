@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import logging
-from typing import Optional
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,10 +60,10 @@ class DisabledFridayService:
 
 
 def create_app(
-    settings_override: Optional[Settings] = None,
-    analytics_service_override: Optional[AnalyticsService] = None,
-    correlation_service_override: Optional[CorrelationService] = None,
-    friday_service_override: Optional[FridayService] = None,
+    settings_override: Settings | None = None,
+    analytics_service_override: AnalyticsService | None = None,
+    correlation_service_override: CorrelationService | None = None,
+    friday_service_override: FridayService | None = None,
 ) -> FastAPI:
     settings = settings_override or Settings.from_env()
     collections = MongoCollections()

@@ -1,6 +1,8 @@
 
 import json
-from httpx import request, HTTPError
+
+from httpx import HTTPError, request
+
 
 def main():
     data = {
@@ -56,4 +58,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+

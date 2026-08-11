@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 MAIN_FLOW_CONTAINERS = {
     "map_core-dev",
     "map_core-test",
@@ -14,7 +12,9 @@ MAIN_FLOW_CONTAINER_ENV_MAP = {
     "map_core-preprod": "preprod",
 }
 
-ENV_MAIN_FLOW_CONTAINER_MAP = {env: container for container, env in MAIN_FLOW_CONTAINER_ENV_MAP.items()}
+ENV_MAIN_FLOW_CONTAINER_MAP = {
+    env: container for container, env in MAIN_FLOW_CONTAINER_ENV_MAP.items()
+}
 
 CBB_CONTAINER_TOOL_MAP = {
     "cbb-text-to-metrics-dev": "wenshu_agent",
@@ -39,7 +39,7 @@ SPECIAL_CONTAINER_ENV_MAP = {
 }
 
 
-def _infer_env_from_container_name(container_name: str) -> Optional[str]:
+def _infer_env_from_container_name(container_name: str) -> str | None:
     special_env = SPECIAL_CONTAINER_ENV_MAP.get(container_name)
     if special_env:
         return special_env
@@ -54,7 +54,7 @@ def _infer_env_from_container_name(container_name: str) -> Optional[str]:
     return None
 
 
-TOOL_TO_CBB_CONTAINER: Dict[str, Dict[str, str]] = {}
+TOOL_TO_CBB_CONTAINER: dict[str, dict[str, str]] = {}
 for container_name, tool_name in CBB_CONTAINER_TOOL_MAP.items():
     env = _infer_env_from_container_name(container_name)
     if env is None:
@@ -75,12 +75,12 @@ def is_cbb_container(container: str) -> bool:
     return normalized in CBB_CONTAINER_TOOL_MAP
 
 
-def mapped_tool_for_container(container: str) -> Optional[str]:
+def mapped_tool_for_container(container: str) -> str | None:
     normalized = str(container or "").strip()
     return CBB_CONTAINER_TOOL_MAP.get(normalized)
 
 
-def infer_cbb_container_by_tool(tool: Optional[str], base_container: str) -> Optional[str]:
+def infer_cbb_container_by_tool(tool: str | None, base_container: str) -> str | None:
     normalized_tool = str(tool or "").strip()
     if not normalized_tool:
         return None
@@ -94,7 +94,7 @@ def infer_cbb_container_by_tool(tool: Optional[str], base_container: str) -> Opt
     return pair.get(env) or pair.get("dev") or pair.get("test") or pair.get("preprod")
 
 
-def enforce_container_tool(container: str, tool: Optional[str]) -> Optional[str]:
+def enforce_container_tool(container: str, tool: str | None) -> str | None:
     normalized_container = assert_container_supported(container)
     normalized_tool = str(tool or "").strip() or None
 
@@ -104,7 +104,8 @@ def enforce_container_tool(container: str, tool: Optional[str]) -> Optional[str]
 
     if normalized_tool and normalized_tool != mapped_tool:
         raise ValueError(
-            f"container={normalized_container} enforces tool={mapped_tool}, but received tool={normalized_tool}"
+            f"container={normalized_container} enforces tool={mapped_tool}, "
+            f"but received tool={normalized_tool}"
         )
     return mapped_tool
 

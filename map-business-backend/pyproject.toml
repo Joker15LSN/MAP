@@ -5,17 +5,41 @@ description = "MAP business management backend (BFF), isolated from map_core alg
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "alembic>=1.13.0",
+  "asyncpg>=0.29.0",
   "fastapi>=0.115.0",
   "httpx>=0.28.0",
+  "opentelemetry-api>=1.44.0,<2",
+  "opentelemetry-exporter-otlp-proto-grpc>=1.44.0,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.44.0,<2",
+  "opentelemetry-instrumentation-fastapi>=0.65b0,<1",
+  "opentelemetry-instrumentation-httpx>=0.65b0,<1",
+  "opentelemetry-sdk>=1.44.0,<2",
   "pydantic>=2.9.0",
+  "sqlalchemy[asyncio]>=2.0.30",
   "uvicorn[standard]>=0.30.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
+# R2-P2-02: dependency group (not optional extra) so that a clean
+# `uv sync --frozen` + `uv run ruff/pytest` works without --extra flags.
 dev = [
   "pytest>=8.3.0",
+  "pytest-asyncio>=0.24.0",
+  "ruff>=0.15.12",
 ]
 
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# B008: FastAPI idiom (Depends() in argument defaults); RUF001/RUF003:
+# Chinese product copy legitimately uses fullwidth punctuation.
+ignore = ["B008", "RUF001", "RUF003", "UP042"]  # UP042: str+Enum 既有设计
+select = ["E", "F", "I", "B", "SIM", "UP", "RUF", "PIE", "BLE"]

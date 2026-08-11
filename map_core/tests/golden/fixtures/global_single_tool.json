@@ -1,0 +1,116 @@
+{
+  "id": "global_single_tool",
+  "mode": "global",
+  "engine": "legacy",
+  "description": "单工具:General_Assistant 调用一次 web_search_agent 后给出最终答案。",
+  "request": {
+    "query": "帮我查一下最近的新闻热点",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy",
+      "scene_agent_configs": {
+        "General_Assistant": {
+          "prompt": "你是通用问答助手。",
+          "tool_names": [
+            "web_search_agent"
+          ],
+          "max_steps": 3,
+          "force_tool_call": true
+        }
+      }
+    }
+  },
+  "runtime_config_hash": "sha256:20fe10cfa054d445a4958e2b49087c19",
+  "llm_script": [
+    {
+      "kind": "asimple_chat",
+      "schema_name": "direct_sub_agent_route",
+      "content": "{\"agent_routes\":[{\"agent_code\":\"General_Assistant\",\"confidence\":0.95,\"reason\":\"信息检索\"}]}",
+      "usage": {
+        "prompt_tokens": 25,
+        "completion_tokens": 10
+      }
+    },
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_web_1",
+          "name": "web_search_agent",
+          "arguments": "{\"query\": \"新闻热点\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "最新热点:AI 大模型加速落地企业应用。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "asimple_chat_stream",
+      "chunks": [
+        "综合网络检索结果,",
+        "最新热点聚焦 AI 大模型落地。"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "web_search_agent",
+      "returns": [
+        {
+          "content": "AI 大模型企业应用新闻 3 条。",
+          "data_source": {
+            "source": "fake_web"
+          }
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "content_delta",
+      "meta",
+      "done"
+    ],
+    "meta_phases": [
+      "scene_selected",
+      "agent_action",
+      "agent_result",
+      "post_dispatch"
+    ],
+    "scene_selected_agents": [
+      "General_Assistant"
+    ],
+    "agent_result_agents": [
+      "General_Assistant"
+    ],
+    "tool_io": [
+      {
+        "tool": "web_search_agent",
+        "action": "tool_call",
+        "count": 1
+      }
+    ],
+    "final_content": {
+      "contains": [
+        "AI 大模型"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "request.end"
+      ],
+      "request_end_success": true
+    },
+    "engine_parity": true
+  }
+}

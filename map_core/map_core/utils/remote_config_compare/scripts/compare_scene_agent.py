@@ -22,8 +22,8 @@ import json
 from pathlib import Path
 
 from map_core.utils.remote_config_compare.config_compare import (
-    compare_configs,
     ConfigComparator,
+    compare_configs,
 )
 from map_core.utils.remote_config_compare.highlight import auto_highlight
 

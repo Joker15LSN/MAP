@@ -1,0 +1,191 @@
+{
+  "id": "flow_dynamic_skill",
+  "mode": "flow",
+  "engine": "legacy",
+  "description": "动态 Skill:通过 snapshot.flow_skill_descriptors 注入自定义 skill,节点授权并实际调用;动态 MCP 工具在 flow 下不挂载(契约固定)。",
+  "request": {
+    "query": "跨业务域串行分析一下经营数据",
+    "staff_code": "golden_tester",
+    "chart_plotting_enabled": false,
+    "content_review_enabled": false,
+    "dispatch_config": {
+      "engine": "legacy",
+      "mcp_servers": [
+        {
+          "server_id": "golden-mcp",
+          "transport": "stdio",
+          "command": "echo",
+          "tools": [
+            {
+              "name": "ping",
+              "enabled": true,
+              "input_schema": {
+                "type": "object",
+                "properties": {}
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "flow_config": {
+      "scenario_policy": {
+        "enabled": true,
+        "mode": "auto",
+        "allow_graph_repair": true,
+        "max_graph_cycles": 2
+      },
+      "skill_policy": {
+        "enabled": true,
+        "mount_mode": "agent_scoped",
+        "runtime_auth_check": true
+      },
+      "max_node_budget": 12,
+      "fallback_to_global": true
+    }
+  },
+  "runtime_config_hash": "sha256:36fde90e634fb41f4fe659818bbd7aa3",
+  "flow_snapshot": {
+    "scenario_packs": [],
+    "flow_skill_descriptors": [
+      {
+        "skill_id": "market_sentiment.v1",
+        "name": "market_sentiment",
+        "display_name": "市场情绪分析",
+        "version": "1.0.0",
+        "description": "分析市场情绪与交叉验证",
+        "tool_name": "skill__market_sentiment",
+        "executor_type": "tool",
+        "content": "",
+        "metadata": {},
+        "mount_agents": [
+          "Operations"
+        ],
+        "required_scopes": [],
+        "allowed_users": [
+          "*"
+        ],
+        "allowed_tenants": [
+          "*"
+        ],
+        "allowed_scenarios": [
+          "cross_domain_serial_analysis"
+        ],
+        "allowed_actions": [
+          "execute"
+        ],
+        "audit_tags": [
+          "custom"
+        ],
+        "status": "active"
+      }
+    ]
+  },
+  "llm_script": [
+    {
+      "kind": "ask_tool",
+      "tool_calls": [
+        {
+          "id": "call_op_skill",
+          "name": "skill__market_sentiment",
+          "arguments": "{\"query\": \"市场情绪\"}"
+        }
+      ],
+      "content": ""
+    },
+    {
+      "kind": "ask_tool",
+      "content": "domain_fact cross_validation 已完成交叉验证。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "ask_tool",
+      "content": "检索结论与 domain_fact cross_validation 佐证一致。",
+      "finish_reason": "stop"
+    },
+    {
+      "kind": "asimple_chat_stream",
+      "chunks": [
+        "跨域串行分析完成,动态技能已生效。"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "skill__market_sentiment",
+      "returns": [
+        {
+          "content": "market sentiment: positive; cross_validation ok",
+          "data_source": {
+            "source": "fake_skill"
+          }
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "event_types": [
+      "start",
+      "meta",
+      "meta",
+      "meta",
+      "meta",
+      "content_delta",
+      "done"
+    ],
+    "meta_phases": [
+      "flow_mode_initialized",
+      "flow_policy_hit",
+      "scenario_resolved",
+      "flow_graph_built",
+      "flow_node_started",
+      "skill_authorization",
+      "flow_node_result"
+    ],
+    "flow": {
+      "scenarios": [
+        "cross_domain_serial_analysis"
+      ],
+      "node_verdicts": [
+        {
+          "node_contains": "Operations",
+          "verdict": "pass"
+        },
+        {
+          "node_contains": "General_Assistant",
+          "verdict": "pass"
+        }
+      ],
+      "repair_count": 0,
+      "graph_incomplete": null,
+      "skill_authorization": [
+        {
+          "node_contains": "Operations",
+          "authorized_tools_contains": [
+            "skill__market_sentiment"
+          ]
+        }
+      ],
+      "executor_names_contains": [
+        "skill__market_sentiment"
+      ],
+      "capabilities_not_contains": [
+        "mcp__"
+      ]
+    },
+    "final_content": {
+      "contains": [
+        "动态技能已生效"
+      ]
+    },
+    "mongo_events": {
+      "contains_event_types": [
+        "request.start",
+        "flow.skill_authorization",
+        "request.end"
+      ],
+      "request_end_success": true
+    },
+    "engine_parity": false
+  }
+}

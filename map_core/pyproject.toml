@@ -3,18 +3,42 @@ name = "map-core"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
+    "agentscope==2.0.4",
     "asyncpg>=0.31.0",
     "fastapi[all]>=0.128.0",
+    "json-repair>=0.30.0",
+    "jsonschema>=4.26.0,<5",
     "loguru>=0.7.3",
     "motor>=3.7.1",
     "openai>=2.15.0",
+    "opentelemetry-api>=1.44.0,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.44.0,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0,<2",
+    "opentelemetry-instrumentation-logging>=0.65b0,<1",
+    "opentelemetry-sdk>=1.44.0,<2",
     "openpyxl>=3.1.5",
     "python-docx>=1.1.2",
     "pymilvus>=2.6.6",
     "tenacity>=9.1.2",
     "psutil>=7.2.2",
+]
+
+# R2-P2-03: minimum versions mandated by the supply-chain audit
+# (scripts/dependency_audit.sh). Every entry closes pip-audit/PYSEC
+# findings on transitive dependencies without touching direct deps.
+[tool.uv]
+constraint-dependencies = [
+    "click>=8.3.3",            # PYSEC-2026-2132
+    "lxml>=6.1.0",             # PYSEC-2026-87
+    "orjson>=3.11.6",          # PYSEC-2026-107
+    "pydantic-settings>=2.14.2",  # GHSA-4xgf-cpjx-pc3j
+    "pygments>=2.20.0",        # PYSEC-2026-2987
+    "python-dotenv>=1.2.2",    # PYSEC-2026-2270
+    "python-multipart>=0.0.31",  # PYSEC-2026-1852/3036/3037/3038/3039/3040
+    "setuptools>=83.0.0",      # PYSEC-2026-3447
+    "urllib3>=2.7.0",          # PYSEC-2026-141/142
 ]
 
 [[tool.uv.index]]
@@ -33,6 +57,12 @@ ignore = [
     "F841",  # unused-variable, only for dev
     "F401",  # unused-import, only for dev
 ]
+
+[tool.pytest.ini_options]
+# Only collect the real test suite: legacy manual scripts under
+# map_core/service/agent/{kb_tools,zhiwen_agent}/scripts share duplicate
+# basenames (e.g. two ``single_agent_test.py``) and break collection.
+testpaths = ["tests"]
 
 [dependency-groups]
 dev = [

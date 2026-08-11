@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, Awaitable, Callable, Literal, Protocol, cast, runtime_checkable
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -38,15 +39,54 @@ class AgentExecutionSpec(BaseModel):
     llm_config: LLMConfig | None = None
     scene_post_summary: ScenePostSummaryConfig | None = None
     agent_name: str | None = None
+    engine: Literal["legacy", "agentscope"] | None = None
+
+
+ENGINE_ENV_VAR = "MAP_AGENT_ENGINE"
+VALID_ENGINES = ("legacy", "agentscope")
+
+
+@runtime_checkable
+class RuntimeAgent(Protocol):
+    """Structural contract implemented by both engine agent types.
+
+    ``ToolCallAgent`` (legacy) and ``AgentScopeSceneAgent`` both satisfy
+    this protocol; AgentRuntime and its hooks must depend on it instead of
+    a concrete engine class so static checks stay meaningful.
+    """
+
+    name: str
+    agent_id: str
+    agent_display_name: str
+    token_usage: dict[str, int]
+    timeout: float
+
+    def set_action_handler(self, handler: Any) -> None: ...
+
+    def set_execution_context(self, state_store: Any, state_id: str) -> None: ...
+
+    async def execute(self, request: AgentRequest) -> Any: ...
+
+
+def resolve_agent_engine(
+    requested: Literal["legacy", "agentscope"] | None,
+) -> str:
+    """Resolve the execution engine: request-level > env var > legacy."""
+    if requested in VALID_ENGINES:
+        return requested
+    env_value = os.getenv(ENGINE_ENV_VAR, "").strip().lower()
+    if env_value in VALID_ENGINES:
+        return env_value
+    return "legacy"
 
 
 @dataclass
 class AgentExecutionHooks:
     on_agent_start: (
-        Callable[[ToolCallAgent, AgentRequest], Any | Awaitable[Any]] | None
+        Callable[[RuntimeAgent, AgentRequest], Any | Awaitable[Any]] | None
     ) = None
     on_agent_end: (
-        Callable[[ToolCallAgent, str, dict[str, Any]], Any | Awaitable[Any]] | None
+        Callable[[RuntimeAgent, str, dict[str, Any]], Any | Awaitable[Any]] | None
     ) = None
 
 
@@ -93,7 +133,7 @@ class AgentRuntime:
     @staticmethod
     def attach_agent_identity(
         result: AgentResult,
-        agent: ToolCallAgent,
+        agent: RuntimeAgent,
     ) -> AgentResult:
         meta_data = dict(result.meta_data or {})
         meta_data.setdefault("agent_code", agent.name)
@@ -114,7 +154,7 @@ class AgentRuntime:
             return {"type": "none"}
         return {"type": "raw", "value": safe_serialize(result)}
 
-    def build_agent(self, spec: AgentExecutionSpec) -> ToolCallAgent:
+    def build_agent(self, spec: AgentExecutionSpec) -> RuntimeAgent:
         tools = [
             self.tool_registry[tool_name]
             for tool_name in spec.tool_names
@@ -125,22 +165,48 @@ class AgentRuntime:
                 "Agent '{}' has no available tools in registry",
                 spec.name,
             )
-        toolset = ToolSet(tools, include_terminate=False)
-        agent = ToolCallAgent(
-            llm=self._build_agent_llm(spec),
-            name=spec.name,
-            system_prompt=spec.system_prompt,
-            additional_user_prompt=spec.additional_user_prompt,
-            toolset=toolset,
-            max_steps=spec.max_steps,
-            force_tool_call=spec.force_tool_call,
-            scene_post_summary=self._build_scene_post_summary(spec),
-        )
+        engine = resolve_agent_engine(spec.engine)
+        if engine == "agentscope":
+            agent = self._build_agentscope_agent(spec, tools)
+        else:
+            toolset = ToolSet(tools, include_terminate=False)
+            agent = ToolCallAgent(
+                llm=self._build_agent_llm(spec),
+                name=spec.name,
+                system_prompt=spec.system_prompt,
+                additional_user_prompt=spec.additional_user_prompt,
+                toolset=toolset,
+                max_steps=spec.max_steps,
+                force_tool_call=spec.force_tool_call,
+                scene_post_summary=self._build_scene_post_summary(spec),
+            )
         if self.state_store and self.state_id:
             agent.set_execution_context(self.state_store, self.state_id)
         if isinstance(spec.agent_name, str) and spec.agent_name.strip():
             agent.agent_display_name = spec.agent_name.strip()
         return agent
+
+    def _build_agentscope_agent(
+        self, spec: AgentExecutionSpec, tools: list[Tool]
+    ) -> RuntimeAgent:
+        from .agentscope2 import AgentScopeSceneAgent
+
+        self._logger.info(
+            "Building agent '{}' with AgentScope engine (max_steps={}, force_tool_call={})",
+            spec.name,
+            spec.max_steps,
+            spec.force_tool_call,
+        )
+        return AgentScopeSceneAgent(
+            llm=self._build_agent_llm(spec),
+            name=spec.name,
+            system_prompt=spec.system_prompt,
+            additional_user_prompt=spec.additional_user_prompt,
+            tools=tools,
+            max_steps=spec.max_steps,
+            force_tool_call=spec.force_tool_call,
+            scene_post_summary=self._build_scene_post_summary(spec),
+        )
 
     def _build_agent_llm(self, spec: AgentExecutionSpec) -> LLMEngine:
         if spec.llm_config is None:
@@ -210,7 +276,7 @@ class AgentRuntime:
 
     def _resolve_agent_memory_context(
         self,
-        agent: ToolCallAgent,
+        agent: RuntimeAgent,
         request: AgentRequest,
     ) -> tuple[Any, Any, str] | None:
         if not self._agent_memory_enabled(agent.name):
@@ -230,7 +296,7 @@ class AgentRuntime:
 
     async def _build_execution_request(
         self,
-        agent: ToolCallAgent,
+        agent: RuntimeAgent,
         request: AgentRequest,
     ) -> AgentRequest:
         execution_request = request.model_copy(update={"history": None})
@@ -270,7 +336,7 @@ class AgentRuntime:
 
     async def _record_agent_memory(
         self,
-        agent: ToolCallAgent,
+        agent: RuntimeAgent,
         request: AgentRequest,
         result: AgentResult,
     ) -> None:
@@ -303,7 +369,7 @@ class AgentRuntime:
 
     async def run_agent(
         self,
-        agent: ToolCallAgent,
+        agent: RuntimeAgent,
         request: AgentRequest,
         *,
         action_handler: Callable[[AgentActionEvent], Awaitable[None] | None]
@@ -424,7 +490,7 @@ class AgentRuntime:
 
     async def run_stream(
         self,
-        agents: list[ToolCallAgent],
+        agents: list[RuntimeAgent],
         request: AgentRequest,
         *,
         hooks: AgentExecutionHooks | None = None,
@@ -437,7 +503,7 @@ class AgentRuntime:
         async def _publish_action(event: AgentActionEvent) -> None:
             await queue.put(event)
 
-        async def _run_and_publish(agent: ToolCallAgent) -> None:
+        async def _run_and_publish(agent: RuntimeAgent) -> None:
             try:
                 result = await self.run_agent(
                     agent,

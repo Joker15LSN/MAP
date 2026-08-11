@@ -12,9 +12,12 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir uv
 
-COPY pyproject.toml README.md ./
-RUN uv sync --no-dev
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --no-dev --frozen
 
+# alembic.ini must ship with the image: the compose `migrate` one-shot
+# runs `uv run alembic upgrade head` inside it (R2-P1-05 E2E finding).
+COPY alembic.ini ./
 COPY app ./app
 RUN mkdir -p /app/data
 

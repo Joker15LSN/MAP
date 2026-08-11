@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -13,6 +13,17 @@ class ChatRequest(BaseModel):
     flow_config: dict[str, Any] | None = None
     scene_selection: dict[str, Any] | None = None
     dispatch_config: dict[str, Any] | None = None
+
+
+class CreateConversationRequest(BaseModel):
+    mode: str = "global"
+    title: str | None = None
+
+
+class StreamConversationMessageRequest(BaseModel):
+    query: str = Field(min_length=1)
+    request_id: str | None = None
+    mode: str | None = None
 
 
 class ModelRecord(BaseModel):
@@ -91,7 +102,7 @@ class MasterAgentConfig(BaseModel):
     summary_prompt: str = "请整合各业务智能体结果，优先给出结论、证据来源和下一步建议。"
     current_version: str = "v1"
     draft_version: str = "v1-draft"
-    prompt_versions: list["MasterPromptVersion"] = Field(default_factory=list)
+    prompt_versions: list[MasterPromptVersion] = Field(default_factory=list)
     policies: list[str] = Field(
         default_factory=lambda: [
             "先进行场景识别，再触发业务智能体并行调用",
@@ -198,9 +209,7 @@ class AgentResourceMount(BaseModel):
             "builtin_tool",
         }
         if normalized not in allowed:
-            raise ValueError(
-                f"resource_type must be one of: {', '.join(sorted(allowed))}"
-            )
+            raise ValueError(f"resource_type must be one of: {', '.join(sorted(allowed))}")
         return normalized
 
 
@@ -487,10 +496,11 @@ class AdminState(BaseModel):
     flow_skill_descriptors: list[FlowSkillDescriptor] = Field(default_factory=list)
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     skills: list[UploadedSkill] = Field(default_factory=list)
+    agent_engine: Literal["legacy", "agentscope"] | None = None
     release_history: list[ReleaseRecord]
 
     @staticmethod
-    def default() -> "AdminState":
+    def default() -> AdminState:
         now = datetime.now().isoformat()
         return AdminState(
             updated_at=now,
@@ -563,8 +573,10 @@ class AdminState(BaseModel):
                         operator="system",
                         note="初始化 Master 提示词配置",
                         route_prompt=(
-                            "你是 MAP Master 路由智能体。请根据用户问题、历史上下文和可用业务智能体，"
-                            "直接判断应调用哪些 sub-agent，输出候选 agent_code、confidence 与 reason。"
+                            "你是 MAP Master 路由智能体。请根据用户问题、历史上下文和可用业务智"
+                            "能体，"
+                            "直接判断应调用哪些 sub-agent，输出候选 agent_code、confidence 与"
+                            " reason。"
                         ),
                         summary_prompt="请整合各业务智能体结果，优先给出结论、证据来源和下一步建议。",
                         route_model="deepseek-v4-flash",

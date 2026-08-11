@@ -6,7 +6,12 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5174",
     "build": "tsc -b && vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 5174"
+    "preview": "vite preview --host 0.0.0.0 --port 5174",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "overrides": {
+    "dompurify": "3.4.13"
   },
   "dependencies": {
     "@agentscope-ai/design": "^1.0.31",
@@ -19,10 +24,16 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^29.1.1",
+    "msw": "^2.15.0",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5"
+    "vite": "^6.0.5",
+    "vitest": "^4.1.10"
   }
 }

@@ -90,7 +90,7 @@ async def pick_necessary_results(original_question: str, executed_results: list[
 
 
 async def calculate_final_metric_result(
-    original_question: str, 
+    original_question: str,
     executed_results: list[dict],
     milvus_client: MilvusClient,
     llm: LLMEngine,
@@ -106,7 +106,7 @@ async def calculate_final_metric_result(
 
     # 2. Parse final results
     parsed_data = await parse_final_results(milvus_client, picked_results, query_mode)
-    
+
     debug_msg = f"parsed_data: {parsed_data}"
     logger.debug(debug_msg)
     if not parsed_data:
@@ -114,5 +114,5 @@ async def calculate_final_metric_result(
 
     # 3. Calculate the metric
     final_result = await calculate(original_question, parsed_data, llm)
-    
+
     return final_result

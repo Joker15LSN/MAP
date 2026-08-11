@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import List
 
 
 @dataclass(frozen=True)
@@ -14,7 +13,7 @@ class Settings:
     api_prefix: str = "/api/v1"
     timezone: str = "Asia/Shanghai"
     default_tz: str = "Asia/Shanghai"
-    cors_origins: List[str] = None
+    cors_origins: list[str] = None
     index_ensure_mode: str = "auto"
     max_query_days: int = 31
     default_time_range_hours: int = 24
@@ -35,7 +34,7 @@ class Settings:
         return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
     @staticmethod
-    def _parse_origins(raw: str) -> List[str]:
+    def _parse_origins(raw: str) -> list[str]:
         if not raw:
             return ["*"]
         return [item.strip() for item in raw.split(",") if item.strip()]
@@ -55,7 +54,7 @@ class Settings:
         return "auto"
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         mongo_uri = os.getenv("MONGO_URI", "")
         mongo_db = os.getenv("MONGO_DB", "map_db_dev")
         mongo_uri_ubddev = os.getenv("MONGO_URI_UBDDEV", "")

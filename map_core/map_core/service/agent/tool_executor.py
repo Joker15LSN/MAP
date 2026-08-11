@@ -6,6 +6,9 @@ from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
 from loguru import logger
+from opentelemetry import context as otel_context
+from opentelemetry import trace as otel_trace
+from opentelemetry.trace import Status, StatusCode
 
 from ...schema.tool_extra_result_schema import ToolExtraResultSchema
 from ...utils.llm_trace_context import llm_trace_context
@@ -27,6 +30,28 @@ TOOL_DISPLAY_NAME_MAP: dict[str, str] = {
     "search_uploaded_file": "上传文件检索",
 }
 TOOL_QUERY_PREVIEW_LENGTH = 30
+
+
+def classify_tool_result(result: Any) -> tuple[bool, str]:
+    """Unified tool outcome check shared by both engines.
+
+    Returns ``(success, reason)``. Failure covers policy denials, timeouts,
+    caught-exception error dicts and ``ExecutionResult(success=False)`` so
+    that TOOL span status, ``map.tool.success`` and ``ToolChunk.state``
+    always agree.
+    """
+    if isinstance(result, ExecutionResult):
+        if not result.success or result.error:
+            return False, str(result.error or "tool returned success=False")
+        return True, ""
+    if isinstance(result, dict):
+        error = result.get("error")
+        if error:
+            if result.get("code") == "tool_forbidden":
+                return False, f"policy denied: {result.get('reason') or error}"
+            return False, str(error)
+        return True, ""
+    return True, ""
 
 
 class ToolExecutor:
@@ -95,6 +120,67 @@ class ToolExecutor:
         return self._preview_tool_query(query)
 
     async def execute_tool(
+        self,
+        *,
+        tool_name: str,
+        parid: str,
+        args: dict[str, Any],
+        request: AgentRequest,
+        step_index: int,
+        tool_call_id: str | None = None,
+        span_attributes: dict[str, Any] | None = None,
+    ) -> Any:
+        """Execute a tool wrapped in an OTel TOOL span (zero-cost when off).
+
+        ToolExecutor is the single TOOL-span owner for both the legacy and
+        AgentScope engines; callers (e.g. MapToolAdapter) may contribute
+        engine-specific attributes via ``span_attributes`` but must not
+        create their own TOOL spans.
+        """
+        tracer = otel_trace.get_tracer("map.tool")
+        attributes: dict[str, Any] = {
+            "openinference.span.kind": "TOOL",
+            "tool.name": tool_name,
+            "map.tool.step": step_index,
+            "map.agent.name": str(self.owner.name or ""),
+        }
+        if span_attributes:
+            attributes.update(span_attributes)
+        span = tracer.start_span(f"tool {tool_name}", attributes=attributes)
+        if tool_call_id:
+            span.set_attribute("map.tool.call_id", tool_call_id)
+        token = otel_context.attach(otel_trace.set_span_in_context(span))
+        try:
+            result = await self._execute_tool_impl(
+                tool_name=tool_name,
+                parid=parid,
+                args=args,
+                request=request,
+                step_index=step_index,
+                tool_call_id=tool_call_id,
+            )
+            success, reason = classify_tool_result(result)
+            span.set_attribute("map.tool.success", success)
+            if not success:
+                span.set_status(Status(StatusCode.ERROR, reason))
+            return result
+        except asyncio.CancelledError:
+            # Outer wait_for() timeouts surface here as cancellation (Python
+            # 3.11+ CancelledError is a BaseException); the span must still
+            # be marked failed before the cancellation propagates.
+            span.set_attribute("map.tool.success", False)
+            span.set_status(Status(StatusCode.ERROR, "tool cancelled or timed out"))
+            raise
+        except Exception as exc:  # pragma: no cover - impl catches internally
+            span.record_exception(exc)
+            span.set_attribute("map.tool.success", False)
+            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            raise
+        finally:
+            otel_context.detach(token)
+            span.end()
+
+    async def _execute_tool_impl(
         self,
         *,
         tool_name: str,
@@ -309,14 +395,17 @@ class ToolExecutor:
             call_obj, args: dict[str, Any]
         ) -> tuple[Any, Any, dict[str, Any]]:
             tool_name = call_obj.function.name
-            result = await self.execute_tool(
-                tool_name=tool_name,
-                parid=parid,
-                args=args,
-                request=request,
-                step_index=step,
-                tool_call_id=call_obj.id,
-            )
+            # Re-enter the step span inside the worker task so the TOOL span
+            # becomes a child of the enclosing agent step context.
+            with otel_trace.use_span(otel_trace.get_current_span()):
+                result = await self.execute_tool(
+                    tool_name=tool_name,
+                    parid=parid,
+                    args=args,
+                    request=request,
+                    step_index=step,
+                    tool_call_id=call_obj.id,
+                )
             return call_obj, result, args
 
         active_calls = [

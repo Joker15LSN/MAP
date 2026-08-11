@@ -19,7 +19,7 @@ class UploadedKBFileSchema(BaseModel):
     embed_name: str = Field(..., description="embedding 模型名称")
     embed_url: str = Field(..., description="embedding 模型服务链接")
     embed_auth_token: str = Field(..., description="embedding 模型服务authtoken")
-    
+
     file_id: str = Field(..., description="文件ID")
     file_name: str = Field(..., description="文件名称")
     kb_code: str = Field(..., description="知识库编号")

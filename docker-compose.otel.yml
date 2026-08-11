@@ -1,0 +1,64 @@
+# OTel override: merge on top of docker-compose.yml to export telemetry to
+# the bundled Collector/Jaeger (otel profile).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.otel.yml --profile otel up -d
+#
+# The base compose never enables OTel by default; this file is the single
+# place that flips MAP_OTEL_ENABLED and provides the OTLP endpoint — for
+# BOTH the algorithm service and the BFF, so production traces form the
+# chain: BFF SERVER -> BFF CLIENT -> map_core SERVER -> LLM/TOOL/MCP.
+#
+# Protocol & endpoint are configured as one pair (same mapping for both
+# services in docker-compose.yml / this file):
+#   MAP_OTEL_PROTOCOL=http/protobuf -> MAP_OTEL_ENDPOINT=http://otel-collector:4318
+#   MAP_OTEL_PROTOCOL=grpc           -> MAP_OTEL_ENDPOINT=http://otel-collector:4317
+# Switching the protocol without switching the port exports to the wrong
+# listener, so always set the two together.
+#
+# Logs: the bundled Collector only runs a traces pipeline (see
+# otel/collector-config.yaml), so native OTLP log export is explicitly
+# disabled here; map_core logs ride as span events instead
+# (MAP_OTEL_LOGS_AS_SPAN_EVENTS defaults to true). The BFF implements no
+# OTel logging of its own.
+
+services:
+  algorithm-service:
+    environment:
+      MAP_OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${MAP_OTEL_ENDPOINT:-http://otel-collector:4318}
+      MAP_OTEL_NATIVE_LOG_EXPORT_ENABLED: "false"
+      # Exporter tuning, passed through to both services (identical values
+      # keep fleet-wide batch semantics consistent). Defaults mirror the SDK
+      # fallbacks in map_core/app telemetry modules.
+      MAP_OTEL_MAX_QUEUE_SIZE: ${MAP_OTEL_MAX_QUEUE_SIZE:-2048}
+      MAP_OTEL_MAX_EXPORT_BATCH_SIZE: ${MAP_OTEL_MAX_EXPORT_BATCH_SIZE:-512}
+      MAP_OTEL_EXPORT_TIMEOUT_MS: ${MAP_OTEL_EXPORT_TIMEOUT_MS:-10000}
+      MAP_OTEL_EXCLUDED_PATHS: ${MAP_OTEL_EXCLUDED_PATHS:-/health,/metrics}
+      # Native-log pipeline tuning (algorithm-service only; the BFF
+      # implements no OTel logging — no native exporter, no span-event
+      # bridge — so these vars are map_core-only).
+      MAP_OTEL_LOG_MAX_QUEUE_SIZE: ${MAP_OTEL_LOG_MAX_QUEUE_SIZE:-2048}
+      MAP_OTEL_LOG_MAX_EXPORT_BATCH_SIZE: ${MAP_OTEL_LOG_MAX_EXPORT_BATCH_SIZE:-512}
+      MAP_OTEL_LOG_EXPORT_TIMEOUT_MS: ${MAP_OTEL_LOG_EXPORT_TIMEOUT_MS:-10000}
+      # Logs-as-span-events is the supported log path for the bundled stack
+      # (the Collector only runs a traces pipeline). MAP_OTEL_LOG_MESSAGE_MAX_CHARS
+      # bounds redacted log payloads; both read by map_core only.
+      MAP_OTEL_LOGS_AS_SPAN_EVENTS: ${MAP_OTEL_LOGS_AS_SPAN_EVENTS:-true}
+      MAP_OTEL_LOG_MESSAGE_MAX_CHARS: ${MAP_OTEL_LOG_MESSAGE_MAX_CHARS:-4000}
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  backend-service:
+    environment:
+      MAP_OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${MAP_OTEL_ENDPOINT:-http://otel-collector:4318}
+      MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
+      OTEL_SERVICE_NAME: map-business-backend
+      MAP_OTEL_MAX_QUEUE_SIZE: ${MAP_OTEL_MAX_QUEUE_SIZE:-2048}
+      MAP_OTEL_MAX_EXPORT_BATCH_SIZE: ${MAP_OTEL_MAX_EXPORT_BATCH_SIZE:-512}
+      MAP_OTEL_EXPORT_TIMEOUT_MS: ${MAP_OTEL_EXPORT_TIMEOUT_MS:-10000}
+      MAP_OTEL_EXCLUDED_PATHS: ${MAP_OTEL_EXCLUDED_PATHS:-/health,/metrics}
+    depends_on:
+      otel-collector:
+        condition: service_started
