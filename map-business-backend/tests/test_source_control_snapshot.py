@@ -14,11 +14,22 @@ seven mandated shapes: first-line tracked modification, plain untracked,
 paths with spaces, Chinese Markdown, rename, deletion, and the same file
 staged AND unstaged. They also pin the docs/product classification and
 the ``--require-clean-product`` exit contract.
+
+R6-P2-01 extended the classification so a staged rename (``XY="R "``)
+contributes BOTH paths; R7-P2-01 completes the state space: git
+porcelain rename can sit in EITHER column — ``mv app.py TODO/app.py.md
+&& git add -N TODO/app.py.md`` stably yields ``XY=" R"`` in a real
+repository, and the worktree-side form must classify exactly like the
+index-side one. The quadrant matrix below runs every rename class in
+BOTH column positions against real temporary repositories.
 """
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
 import subprocess
 from pathlib import Path
 
@@ -299,3 +310,116 @@ def test_parser_rejects_malformed_and_incomplete_records() -> None:
     with pytest.raises(ValueError, match="origin path"):
         source_control.parse_porcelain_z(b"R  new.py\x00")  # missing origin record
     assert source_control.parse_porcelain_z(b"") == []
+
+
+# ---- R7-P2-01: rename classification must cover BOTH XY columns --------
+# ``git mv`` stages the rename (``XY="R "``); a plain ``mv`` followed by
+# ``git add -N`` leaves it in the worktree column (``XY=" R"``). Both are
+# legal git states of the SAME operation and both must drive the
+# docs/product classification with destination AND origin.
+
+
+def _worktree_rename(repo: Path, src: str, dst: str) -> None:
+    """Real-repo worktree-side rename: ``mv`` + intent-to-add."""
+    (repo / src).rename(repo / dst)
+    _git(repo, "add", "-N", dst)
+
+
+def test_r7_worktree_rename_product_to_docs_refused(git_repo: Path) -> None:
+    """R7-P2-01 failure reproduction, pinned verbatim from the seventh
+    round: ``mv app.py TODO/app.py.md && git add -N TODO/app.py.md``
+    produces ``XY=" R"``; the origin ``app.py`` is a PRODUCT path being
+    deleted, so it must land in ``dirty_product`` and the final CLI must
+    exit 2 (it used to report docs-only and exit 0)."""
+    (git_repo / "app.py").write_text("product\n")
+    (git_repo / "TODO").mkdir()
+    _commit(git_repo, "baseline")
+    _worktree_rename(git_repo, "app.py", "TODO/app.py.md")
+
+    snap = _snapshot_paths(git_repo)
+    entry = snap["entries"][0]
+    assert entry["xy"] == " R"  # the worktree column, NOT the index one
+    assert entry["orig_path"] == "app.py"
+    assert snap["affected_paths"] == ["TODO/app.py.md", "app.py"]
+    assert snap["dirty_product"] == ["app.py"]
+    assert snap["docs_only_dirty"] is False
+    rc = source_control.main(
+        ["--repo", str(git_repo), "--json", "--require-clean-product"]
+    )
+    assert rc == 2
+
+
+# (src, dst, expected dirty_product, expected CLI exit)
+_R7_QUADRANTS = [
+    ("prod_a.py", "prod_a2.py", ["prod_a.py", "prod_a2.py"], 2),   # prod->prod
+    ("prod_b.py", "TODO/prod_b.md", ["prod_b.py"], 2),             # prod->docs
+    ("TODO/docs_a.md", "docs_a.py", ["docs_a.py"], 2),             # docs->prod
+    ("TODO/old.md", "TODO/new.md", [], 0),                         # docs->docs
+]
+
+
+@pytest.mark.parametrize("form", ["staged", "worktree"])
+@pytest.mark.parametrize("src,dst,expected_product,expected_exit", _R7_QUADRANTS)
+def test_r7_rename_quadrants_both_xy_columns(
+    git_repo: Path, form: str, src: str, dst: str,
+    expected_product: list, expected_exit: int,
+) -> None:
+    """R7-P2-01 acceptance matrix: four rename quadrants x BOTH column
+    positions (``R `` via ``git mv``, `` R`` via ``mv`` + ``add -N``) =
+    8 real-repo cases. The first three quadrants are product-dirty in
+    both forms; only docs->docs may stay docs-only."""
+    src_path = git_repo / src
+    src_path.parent.mkdir(parents=True, exist_ok=True)
+    src_path.write_text(f"unique content of {src}\n")
+    _commit(git_repo, "baseline")
+
+    (git_repo / dst).parent.mkdir(parents=True, exist_ok=True)
+    if form == "staged":
+        _git(git_repo, "mv", src, dst)
+        expected_xy = "R "
+    else:
+        _worktree_rename(git_repo, src, dst)
+        expected_xy = " R"
+
+    snap = _snapshot_paths(git_repo)
+    renamed = [e for e in snap["entries"] if e["path"] == dst]
+    assert renamed, f"no rename entry for {dst} in {snap['entries']!r}"
+    assert renamed[0]["xy"] == expected_xy
+    assert renamed[0]["orig_path"] == src
+    # BOTH paths always affected, deduplicated and stably sorted.
+    assert sorted({src, dst} & set(snap["affected_paths"])) == sorted([src, dst])
+    assert snap["dirty_product"] == expected_product
+    assert snap["docs_only_dirty"] == (expected_exit == 0)
+    rc = source_control.main(
+        ["--repo", str(git_repo), "--json", "--require-clean-product"]
+    )
+    assert rc == expected_exit
+
+
+def test_r7_copy_worktree_column_destination_only() -> None:
+    """A COPY never deletes its origin, so the worktree-column copy form
+    (``XY=" C"``) classifies by destination only — the origin stays in
+    the entry for audit, mirroring the index-column ``C `` semantics."""
+    entry = source_control.parse_porcelain_z(b" C TODO/copy.md\x00product.py\x00")[0]
+    assert entry["orig_path"] == "product.py"  # kept for audit
+    assert source_control.affected_paths_for(entry) == ["TODO/copy.md"]
+
+
+def test_r7_cli_and_module_classify_identically(git_repo: Path) -> None:
+    """The gate consumes the CLI ``--json`` output and the E2E runner
+    consumes ``snapshot()`` — on the SAME worktree-side rename repo they
+    must produce byte-identical classification (no second classifier)."""
+    (git_repo / "app.py").write_text("product\n")
+    (git_repo / "TODO").mkdir()
+    _commit(git_repo, "baseline")
+    _worktree_rename(git_repo, "app.py", "TODO/app.py.md")
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        rc = source_control.main(["--repo", str(git_repo), "--json"])
+    assert rc == 0
+    cli_snapshot = json.loads(buffer.getvalue())
+    module_snapshot = source_control.snapshot(git_repo)
+    for field in ("affected_paths", "dirty_files", "dirty_product",
+                  "docs_only_dirty", "dirty", "entries"):
+        assert cli_snapshot[field] == module_snapshot[field], field

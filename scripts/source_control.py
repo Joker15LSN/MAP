@@ -25,7 +25,10 @@ Rules baked in:
   classification (``affected_paths_for``) — renaming a product file into
   a docs directory can no longer bypass the clean-product gate; a COPY
   leaves its origin in place, so only the destination is affected while
-  the origin stays in the artifact for audit.
+  the origin stays in the artifact for audit. R7-P2-01: porcelain rename
+  can sit in EITHER XY column — ``git mv`` stages it (``XY="R "``) while
+  ``mv`` + ``git add -N`` leaves it in the worktree column (``XY=" R"``);
+  classification checks ``"R" in xy`` so both forms behave identically.
 - a dirty working tree additionally records working-tree content
   evidence (``diff_head_sha256`` over ``git diff HEAD`` plus a per-file
   sha256 manifest of every untracked file), so a non-final artifact can
@@ -102,9 +105,17 @@ def affected_paths_for(entry: dict) -> list[str]:
     change and bypass the clean-product final gate. A COPY leaves its
     origin in place, so only the destination is affected; the origin
     still stays in the entry (and thus the artifact) for audit.
+
+    R7-P2-01: porcelain ``XY`` is the index column ``X`` plus the
+    worktree column ``Y``, and a rename legally appears in EITHER one —
+    ``git mv`` produces ``XY="R "`` while ``mv app.py TODO/app.py.md &&
+    git add -N TODO/app.py.md`` stably produces ``XY=" R"`` in a real
+    repository. The check is therefore ``"R" in xy``; inspecting only
+    ``xy[0]`` would let the worktree-side form bypass the gate while
+    ``orig_path`` is silently dropped.
     """
     paths = [entry["path"]]
-    if entry["xy"][0] == "R" and entry.get("orig_path"):
+    if "R" in entry["xy"] and entry.get("orig_path"):
         paths.append(entry["orig_path"])
     return paths
 
