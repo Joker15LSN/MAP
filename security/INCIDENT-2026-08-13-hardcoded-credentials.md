@@ -29,6 +29,7 @@
 | 6 | Mongo URI 内嵌口令 `mongodb://root:48f#7fQuk6!@...`（prod/test 环境） | `config/prod.py`、`config/test.py`（MONGODB_CONFIG.uri 硬编码） | 改 `MONGODB_URI` env 注入，空值 fail-closed（无法连接）；compose 已映射 env | PENDING-REVOCATION | security owner |
 | 7 | 本地默认 URI 口令 `postgresql://map:map@` / `mongodb://map:map@` | `config/common.py`（DEFAULT_* 常量） | 默认值删除，改纯 env 注入（`POSTGRES_DSN` / `MONGODB_URI`） | PENDING-REVOCATION | security owner |
 | 8 | wenshu 历史 token：Basic `d2ViQXBwOndlYkFwcA==`、`SESSION_ESSENDATA=...` cookie、`jarvis_dev`/`Zwzj0h0z` 密码（注释态） | `wenshu_agent.py:161-166`（注释） | 注释行删除 | PENDING-REVOCATION | security owner |
+| 9 | compose 口令默认值：`MAP_POSTGRES_{ADMIN,APP,MIGRATOR}_PASSWORD`（`map-admin-local`/`map`/`map-migrator-local`）、`MONGO_INITDB_ROOT_PASSWORD: map`、DSN 内嵌 `map:map` | `docker-compose.yml`、`db/init/01-roles.sh` fallback | 全部改为 `:?required` fail-fast 注入（无仓库默认）；E2E runner 注入隔离口令；本地 .env 按 .env.example 补齐 | PENDING-ROTATION（本地 dev 口令按需轮换；生产无此默认） | security owner |
 
 ## 3. 修复后的注入环境变量清单
 

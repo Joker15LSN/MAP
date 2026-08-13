@@ -311,9 +311,10 @@ MAP_BFF_STATE_FILE="$PWD/app/data/admin_state.json" \
 ```bash
 cd map_core
 uv sync --frozen
+# P0-SEC-01: 连接串不再有仓库默认值，必须显式注入（生产口令强要求）。
 ENV=dev \
-POSTGRES_DSN=postgresql://map:map@127.0.0.1:15432/map \
-MONGODB_URI='mongodb://map:map@127.0.0.1:27017/?authSource=admin' \
+POSTGRES_DSN=postgresql://map:<local-dev-password>@127.0.0.1:15432/map \
+MONGODB_URI='mongodb://map:<local-dev-password>@127.0.0.1:27017/?authSource=admin' \
 MONGODB_DATABASE=map_db_dev \
   uv run python -m map_core.main --host 0.0.0.0 --port 10000
 ```
@@ -329,7 +330,7 @@ npm run dev
 # 观测后端
 cd map-observability/map-observability-backend
 uv sync --frozen
-MONGO_URI='mongodb://map:map@127.0.0.1:27017/?authSource=admin' \
+MONGO_URI='mongodb://map:<local-dev-password>@127.0.0.1:27017/?authSource=admin' \
 MONGO_DB=map_db_dev \
   uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 

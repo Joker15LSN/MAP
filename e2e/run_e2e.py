@@ -1637,6 +1637,13 @@ def start_stack(ctx: Ctx) -> None:
         "MAP_LLM_API_KEY": "e2e-fake-key",
         "MAP_LLM_BASE_URL": "http://fake-llm:9999/v1",
         "MAP_LLM_MODEL": "fake-e2e-model",
+        # P0-SEC-01: compose has no password defaults anymore; E2E runs on
+        # random project names / fresh volumes / free ports, so fixed
+        # local-only passwords are safe here.
+        "MAP_POSTGRES_ADMIN_PASSWORD": "e2e-local-only",
+        "MAP_POSTGRES_APP_PASSWORD": "e2e-local-only",
+        "MAP_POSTGRES_MIGRATOR_PASSWORD": "e2e-local-only",
+        "MAP_MONGO_ROOT_PASSWORD": "e2e-local-only",
     }
     ctx.bff = f"http://127.0.0.1:{ctx.ports['MAP_BFF_PORT']}"
     ctx.frontend = f"http://127.0.0.1:{ctx.ports['MAP_FRONTEND_PORT']}"
