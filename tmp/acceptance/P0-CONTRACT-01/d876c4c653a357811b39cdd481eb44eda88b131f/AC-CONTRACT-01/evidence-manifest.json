@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.1.0",
+  "task_id": "P0-CONTRACT-01",
+  "ac_id": "AC-CONTRACT-01",
+  "status": "pass",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "d876c4c653a357811b39cdd481eb44eda88b131f",
+  "environment_digest": "2ea237070438f5833745e7a319583fd540ba3cbf909d8c45f9ea020e5988c61e",
+  "started_at": "2026-08-13T15:39:06.267793+00:00",
+  "finished_at": "2026-08-13T15:39:06.273714+00:00",
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "producer": {
+    "agent": "reasonix",
+    "version": "1.0.0"
+  },
+  "command": "map-business-backend/.venv/bin/python -m pytest map-business-backend/tests/contracts/test_run_contract.py -q",
+  "exit_code": 0,
+  "artifacts": [
+    {
+      "path": "map-business-backend/app/runtime/state_machine.py",
+      "sha256": "b1fd634fdb2aec6beea362e81503dd613cbe615b7dbfa0d085e3d3ab45594a30",
+      "media_type": "text/x-python"
+    },
+    {
+      "path": "map-business-backend/tests/contracts/test_run_contract.py",
+      "sha256": "c7601f03487bb3f24c0feafbdb3bf6e154b585651bead107617c325138e57d01",
+      "media_type": "text/x-python"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "legal_transitions_all_pass",
+      "expected": "every legal transition validates for run/step/effect/model_invocation/evidence",
+      "actual": "parameterized over all_transitions(); no exception raised",
+      "result": "pass"
+    },
+    {
+      "name": "illegal_transitions_fail_closed",
+      "expected": "every non-terminal state pair outside the table raises STATE_TRANSITION_VIOLATION",
+      "actual": "exhaustive (current,target) cross-product over all_states()",
+      "result": "pass"
+    },
+    {
+      "name": "terminal_out_edges_zero",
+      "expected": "terminal states have no out-edges",
+      "actual": "verified for all five machines; validate_transition raises",
+      "result": "pass"
+    },
+    {
+      "name": "cancel_done_timeout_race_converges",
+      "expected": "loser of terminal race fails closed; cancelling only -> cancelled",
+      "actual": "completed -> cancelling rejected; cancelling -> completed rejected",
+      "result": "pass"
+    },
+    {
+      "name": "unknown_states_fail_closed",
+      "expected": "unknown state name rejected before write",
+      "actual": "is_valid_state False; validate_transition raises",
+      "result": "pass"
+    },
+    {
+      "name": "canonical_states_match_acceptance_profile",
+      "expected": "state enums == acceptance-profile.yaml canonical_states",
+      "actual": "anchored comparison passes for all five machines",
+      "result": "pass"
+    },
+    {
+      "name": "pytest_suite_green",
+      "expected": "pytest exit 0",
+      "actual": "exit 0: ..............................                                           [100%]",
+      "result": "pass"
+    }
+  ]
+}
