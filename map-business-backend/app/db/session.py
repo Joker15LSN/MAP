@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+
 def build_engine(dsn: str | None = None) -> AsyncEngine:
     # NullPool: every checkout gets a fresh connection created on the
     # current event loop. The module-level singleton engine can therefore
