@@ -220,7 +220,8 @@ services:
       dockerfile: Dockerfile
     container_name: map-observability-backend-service
     environment:
-      MONGO_URI: mongodb://map:map@mongo:27017/?authSource=admin
+      # P0-SEC-01: credentials come from .env (no repository defaults).
+      MONGO_URI: mongodb://${MAP_MONGO_ROOT_USER:-map}:${MAP_MONGO_ROOT_PASSWORD:?MAP_MONGO_ROOT_PASSWORD is required}@mongo:27017/?authSource=admin
       MONGO_DB: map_db_dev
       API_PREFIX: /api/v1
       TIMEZONE: Asia/Shanghai

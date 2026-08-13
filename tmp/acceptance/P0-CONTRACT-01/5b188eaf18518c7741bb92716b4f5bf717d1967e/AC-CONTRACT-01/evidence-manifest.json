@@ -4,10 +4,10 @@
   "ac_id": "AC-CONTRACT-01",
   "status": "pass",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
-  "implementation_sha": "d876c4c653a357811b39cdd481eb44eda88b131f",
-  "environment_digest": "2ea237070438f5833745e7a319583fd540ba3cbf909d8c45f9ea020e5988c61e",
-  "started_at": "2026-08-13T15:39:06.267793+00:00",
-  "finished_at": "2026-08-13T15:39:06.273714+00:00",
+  "implementation_sha": "5b188eaf18518c7741bb92716b4f5bf717d1967e",
+  "environment_digest": "0d58da78eeff131f7c9c62f96a6733357b6b43d339c2a4ff50ad4a8a50296c42",
+  "started_at": "2026-08-13T15:56:33.554233+00:00",
+  "finished_at": "2026-08-13T15:56:33.560130+00:00",
   "finding_ids": [],
   "waiver_id": null,
   "waiver_owner": null,
@@ -29,27 +29,27 @@
     },
     {
       "path": "map-business-backend/tests/contracts/test_run_contract.py",
-      "sha256": "c7601f03487bb3f24c0feafbdb3bf6e154b585651bead107617c325138e57d01",
+      "sha256": "1c5260e44c67c457da254da2a18075036c332d6c6dcab70df49153b56ee16632",
       "media_type": "text/x-python"
     }
   ],
   "assertions": [
     {
       "name": "legal_transitions_all_pass",
-      "expected": "every legal transition validates for run/step/effect/model_invocation/evidence",
+      "expected": "every legal transition validates for all five machines",
       "actual": "parameterized over all_transitions(); no exception raised",
       "result": "pass"
     },
     {
       "name": "illegal_transitions_fail_closed",
-      "expected": "every non-terminal state pair outside the table raises STATE_TRANSITION_VIOLATION",
-      "actual": "exhaustive (current,target) cross-product over all_states()",
+      "expected": "every non-legal (current,target) pair raises STATE_TRANSITION_VIOLATION",
+      "actual": "exhaustive cross-product over all_states()",
       "result": "pass"
     },
     {
       "name": "terminal_out_edges_zero",
       "expected": "terminal states have no out-edges",
-      "actual": "verified for all five machines; validate_transition raises",
+      "actual": "verified for all five machines",
       "result": "pass"
     },
     {
@@ -59,15 +59,9 @@
       "result": "pass"
     },
     {
-      "name": "unknown_states_fail_closed",
-      "expected": "unknown state name rejected before write",
-      "actual": "is_valid_state False; validate_transition raises",
-      "result": "pass"
-    },
-    {
-      "name": "canonical_states_match_acceptance_profile",
-      "expected": "state enums == acceptance-profile.yaml canonical_states",
-      "actual": "anchored comparison passes for all five machines",
+      "name": "canonical_states_parse_real_profile",
+      "expected": "CANONICAL_STATES equals parsed TODO/acceptance-profile.yaml (no hand-copied mirror)",
+      "actual": "yaml parsed directly at test time; all five machines match",
       "result": "pass"
     },
     {

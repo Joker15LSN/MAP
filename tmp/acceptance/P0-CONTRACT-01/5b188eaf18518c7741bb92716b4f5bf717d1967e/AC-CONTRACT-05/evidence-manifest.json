@@ -4,10 +4,10 @@
   "ac_id": "AC-CONTRACT-05",
   "status": "pass",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
-  "implementation_sha": "d876c4c653a357811b39cdd481eb44eda88b131f",
-  "environment_digest": "2ea237070438f5833745e7a319583fd540ba3cbf909d8c45f9ea020e5988c61e",
-  "started_at": "2026-08-13T15:39:06.567518+00:00",
-  "finished_at": "2026-08-13T15:39:06.573188+00:00",
+  "implementation_sha": "5b188eaf18518c7741bb92716b4f5bf717d1967e",
+  "environment_digest": "0d58da78eeff131f7c9c62f96a6733357b6b43d339c2a4ff50ad4a8a50296c42",
+  "started_at": "2026-08-13T15:56:33.852648+00:00",
+  "finished_at": "2026-08-13T15:56:33.858564+00:00",
   "finding_ids": [],
   "waiver_id": null,
   "waiver_owner": null,
@@ -19,7 +19,7 @@
     "agent": "reasonix",
     "version": "1.0.0"
   },
-  "command": "map-business-backend/.venv/bin/python -m pytest <test_run_contract.py 64KiB tests> -q",
+  "command": "map-business-backend/.venv/bin/python -m pytest <test_run_contract.py 64KiB boundary tests> -q",
   "exit_code": 0,
   "artifacts": [
     {

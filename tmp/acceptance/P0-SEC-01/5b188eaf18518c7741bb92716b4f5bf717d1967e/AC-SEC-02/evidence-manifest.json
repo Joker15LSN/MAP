@@ -4,10 +4,10 @@
   "ac_id": "AC-SEC-02",
   "status": "pass",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
-  "implementation_sha": "d097cb9eb535f9f5a6e426ed9c56a9b6fab7a267",
-  "environment_digest": "bbad6cb9769ef1fd44972ca9cf70dd92627d0696781d0e718ab26adfae16d883",
-  "started_at": "2026-08-13T15:32:36.445634+00:00",
-  "finished_at": "2026-08-13T15:32:36.517608+00:00",
+  "implementation_sha": "5b188eaf18518c7741bb92716b4f5bf717d1967e",
+  "environment_digest": "0d58da78eeff131f7c9c62f96a6733357b6b43d339c2a4ff50ad4a8a50296c42",
+  "started_at": "2026-08-13T15:56:33.224030+00:00",
+  "finished_at": "2026-08-13T15:56:33.229882+00:00",
   "finding_ids": [],
   "waiver_id": null,
   "waiver_owner": null,
@@ -31,11 +31,6 @@
       "path": "map_core/map_core/service/agent/tool_executor.py",
       "sha256": "ffcbdaf4216fcfdbf24e4baae1e3d681b516cd9fb22e23bca4d86397d8c48b34",
       "media_type": "text/x-python"
-    },
-    {
-      "path": "map_core/map_core/service/agent/tool_registry.py",
-      "sha256": "4ca87c6c4403fd20fc28596f4891e113fc49584af34b6d5d6ffe49380af6b30d",
-      "media_type": "text/x-python"
     }
   ],
   "assertions": [
@@ -53,20 +48,14 @@
     },
     {
       "name": "invocation_returns_capability_disabled",
-      "expected": "stable {error: CAPABILITY_DISABLED, code: capability_disabled}",
-      "actual": "ToolExecutor.execute_tool returns exact disabled result for both names",
-      "result": "pass"
-    },
-    {
-      "name": "legacy_config_validation_keeps_working",
-      "expected": "find_invalid_tool_names([python_exec_tool,bash_tool]) == []",
-      "actual": "both names stay known; unknown names still rejected",
+      "expected": "stable {error: CAPABILITY_DISABLED, code: capability_disabled} for both engines",
+      "actual": "ToolExecutor.execute_tool returns exact disabled result; legacy+agentscope share the interception point",
       "result": "pass"
     },
     {
       "name": "pytest_suite_green",
       "expected": "pytest exit 0",
-      "actual": "exit 0: ........                                                                 [100%]\n8 passed in 1.25s",
+      "actual": "exit 0: ........                                                                 [100%]\n8 passed in 0.92s",
       "result": "pass"
     }
   ]

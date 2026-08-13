@@ -4,10 +4,10 @@
   "ac_id": "AC-SEC-01",
   "status": "pass",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
-  "implementation_sha": "d097cb9eb535f9f5a6e426ed9c56a9b6fab7a267",
-  "environment_digest": "bbad6cb9769ef1fd44972ca9cf70dd92627d0696781d0e718ab26adfae16d883",
-  "started_at": "2026-08-13T15:32:34.496769+00:00",
-  "finished_at": "2026-08-13T15:32:34.568802+00:00",
+  "implementation_sha": "5b188eaf18518c7741bb92716b4f5bf717d1967e",
+  "environment_digest": "0d58da78eeff131f7c9c62f96a6733357b6b43d339c2a4ff50ad4a8a50296c42",
+  "started_at": "2026-08-13T15:56:31.678008+00:00",
+  "finished_at": "2026-08-13T15:56:31.684068+00:00",
   "finding_ids": [],
   "waiver_id": null,
   "waiver_owner": null,
@@ -24,32 +24,38 @@
   "artifacts": [
     {
       "path": "security/INCIDENT-2026-08-13-hardcoded-credentials.md",
-      "sha256": "79cf19710dd25dd789ddb6478f6fba25bcdd93918686b9d0baf1ebfd02a63d6e",
+      "sha256": "d31b27312b7d0183070cc3381e931260abf1fd3288c773000b802cf2ab8d819d",
       "media_type": "text/markdown"
     },
     {
       "path": "map_core/tests/test_hardcoded_credential_scan.py",
-      "sha256": "f681484f2bb707b045dde84ee0165e2c1abd0a6845b8735403f7e2c049f1d256",
+      "sha256": "bc5134755285e48d87d80c87926f32099d3d15c0617b9129b81de46fb4cf8d1b",
       "media_type": "text/x-python"
     }
   ],
   "assertions": [
     {
       "name": "tree_scan_no_fixed_secrets",
-      "expected": "0 hardcoded credential hits in tracked source",
+      "expected": "0 hardcoded credential hits in tracked source (incl. URI-embedded)",
       "actual": "0 hits",
+      "result": "pass"
+    },
+    {
+      "name": "scan_gate_not_a_noop",
+      "expected": "scan root resolves to 165+ python files; probe tokens are caught",
+      "actual": "test_source_root_resolves_to_real_tree passes; reverse probe caught gpustack token",
       "result": "pass"
     },
     {
       "name": "credential_scan_gate_passes",
       "expected": "pytest exit 0",
-      "actual": "exit 0: .                                                                        [100%]\n1 passed in 0.00s",
+      "actual": "exit 0: ..                                                                       [100%]\n2 passed in 0.10s",
       "result": "pass"
     },
     {
       "name": "revocation_tracker_registered",
       "expected": "incident doc lists all removed keys with revocation status",
-      "actual": "INCIDENT-2026-08-13 lists 5 credential entries with PENDING-REVOCATION",
+      "actual": "INCIDENT-2026-08-13 lists 8 credential entries with PENDING-REVOCATION + risk register",
       "result": "pass"
     }
   ]
