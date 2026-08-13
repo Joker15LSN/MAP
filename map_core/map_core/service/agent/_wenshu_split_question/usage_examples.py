@@ -2,6 +2,7 @@
 
 # write a usage example for milvus client
 
+import os
 import sys
 from pathlib import Path
 
@@ -21,8 +22,8 @@ MILVUS_DB_NAME = "dataorigin_6102261701897472"
 async def milvus_client_usage():
     milvus_client = MilvusClient(
         uri=METRIC_UBDDEV_MILVUS_URI,
-        user="root",
-        password="password",
+        user=os.getenv("MAP_MILVUS_USER", "root"),
+        password=os.getenv("MAP_MILVUS_PASSWORD", ""),
         db_name=MILVUS_DB_NAME,
     )
     await milvus_client.connect()

@@ -39,60 +39,29 @@ MACHINES = ("run", "step", "effect", "model_invocation", "evidence")
 
 
 def test_machine_enum_values_match_acceptance_profile() -> None:
-    """Anchor: CANONICAL_STATES must equal TODO/acceptance-profile.yaml."""
+    """Anchor: CANONICAL_STATES must equal TODO/acceptance-profile.yaml.
+
+    The profile file is parsed directly (not a hand-copied mirror) so any
+    drift between the normative profile and the implementation fails CI.
+    """
+    from pathlib import Path
+
+    import yaml
+
     from app.runtime.state_machine import CANONICAL_STATES
 
-    profile_canonical = {
-        "run": (
-            "queued",
-            "running",
-            "paused",
-            "completed",
-            "failed",
-            "cancelling",
-            "cancelled",
-            "timed_out",
-        ),
-        "step": (
-            "pending",
-            "ready",
-            "running",
-            "waiting_approval",
-            "succeeded",
-            "failed",
-            "skipped",
-            "cancelled",
-        ),
-        "effect": (
-            "planned",
-            "approval_required",
-            "approved",
-            "executing",
-            "succeeded",
-            "failed",
-            "uncertain",
-            "reconciling",
-            "cancelled",
-        ),
-        "model_invocation": (
-            "planned",
-            "sent",
-            "succeeded",
-            "failed",
-            "unknown",
-            "reconciled",
-        ),
-        "evidence": (
-            "not-run",
-            "running",
-            "pass",
-            "fail",
-            "blocked",
-            "not-applicable-approved",
-        ),
-    }
+    repo_root = Path(__file__).resolve().parents[3]
+    profile_path = repo_root / "TODO" / "acceptance-profile.yaml"
+    assert profile_path.is_file(), profile_path
+    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    profile_canonical = profile["canonical_states"]
+    # legacy_projection is a mapping block, not a state machine
+    profile_machines = {k: v for k, v in profile_canonical.items() if k in MACHINES}
+    assert set(profile_machines) == set(CANONICAL_STATES)
     for machine in MACHINES:
-        assert tuple(CANONICAL_STATES[machine]) == profile_canonical[machine], machine
+        assert tuple(CANONICAL_STATES[machine]) == tuple(
+            profile_machines[machine]
+        ), machine
 
 
 @pytest.mark.parametrize("machine", MACHINES)

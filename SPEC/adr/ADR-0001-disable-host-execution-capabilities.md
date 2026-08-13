@@ -40,3 +40,8 @@ rerank schema 运行时默认值、行业问答/Milvus 硬编码口令），在 
   `security/INCIDENT-2026-08-13-hardcoded-credentials.md` 撤销清单跟踪。
 - 未配置 `MAP_RERANK_AUTH_TOKEN` 等环境变量的部署，rerank/行业问答/Milvus
   相关能力 fail-closed（空配置不发起网络调用），部署侧需补齐注入。
+- **Known risk R1（登记在 incident §4）**：MCP stdio 工具仍以宿主子进程
+  运行（动作 3 才移入沙箱），core 路由暂无 service identity 防护；在
+  动作 3 + P0-CFG-AUTH-01 完成前依赖网络隔离，暴露面扩大前必须加认证。
+- dev 环境配置中的内网端点（10.x.x.x）保留为环境配置（非凭据），由
+  P1-CONFIG-01 统一治理。
