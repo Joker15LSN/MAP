@@ -9,9 +9,9 @@
 #   map_migrator               - owns map_control schema, runs Alembic DDL
 #   map                        - business/app role: DML only, NEVER superuser
 #
-# Passwords are injected via environment references (compose interpolation);
-# the repository defaults are local-profile only and MUST be overridden in
-# production (see .env.example).
+# Passwords are injected via environment references (compose interpolation).
+# P0-SEC-01: no repository defaults — the script fails fast when a password
+# variable is unset (see .env.example for local profile values).
 #
 # R3-P2-03 injection safety: role names are validated as simple identifiers
 # and interpolated ONLY through format('%I'); passwords travel through psql

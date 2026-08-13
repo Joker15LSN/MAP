@@ -49,7 +49,15 @@ jobs:
             sleep 1
           done
           docker cp map-business-backend/db/init/01-roles.sh map-ci-postgres:/tmp/01-roles.sh
-          docker exec map-ci-postgres bash /tmp/01-roles.sh
+          # P0-SEC-01: role passwords are required by the init script
+          # (local CI values only — the CI postgres is ephemeral).
+          docker exec map-ci-postgres bash -c '
+              export MAP_POSTGRES_APP_USER=map
+              export MAP_POSTGRES_MIGRATOR_USER=map_migrator
+              export MAP_POSTGRES_APP_PASSWORD=map
+              export MAP_POSTGRES_MIGRATOR_PASSWORD=map-migrator-local
+              bash /tmp/01-roles.sh
+            '
 
       - name: Release gate
         run: bash scripts/release_gate.sh

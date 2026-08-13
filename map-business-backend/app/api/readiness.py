@@ -18,7 +18,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from ..db.session import DEFAULT_DSN
 from ..settings import DEFAULT_WORKSPACE_CODE, DEFAULT_WORKSPACE_ID
 
 logger = logging.getLogger(__name__)
@@ -48,8 +47,21 @@ async def ready(request: Request) -> JSONResponse:
     checks: dict[str, object] = {}
     ok = True
 
+    dsn = os.getenv("MAP_CONTROL_DB_DSN", "")
+    if not dsn:
+        # P0-SEC-01: no repository default DSN — degrade to "not ready".
+        return {
+            "ok": False,
+            "checks": {
+                "database": {
+                    "ok": False,
+                    "error": "MAP_CONTROL_DB_DSN is not configured",
+                }
+            },
+        }
+
     engine = create_async_engine(
-        os.getenv("MAP_CONTROL_DB_DSN", DEFAULT_DSN),
+        dsn,
         poolclass=NullPool,
         pool_pre_ping=True,
     )

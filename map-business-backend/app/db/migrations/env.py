@@ -37,7 +37,7 @@ config.set_main_option(
     "sqlalchemy.url",
     os.getenv(
         "MAP_CONTROL_MIGRATION_DSN",
-        os.getenv("MAP_CONTROL_DB_DSN", "postgresql+asyncpg://map:map@127.0.0.1:15432/map"),
+        os.getenv("MAP_CONTROL_DB_DSN", ""),
     ),
 )
 
