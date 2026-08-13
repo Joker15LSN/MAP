@@ -1,0 +1,73 @@
+{
+  "schema_version": "1.1.0",
+  "task_id": "P0-SEC-01",
+  "ac_id": "AC-SEC-02",
+  "status": "pass",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "d097cb9eb535f9f5a6e426ed9c56a9b6fab7a267",
+  "environment_digest": "bbad6cb9769ef1fd44972ca9cf70dd92627d0696781d0e718ab26adfae16d883",
+  "started_at": "2026-08-13T15:32:36.445634+00:00",
+  "finished_at": "2026-08-13T15:32:36.517608+00:00",
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "producer": {
+    "agent": "reasonix",
+    "version": "1.0.0"
+  },
+  "command": "map_core/.venv/bin/python -m pytest map_core/tests/test_disabled_capabilities.py -q",
+  "exit_code": 0,
+  "artifacts": [
+    {
+      "path": "map_core/map_core/service/agent/disabled_capabilities.py",
+      "sha256": "3f84eccf42e9e21b82d7723553caf4501c8d8201a9ad93ef2b3caf6eb667e2b6",
+      "media_type": "text/x-python"
+    },
+    {
+      "path": "map_core/map_core/service/agent/tool_executor.py",
+      "sha256": "ffcbdaf4216fcfdbf24e4baae1e3d681b516cd9fb22e23bca4d86397d8c48b34",
+      "media_type": "text/x-python"
+    },
+    {
+      "path": "map_core/map_core/service/agent/tool_registry.py",
+      "sha256": "4ca87c6c4403fd20fc28596f4891e113fc49584af34b6d5d6ffe49380af6b30d",
+      "media_type": "text/x-python"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "registry_excludes_host_exec_tools",
+      "expected": "python_exec_tool/bash_tool not registered, not listed",
+      "actual": "both names absent from build_tool_registry/list_registered_tool_names",
+      "result": "pass"
+    },
+    {
+      "name": "host_exec_implementations_removed",
+      "expected": "python_exec_tool.py/bash_tool.py physically deleted",
+      "actual": "importlib.util.find_spec returns None for both modules",
+      "result": "pass"
+    },
+    {
+      "name": "invocation_returns_capability_disabled",
+      "expected": "stable {error: CAPABILITY_DISABLED, code: capability_disabled}",
+      "actual": "ToolExecutor.execute_tool returns exact disabled result for both names",
+      "result": "pass"
+    },
+    {
+      "name": "legacy_config_validation_keeps_working",
+      "expected": "find_invalid_tool_names([python_exec_tool,bash_tool]) == []",
+      "actual": "both names stay known; unknown names still rejected",
+      "result": "pass"
+    },
+    {
+      "name": "pytest_suite_green",
+      "expected": "pytest exit 0",
+      "actual": "exit 0: ........                                                                 [100%]\n8 passed in 1.25s",
+      "result": "pass"
+    }
+  ]
+}

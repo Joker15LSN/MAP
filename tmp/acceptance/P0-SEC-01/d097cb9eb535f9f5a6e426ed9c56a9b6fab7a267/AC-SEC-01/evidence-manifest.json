@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.1.0",
+  "task_id": "P0-SEC-01",
+  "ac_id": "AC-SEC-01",
+  "status": "pass",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "d097cb9eb535f9f5a6e426ed9c56a9b6fab7a267",
+  "environment_digest": "bbad6cb9769ef1fd44972ca9cf70dd92627d0696781d0e718ab26adfae16d883",
+  "started_at": "2026-08-13T15:32:34.496769+00:00",
+  "finished_at": "2026-08-13T15:32:34.568802+00:00",
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "producer": {
+    "agent": "reasonix",
+    "version": "1.0.0"
+  },
+  "command": "grep -rnE '<credential-patterns>' . (filtered); map_core/.venv/bin/python -m pytest map_core/tests/test_hardcoded_credential_scan.py -q",
+  "exit_code": 0,
+  "artifacts": [
+    {
+      "path": "security/INCIDENT-2026-08-13-hardcoded-credentials.md",
+      "sha256": "79cf19710dd25dd789ddb6478f6fba25bcdd93918686b9d0baf1ebfd02a63d6e",
+      "media_type": "text/markdown"
+    },
+    {
+      "path": "map_core/tests/test_hardcoded_credential_scan.py",
+      "sha256": "f681484f2bb707b045dde84ee0165e2c1abd0a6845b8735403f7e2c049f1d256",
+      "media_type": "text/x-python"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "tree_scan_no_fixed_secrets",
+      "expected": "0 hardcoded credential hits in tracked source",
+      "actual": "0 hits",
+      "result": "pass"
+    },
+    {
+      "name": "credential_scan_gate_passes",
+      "expected": "pytest exit 0",
+      "actual": "exit 0: .                                                                        [100%]\n1 passed in 0.00s",
+      "result": "pass"
+    },
+    {
+      "name": "revocation_tracker_registered",
+      "expected": "incident doc lists all removed keys with revocation status",
+      "actual": "INCIDENT-2026-08-13 lists 5 credential entries with PENDING-REVOCATION",
+      "result": "pass"
+    }
+  ]
+}
