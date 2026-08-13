@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import time
 from collections.abc import Callable
@@ -498,13 +499,14 @@ async def _test_split_question() -> None:
         "上个月supos的合同额是多少",
     ]
 
-    METRIC_UBDDEV_MILVUS_URI = "http://10.16.11.41:19539"
-    MILVUS_DB_NAME = "dataorigin_6102261701897472"
+    # P0-SEC-01: dev-only credentials come from environment.
+    METRIC_UBDDEV_MILVUS_URI = os.getenv("MAP_MILVUS_URI", "")
+    MILVUS_DB_NAME = os.getenv("MAP_MILVUS_DB_NAME", "")
 
     milvus_client = MilvusClient(
         uri=METRIC_UBDDEV_MILVUS_URI,
-        user="root",
-        password="password",
+        user=os.getenv("MAP_MILVUS_USER", "root"),
+        password=os.getenv("MAP_MILVUS_PASSWORD", ""),
         db_name=MILVUS_DB_NAME,
     )
     await milvus_client.connect()

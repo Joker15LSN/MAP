@@ -1,5 +1,6 @@
 
 import json
+import os
 
 from httpx import HTTPError, request
 
@@ -30,13 +31,13 @@ def main():
                     # "rerank_model_config": {
                     #     "rerank_model_url": "http://10.50.56.243/v1/rerank",
                     #     "rerank_model_name": "jina-reranker-v2-base-multilingual",
-                    #     "rerank_auth_token": "gpustack_c60ea7b6efa4784c_22039bb6f38836e6a955588a5df04306",
+                    #     "rerank_auth_token": os.getenv("MAP_RERANK_AUTH_TOKEN", ""),
                     # },
                     "kb_configs": [
                         {
                             "embed_name": "bge",
                             "embed_url": "http://10.50.56.243/v1/embeddings",
-                            "embed_auth_token": "gpustack_67740332be54f86f_6711f81dbbcecdf9f85be842418e44d9",
+                            "embed_auth_token": os.getenv("MAP_EMBED_AUTH_TOKEN", ""),
                             "kb_name": "MAP（Multi Agent Path）2025年第三季度报告_知识库",
                             "kb_code": "knowledgeBase1773298195139",
                         }
@@ -49,7 +50,7 @@ def main():
         #         "embed_id": "bge",
         #         "embed_name": "bge",
         #         "embed_url": "http://10.50.56.243/v1/embeddings",
-        #         "embed_auth_token": "gpustack_67740332be54f86f_6711f81dbbcecdf9f85be842418e44d9",
+        #         "embed_auth_token": os.getenv("MAP_EMBED_AUTH_TOKEN", ""),
         #         "file_id": "6343111009762944",
         #         "file_name": "MAP（Multi Agent Path）2025年第三季度报告_表格_",
         #         "kb_code": "knowledgeBase1773298195139",
@@ -58,7 +59,7 @@ def main():
         # "rerank_model_config": {
         #     "rerank_model_url": "http://10.50.56.243/v1/rerank",
         #     "rerank_model_name": "jina-reranker-v2-base-multilingual",
-        #     "rerank_auth_token": "gpustack_c60ea7b6efa4784c_22039bb6f38836e6a955588a5df04306",
+        #     "rerank_auth_token": os.getenv("MAP_RERANK_AUTH_TOKEN", ""),
         # },
     }
 

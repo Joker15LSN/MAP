@@ -43,6 +43,7 @@ _parse_tool_context() 分支字段定义：
 
 import asyncio
 import json
+import os
 import time
 from typing import Any, Literal, cast
 
@@ -720,10 +721,11 @@ class WenshuAgent(TraceableAgent):
 
         #! legacy business_domain will become agent_id
 
+        # P0-SEC-01: no hardcoded credentials; unset password fails closed.
         milvus_client = MilvusClient(
             uri=METRIC_MILVUS_URI,
-            user="root",
-            password="password",
+            user=os.getenv("MAP_MILVUS_USER", "root"),
+            password=os.getenv("MAP_MILVUS_PASSWORD", ""),
             db_name=f"{MILVUS_DB_NAME_PREFIX}{agent_id}",
         )
         await milvus_client.connect()

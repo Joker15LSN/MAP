@@ -1,5 +1,6 @@
 
 import json
+import os
 
 from httpx import HTTPError, request
 
@@ -13,7 +14,7 @@ def main():
         "rerank_model_config": {
             "rerank_model_name": "jina-reranker-v2-base-multilingual",
             "rerank_model_url": "http://10.50.56.243/v1/rerank",
-            "rerank_auth_token": "gpustack_de6adf356d53ae9f_c803a9395068e4879708f267852629cb"
+            "rerank_auth_token": os.getenv("MAP_LLM_AUTH_TOKEN", "")
         },
         "scene_agent_config": {
             "prompt": "你是公司信息助手，请为用户提供公司新闻与内部动态信息。你必须调用工具来检索信息，回答用户的提问。你可以同时调用多次工具。你不能拒接回答问题，应该在调用工具后尽最大努力给出回答。",
@@ -31,14 +32,14 @@ def main():
                     "model": "deepseek-v4-flash",
                     "temperature": "0.7",
                     "base_url": "http://10.50.56.243/v1",
-                    "api_key": "gpustack_de6adf356d53ae9f_c803a9395068e4879708f267852629cb"
+                    "api_key": os.getenv("MAP_LLM_AUTH_TOKEN", "")
                 }
             },
             "llm_config": {
                 "model": "deepseek-v4-flash",
                 "temperature": "0.7",
                 "base_url": "http://10.50.56.243/v1",
-                "api_key": "gpustack_de6adf356d53ae9f_c803a9395068e4879708f267852629cb"
+                "api_key": os.getenv("MAP_LLM_AUTH_TOKEN", "")
             }
         },
         "tool_context": {
@@ -158,7 +159,7 @@ def main():
                                     {
                                         "model_name": "bge",
                                         "model_url":"http://10.50.56.243/v1/embeddings",
-                                        "auth_token": "gpustack_c60ea7b6efa4784c_22039bb6f38836e6a955588a5df04306"
+                                        "auth_token": os.getenv("MAP_RERANK_AUTH_TOKEN", "")
                                     }
                                 ]
                             },
@@ -176,7 +177,7 @@ def main():
                                     {
                                         "model_name": "bge",
                                         "model_url": "http://10.50.56.243/v1/embeddings",
-                                        "auth_token": "gpustack_de6adf356d53ae9f_c803a9395068e4879708f267852629cb"
+                                        "auth_token": os.getenv("MAP_LLM_AUTH_TOKEN", "")
                                     }
                                 ],
                                 "rpt_mkt_file_code_getter_api": "",

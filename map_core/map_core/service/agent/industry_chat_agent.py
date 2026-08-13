@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import httpx
@@ -17,8 +18,10 @@ class IndustryChatQueryParams(BaseModel):
 class IndustryChatAgent(TraceableAgent):
     name = "industry_chat_agent"
     description = "调用行业问答接口并直接返回结果"
-    _api_url = "http://10.50.49.35:20010/industry_chat"
-    _api_key = "zhiwen"
+    # P0-SEC-01: endpoint and credential come exclusively from environment;
+    # unset values fail closed at request time (httpx refuses empty URLs).
+    _api_url = (os.getenv("MAP_INDUSTRY_CHAT_URL") or "").strip()
+    _api_key = (os.getenv("MAP_INDUSTRY_CHAT_API_KEY") or "").strip()
     _service_request_id = "test"
     _model = "qwen2"
     _deep_think = False

@@ -49,3 +49,8 @@ test_api.http
 
 # Other
 .python-version
+
+# P0-SEC-01: never ship local credential files into the build context
+.env
+.env.*
+!.env.example
