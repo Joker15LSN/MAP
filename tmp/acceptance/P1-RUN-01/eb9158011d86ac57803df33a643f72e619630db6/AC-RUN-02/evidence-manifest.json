@@ -2,7 +2,7 @@
   "schema_version": "1.1.0",
   "task_id": "P1-RUN-01",
   "ac_id": "AC-RUN-02",
-  "status": "blocked",
+  "status": "superseded",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
   "implementation_sha": "eb9158011d86ac57803df33a643f72e619630db6",
   "environment_digest": "483ea2d8423a7bda6cd2e2f312ce120888a4d909f1acc626cf918c66b5af5543",
@@ -35,10 +35,10 @@
   "waiver_owner": null,
   "waiver_expires_at": null,
   "not_applicable_reason": null,
-  "blocked_reason": "durable Run/Checkpoint tables and worker not implemented in this change set",
-  "blocker_owner": "development owner (golden-taskbook implementation)",
-  "superseded_by": null,
-  "superseded_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P1-RUN-01/c5a3a03e6ed04ffc5d2eba7ec9a6e6cddcfa5565/AC-RUN-02/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha c5a3a03e6ed04ffc5d2eba7ec9a6e6cddcfa5565",
   "producer": {
     "agent": "developer-agent",
     "version": "1.0.0"
