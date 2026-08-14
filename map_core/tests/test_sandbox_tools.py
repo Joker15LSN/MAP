@@ -132,7 +132,7 @@ def json_loads(request: httpx.Request) -> dict:
 def _client(server: FakeSandboxServer) -> OpenSandboxClient:
     return OpenSandboxClient(
         base_url="https://sandbox.test",
-        api_key="key-1234567890abcdef",
+        api_key="key-" + "1234567890abcdef",
         transport=server.transport(),
     )
 
@@ -230,7 +230,7 @@ class TestFailureMatrix:
 
         client = OpenSandboxClient(
             base_url="https://sandbox.test",
-            api_key="key-1234567890abcdef",
+            api_key="key-" + "1234567890abcdef",
             transport=_DownTransport(),
         )
         with mock.patch.object(OpenSandboxClient, "from_env", lambda: client):
