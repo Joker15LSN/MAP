@@ -15,7 +15,7 @@
   "not_applicable_reason": null,
   "blocked_reason": null,
   "blocker_owner": null,
-  "superseded_by": "tmp/acceptance/P0-CONTRACT-01/5a25346f710aef95610df71d2f7c3078b69fe470/AC-CONTRACT-01/evidence-manifest.json",
+  "superseded_by": "tmp/acceptance/P0-CONTRACT-01/dd785a251dcb95dc53b8713cd5d0e9ca0e1949c5/AC-CONTRACT-01/evidence-manifest.json",
   "superseded_reason": "Superseded by review R-05: cancel-state predicate and exhaustive negative coverage were defective; evidence regenerated at final HEAD",
   "producer": {
     "agent": "reasonix",

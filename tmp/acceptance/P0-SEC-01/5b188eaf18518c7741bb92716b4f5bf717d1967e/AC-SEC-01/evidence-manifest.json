@@ -15,7 +15,7 @@
   "not_applicable_reason": null,
   "blocked_reason": null,
   "blocker_owner": null,
-  "superseded_by": "tmp/acceptance/P0-SEC-01/5a25346f710aef95610df71d2f7c3078b69fe470/AC-SEC-01/evidence-manifest.json",
+  "superseded_by": "tmp/acceptance/P0-SEC-01/dd785a251dcb95dc53b8713cd5d0e9ca0e1949c5/AC-SEC-01/evidence-manifest.json",
   "superseded_reason": "AC-SEC-01 pass claim was based on a scan that only covered map_core python sources while the incident doc still contained usable credential material; superseded by review R-01, evidence regenerated at final HEAD",
   "producer": {
     "agent": "reasonix",
