@@ -194,6 +194,16 @@ run compose-config "$ROOT" docker compose config --quiet
 # not-run/superseded fail the release. Non-final runs stay structure-only
 # and are explicitly NOT release evidence.
 run security-scan "$ROOT" python3 scripts/security_scan.py --scope tree,index,build-context --redact --fail-on-hit
+# S2-05: the scanner's own failure matrix runs before trusting it with a
+# gate decision (substring allowlist, exact exemptions, streaming scans,
+# explicit-commit tree scope, fail-closed unscanned members, redaction).
+run security-scan-self-test "$ROOT" python3 scripts/test_security_scan.py
+if [ "$FINAL_MODE" = "1" ]; then
+    # S2-05: the FINAL gate must also build and scan the shipping images.
+    # The image scope fails closed (exit 2) when docker is unavailable -
+    # an unavailable scan is never recorded as pass.
+    run security-scan-image "$ROOT" python3 scripts/security_scan.py --scope image --build-image --redact --fail-on-hit --json
+fi
 # S2-01: the validator's own failure matrix runs before trusting it with
 # release evidence (blocked evidence, stale sha, wrong dirs, extra fields,
 # expired waivers, hash tampering, dependency cycles, ancestry rules).

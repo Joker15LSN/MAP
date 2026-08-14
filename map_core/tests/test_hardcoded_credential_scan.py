@@ -135,12 +135,15 @@ def test_image_scope_fails_closed_without_build() -> None:
     import scripts.security_scan as scan
 
     hits = []
+    unscanned: list[dict[str, str]] = []
     bogus = {
         name: "map-security-scan:definitely-missing-%d" % idx
         for idx, name in enumerate(scan.BUILD_CONTEXTS)
     }
     try:
-        scan.scope_image(hits, build=False, skip_unavailable=False, image_tags=bogus)
+        scan.scope_image(
+            hits, unscanned, build=False, skip_unavailable=False, image_tags=bogus
+        )
     except RuntimeError as exc:
         assert "not found" in str(exc) or "unavailable" in str(exc)
         return

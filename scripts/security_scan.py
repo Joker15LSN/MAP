@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified hardcoded-credential scanner (P0-SEC-01 / review R-01).
+"""Unified hardcoded-credential scanner (P0-SEC-01 / review R-01 / S2-05).
 
 Stable entry point:
 
@@ -8,7 +8,9 @@ Stable entry point:
 
 Scopes:
 
-- tree          : every file tracked by git in the working tree
+- tree          : every file tracked by git at an EXPLICIT commit
+                  (--commit, default HEAD), read from the git tree object -
+                  never from the working tree
 - index         : the staged (index) version of every tracked file
 - build-context : files docker would send for each declared build context
                   (honors .dockerignore, see BUILD_CONTEXTS below)
@@ -18,31 +20,54 @@ Scopes:
                   closed (exit 2) when docker is unavailable unless
                   --skip-unavailable is given.
 
+S2-05 hardening:
+
+- the allowlist is EXACT-VALUE only: a value is exempt solely when it
+  equals a registered placeholder (or is a <placeholder>); substrings like
+  fake/example/changeme inside a real formatted token are NO LONGER exempt
+  and are always reported;
+- .env.example has no whole-file exemption; only the two explicit
+  low-risk dev placeholder lines are exempt, each pinned to path+rule+line
+  with an owner and an expiry date (expired exemptions stop applying);
+- files are scanned STREAMING in chunks - there is no size-based skip for
+  text; oversized git blobs and image members are scanned in full;
+- any tracked/index/build-context member that cannot be read, or that is
+  binary and therefore not text-scannable, is recorded in the ``unscanned``
+  report section and fails the scan (exit 2) in those scopes - never a
+  silent skip;
+- image members that are binary are reported in ``unscanned`` (images
+  legitimately contain binaries) but never hide a text member from
+  scanning.
+
 Output rules (audited by map_core/tests/test_hardcoded_credential_scan.py):
 
 - the matched secret is NEVER printed, only file:line pattern sha256:<16>;
 - --redact is accepted for compatibility and is always on;
-- exit code: 0 = no hits; 1 = hits found with --fail-on-hit; 2 = scan error.
+- exit code: 0 = no hits; 1 = hits found with --fail-on-hit; 2 = scan error
+  (unreadable members, unavailable tooling, bad usage).
 
-Exemptions must be registered here with a reason and an owner; a file is
-exempt only on an exact path match (no wildcard drift).
+Exemptions are registered below as exact (path, rule, line) entries with an
+owner and an expiry date; changing a file's lines invalidates the exemption
+and the scan fails closed instead of silently widening.
 """
 
 from __future__ import annotations
 
 import argparse
+import codecs
 import fnmatch
 import hashlib
 import io
 import json
-import os
 import re
 import shutil
 import subprocess
 import sys
 import tarfile
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -91,26 +116,112 @@ CREDENTIAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
 ]
 
-_ALLOWED_LITERALS: tuple[str, ...] = (
-    "fake",
-    "fake-key",
-    "test-api-key",
-    "your_token",
-    "your_user_id",
-    "your_name",
-    "<redacted>",
-    "<model-endpoint>",
-    "<random>",
-    "example",
-    "changeme",
+# S2-05: exact-value allowlist only. A match is exempt ONLY when the whole
+# matched value equals one of these placeholders (or is a <placeholder>).
+# Substrings (fake/example/changeme inside a real formatted token) are
+# reported.
+_ALLOWED_EXACT_VALUES: frozenset[str] = frozenset(
+    {
+        "changeme",
+        "example",
+        "fake",
+        "fake-key",
+        "test-api-key",
+        "your_token",
+        "your_user_id",
+        "your_name",
+        "<redacted>",
+        "<model-endpoint>",
+        "<random>",
+        "<local-dev-password>",
+        "<your-password-here>",
+    }
 )
 
-EXEMPT_FILES: dict[str, dict[str, str]] = {
-    ".env.example": {
-        "reason": "dev-only template with example values; production must override",
-        "owner": "platform-security",
-    },
-}
+
+@dataclass(frozen=True)
+class Exemption:
+    """Exact (path, rule, line) exemption with an owner and an expiry date.
+
+    Only the registered line of the registered file is exempt for the
+    registered rule. A line shift or a rule drift invalidates the exemption
+    and the scan fails closed.
+    """
+
+    path: str
+    rule: str
+    line: int
+    reason: str
+    owner: str
+    expires_at: str  # ISO date YYYY-MM-DD
+
+
+EXEMPTIONS: tuple[Exemption, ...] = (
+    # .env.example dev-only placeholder values (low-risk, non-secret).
+    Exemption(
+        ".env.example", "env_password_literal", 34,
+        "dev-only local placeholder, never a real credential",
+        "platform-security", "2027-08-31",
+    ),
+    Exemption(
+        ".env.example", "env_password_literal", 38,
+        "dev-only local placeholder, never a real credential",
+        "platform-security", "2027-08-31",
+    ),
+    # Test canary fixtures: purpose-built fake tokens used to prove the
+    # sanitizers/egress wipe secrets. They are never real credentials.
+    Exemption(
+        "map_core/tests/test_sensitive_data.py", "openai_key", 9,
+        "test canary fixture (fake token)", "platform-security", "2027-08-31",
+    ),
+    Exemption(
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 34,
+        "test canary fixture (fake token)", "platform-security", "2027-08-31",
+    ),
+    Exemption(
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 179,
+        "test fixture value (fake token)", "platform-security", "2027-08-31",
+    ),
+    Exemption(
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 183,
+        "test fixture value (fake token)", "platform-security", "2027-08-31",
+    ),
+    Exemption(
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 184,
+        "test fixture value (fake token)", "platform-security", "2027-08-31",
+    ),
+    Exemption(
+        "map_core/tests/test_industry_chat_canary.py", "openai_key", 14,
+        "test canary fixture (fake token)", "platform-security", "2027-08-31",
+    ),
+    # Auth-boundary fixtures: purpose-built fake bearer tokens proving the
+    # identity gates; never real credentials.
+    Exemption(
+        "map-business-backend/tests/integration/test_config_audit.py",
+        "literal_secret_assignment", 42,
+        "test fixture: fake bearer token", "platform-security", "2027-08-31",
+    ),
+    Exemption(
+        "map-business-backend/tests/integration/test_feedback.py",
+        "literal_secret_assignment", 34,
+        "test fixture: fake bearer token", "platform-security", "2027-08-31",
+    ),
+    Exemption(
+        "map-business-backend/tests/integration/test_v1_error_matrix.py",
+        "literal_secret_assignment", 39,
+        "test fixture: fake matrix secret", "platform-security", "2027-08-31",
+    ),
+    Exemption(
+        "map-business-backend/tests/test_auth_boundary.py",
+        "literal_secret_assignment", 28,
+        "test fixture: fake boundary secret", "platform-security", "2027-08-31",
+    ),
+    Exemption(
+        "map_core/tests/test_sensitive_data.py", "uri_embedded_password", 32,
+        "test fixture: fake DSN with placeholder password",
+        "platform-security", "2027-08-31",
+    ),
+)
 
 BUILD_CONTEXTS: dict[str, str] = {
     "map_core": "map_core",
@@ -119,16 +230,32 @@ BUILD_CONTEXTS: dict[str, str] = {
 }
 
 MAX_TEXT_FILE_BYTES = 10 * 1024 * 1024
+# Members larger than this in an image layer are scanned STREAMING (not
+# skipped); the constant only guards the binary sniffing prefix.
 MAX_IMAGE_LAYER_MEMBER_BYTES = 2 * 1024 * 1024
+STREAM_CHUNK_BYTES = 1024 * 1024
+
+# Scopes whose unreadable/binary members FAIL the scan (exit 2). Image
+# scopes legitimately contain binaries, so image members are only reported.
+STRICT_UNSCANNED_SCOPES = ("tree", "index", "build-context")
 
 
-def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
+        ["git", "-C", str(ROOT), *args],
+        capture_output=True,
+        check=check,
+    )
+
+
+def _git_text(*args: str, check: bool = True) -> str:
+    proc = subprocess.run(
         ["git", "-C", str(ROOT), *args],
         capture_output=True,
         text=True,
         check=check,
     )
+    return proc.stdout
 
 
 def fingerprint(value: str) -> str:
@@ -159,66 +286,257 @@ def _is_binary(data: bytes) -> bool:
     return b"\x00" in data[:8192]
 
 
+def _exemption_expired(exemption: Exemption) -> bool:
+    try:
+        expires = date.fromisoformat(exemption.expires_at)
+    except ValueError:
+        return True  # malformed expiry = never applies (fail closed)
+    return expires < date.today()
+
+
+def _hit_relpath(hit: Hit) -> str:
+    """Repo-relative path from a hit location ("scope:relpath")."""
+    return hit.location.split(":", 1)[1] if ":" in hit.location else hit.location
+
+
+def exempted_exemption(relpath: str, line: int, pattern: str) -> Exemption | None:
+    """Return the unexpired exemption covering (relpath, line, pattern)."""
+    for exemption in EXEMPTIONS:
+        if exemption.path != relpath:
+            continue
+        if exemption.line != line:
+            continue
+        if exemption.rule != pattern:
+            continue
+        if _exemption_expired(exemption):
+            continue
+        return exemption
+    return None
+
+
+_ASSIGNMENT_PATTERNS: frozenset[str] = frozenset(
+    {
+        "literal_password_assignment",
+        "literal_secret_assignment",
+        "env_password_literal",
+        "env_token_literal",
+    }
+)
+
+
+def _extract_assigned_value(value: str) -> str:
+    """For assignment-style patterns, reduce the match to the VALUE part.
+
+    ``password = "changeme"`` -> ``changeme``, ``X_PASSWORD=somevalue`` ->
+    ``somevalue`` - the exact-value allowlist applies to the value, not to
+    the whole statement.
+    """
+    match = re.search(r"=\s*(.*)$", value)
+    if not match:
+        return value
+    extracted = match.group(1).strip()
+    if len(extracted) >= 2 and extracted[0] == extracted[-1] and extracted[0] in "\"'":
+        extracted = extracted[1:-1]
+    return extracted
+
+
 def _allowed_hit(value: str) -> bool:
     if "<" in value and ">" in value:
         # Documentation placeholders like <local-dev-password> are not secrets.
         return True
-    lowered = value.lower()
-    return any(allowed in lowered for allowed in _ALLOWED_LITERALS)
+    return value in _ALLOWED_EXACT_VALUES
 
 
-def scan_text(text: str, location: str, hits: list[Hit]) -> None:
+def scan_text(
+    text: str,
+    location: str,
+    hits: list[Hit],
+    *,
+    relpath: str | None = None,
+    exemptions_used: list[Exemption] | None = None,
+) -> None:
+    """Scan a text block line by line; exact exemptions are honored."""
+    effective_relpath = relpath if relpath is not None else _hit_relpath_of(location)
     for line_no, line in enumerate(text.splitlines(), start=1):
         for pattern_name, pattern in CREDENTIAL_PATTERNS:
             for match in pattern.finditer(line):
                 value = match.group(0)
-                if _allowed_hit(value):
+                check_value = (
+                    _extract_assigned_value(value)
+                    if pattern_name in _ASSIGNMENT_PATTERNS
+                    else value
+                )
+                if _allowed_hit(check_value):
+                    continue
+                exemption = exempted_exemption(effective_relpath, line_no, pattern_name)
+                if exemption is not None:
+                    if exemptions_used is not None:
+                        exemptions_used.append(exemption)
                     continue
                 hits.append(Hit(location, line_no, pattern_name, value))
 
 
-def scan_file_bytes(data: bytes, location: str, hits: list[Hit]) -> bool:
-    if _is_binary(data) or len(data) > MAX_TEXT_FILE_BYTES:
-        return False
+def _hit_relpath_of(location: str) -> str:
+    return location.split(":", 1)[1] if ":" in location else location
+
+
+def _decode_prefix(data: bytes) -> tuple[codecs.IncrementalDecoder, str]:
+    """Pick the text encoding for a byte stream.
+
+    UTF-8 first (strict on the prefix); fall back to latin-1 which never
+    fails and preserves byte offsets for the ASCII credential patterns.
+    """
+    prefix = data[: STREAM_CHUNK_BYTES]
     try:
-        text = data.decode("utf-8")
+        prefix.decode("utf-8")
+        return codecs.getincrementaldecoder("utf-8")("replace"), "utf-8"
     except UnicodeDecodeError:
-        try:
-            text = data.decode("latin-1")
-        except Exception:
-            return False
-    scan_text(text, location, hits)
+        return codecs.getincrementaldecoder("latin-1")("strict"), "latin-1"
+
+
+def _iter_lines(chunks: Iterator[bytes]) -> Iterator[str]:
+    """Streaming line iterator: chunked decode, never buffers whole files."""
+    first_chunk = next(chunks, b"")
+    if not first_chunk:
+        return
+    decoder, _encoding = _decode_prefix(first_chunk)
+    carry = ""
+    chunk = first_chunk
+    while chunk:
+        carry += decoder.decode(chunk)
+        lines = carry.splitlines()
+        if not lines:
+            chunk = next(chunks, b"")
+            continue
+        carry = lines.pop()
+        yield from lines
+        chunk = next(chunks, b"")
+    if carry:
+        yield carry
+
+
+def scan_bytes_stream(
+    chunks: Iterator[bytes],
+    location: str,
+    relpath: str,
+    hits: list[Hit],
+    unscanned: list[dict[str, str]],
+    *,
+    strict: bool,
+) -> bool:
+    """Streaming scan of a byte source; returns False when unscannable.
+
+    Binary members are recorded in ``unscanned`` and never silently
+    skipped; oversized text is scanned in full (no size-based skip).
+    """
+    first = next(chunks, b"")
+    if not first:
+        return True
+    if _is_binary(first):
+        unscanned.append({"location": location, "reason": "binary"})
+        return False
+
+    def all_chunks() -> Iterator[bytes]:
+        yield first
+        yield from chunks
+
+    for line_no, line in enumerate(_iter_lines(all_chunks()), start=1):
+        for pattern_name, pattern in CREDENTIAL_PATTERNS:
+            for match in pattern.finditer(line):
+                value = match.group(0)
+                check_value = (
+                    _extract_assigned_value(value)
+                    if pattern_name in _ASSIGNMENT_PATTERNS
+                    else value
+                )
+                if _allowed_hit(check_value):
+                    continue
+                exemption = exempted_exemption(relpath, line_no, pattern_name)
+                if exemption is not None:
+                    continue
+                hits.append(Hit(location, line_no, pattern_name, value))
     return True
 
 
+def scan_file_bytes(
+    data: bytes,
+    location: str,
+    hits: list[Hit],
+    *,
+    relpath: str | None = None,
+    unscanned: list[dict[str, str]] | None = None,
+) -> bool:
+    """Scan an in-memory byte buffer (whole file). Returns True when scanned.
+
+    Oversized text is processed via the streaming iterator (no skip);
+    binary buffers are recorded in ``unscanned`` and return False.
+    """
+    effective_relpath = relpath if relpath is not None else _hit_relpath_of(location)
+    unscan_list = unscanned if unscanned is not None else []
+    scanned = scan_bytes_stream(
+        iter([data]),
+        location,
+        effective_relpath,
+        hits,
+        unscan_list,
+        strict=True,
+    )
+    return scanned
+
+
 def _is_exempt(relpath: str) -> bool:
-    return relpath.replace(os.sep, "/") in EXEMPT_FILES
+    """Whole-file exemptions no longer exist (S2-05); kept for the audit test."""
+    return False
 
 
-def scope_tree(hits: list[Hit]) -> None:
+def _git_blob(commit: str, rel: str) -> bytes | None:
+    proc = _git("show", f"{commit}:{rel}", check=False)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def scope_tree(
+    hits: list[Hit],
+    unscanned: list[dict[str, str]],
+    *,
+    commit: str | None = None,
+) -> None:
+    """Scan every tracked file AT the given commit (default HEAD).
+
+    S2-05: contents come from the git tree object, never from the working
+    tree; unreadable blobs are recorded and fail closed.
+    """
+    tree_commit = commit or _git_text("rev-parse", "HEAD").strip()
+    proc = _git("ls-tree", "-r", "--name-only", "-z", tree_commit)
+    for raw in proc.stdout.split(b"\x00"):
+        rel = raw.decode("utf-8", "replace").strip()
+        if not rel:
+            continue
+        blob = _git_blob(tree_commit, rel)
+        location = "tree:%s" % rel
+        if blob is None:
+            unscanned.append(
+                {"location": location, "reason": f"git blob unreadable at {tree_commit}"}
+            )
+            continue
+        scan_file_bytes(blob, location, hits, relpath=rel, unscanned=unscanned)
+
+
+def scope_index(hits: list[Hit], unscanned: list[dict[str, str]]) -> None:
     proc = _git("ls-files", "-z")
-    for raw in proc.stdout.split("\x00"):
-        rel = raw.strip()
-        if not rel or _is_exempt(rel):
+    for raw in proc.stdout.split(b"\x00"):
+        rel = raw.decode("utf-8", "replace").strip()
+        if not rel:
             continue
-        path = ROOT / rel
-        try:
-            data = path.read_bytes()
-        except OSError:
-            continue
-        scan_file_bytes(data, "tree:" + rel, hits)
-
-
-def scope_index(hits: list[Hit]) -> None:
-    proc = _git("ls-files", "-z")
-    for raw in proc.stdout.split("\x00"):
-        rel = raw.strip()
-        if not rel or _is_exempt(rel):
-            continue
-        blob = _git("show", ":" + rel)
+        blob = _git("show", ":" + rel, check=False)
+        location = "index:%s" % rel
         if blob.returncode != 0:
+            unscanned.append(
+                {"location": location, "reason": "index blob unreadable"}
+            )
             continue
-        scan_file_bytes(blob.stdout.encode("utf-8"), "index:" + rel, hits)
+        scan_file_bytes(blob.stdout, location, hits, relpath=rel, unscanned=unscanned)
 
 
 def _dockerignore_patterns(context: Path) -> list[str]:
@@ -277,7 +595,9 @@ def _dockerignore_denies(patterns: list[str], rel: str) -> bool:
     return denied
 
 
-def scope_build_context(hits: list[Hit]) -> None:
+def scope_build_context(
+    hits: list[Hit], unscanned: list[dict[str, str]]
+) -> None:
     for name, rel in BUILD_CONTEXTS.items():
         context = ROOT / rel
         if not context.is_dir():
@@ -287,11 +607,30 @@ def scope_build_context(hits: list[Hit]) -> None:
             relpath = path.relative_to(context).as_posix()
             if _dockerignore_denies(patterns, relpath):
                 continue
+            repo_rel = path.relative_to(ROOT).as_posix()
+            location = "build-context:%s" % repo_rel
             try:
-                data = path.read_bytes()
-            except OSError:
-                continue
-            scan_file_bytes(data, "build-context:%s/%s" % (name, relpath), hits)
+                with open(path, "rb") as fh:
+                    scan_bytes_stream(
+                        _chunked_file(fh),
+                        location,
+                        repo_rel,
+                        hits,
+                        unscanned,
+                        strict=True,
+                    )
+            except OSError as exc:
+                unscanned.append(
+                    {"location": location, "reason": "unreadable: %s" % exc}
+                )
+
+
+def _chunked_file(fh: Any) -> Iterator[bytes]:
+    while True:
+        chunk = fh.read(STREAM_CHUNK_BYTES)
+        if not chunk:
+            return
+        yield chunk
 
 
 def _docker_available() -> bool:
@@ -309,7 +648,9 @@ def _build_image(context_name: str, context: Path, tag: str) -> None:
         raise RuntimeError("docker build for %s failed: %s" % (context_name, tail))
 
 
-def _scan_image_tarball(name: str, raw: bytes, hits: list[Hit]) -> None:
+def _scan_image_tarball(
+    name: str, raw: bytes, hits: list[Hit], unscanned: list[dict[str, str]]
+) -> None:
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as outer:
         for member in outer.getmembers():
             if not member.isfile():
@@ -317,26 +658,54 @@ def _scan_image_tarball(name: str, raw: bytes, hits: list[Hit]) -> None:
             if member.name.endswith("manifest.json") or member.name.endswith(".json"):
                 payload = outer.extractfile(member)
                 if payload is None:
+                    unscanned.append(
+                        {"location": "image:%s#config" % name, "reason": "unreadable"}
+                    )
                     continue
-                data = payload.read(MAX_TEXT_FILE_BYTES + 1)
-                scan_file_bytes(data, "image:%s#config" % name, hits)
+                data = payload.read()
+                scan_bytes_stream(
+                    iter([data]),
+                    "image:%s#config" % name,
+                    name,
+                    hits,
+                    unscanned,
+                    strict=False,
+                )
             if member.name.endswith("layer.tar"):
                 payload = outer.extractfile(member)
                 if payload is None:
+                    unscanned.append(
+                        {"location": "image:%s#layer" % name, "reason": "unreadable"}
+                    )
                     continue
                 with tarfile.open(fileobj=payload, mode="r:") as layer:
                     for inner in layer.getmembers():
-                        if not inner.isfile() or inner.size > MAX_IMAGE_LAYER_MEMBER_BYTES:
+                        if not inner.isfile():
                             continue
                         fp = layer.extractfile(inner)
                         if fp is None:
+                            unscanned.append(
+                                {
+                                    "location": "image:%s/%s" % (name, inner.name),
+                                    "reason": "unreadable",
+                                }
+                            )
                             continue
-                        data = fp.read(MAX_IMAGE_LAYER_MEMBER_BYTES + 1)
-                        scan_file_bytes(data, "image:%s/%s" % (name, inner.name), hits)
+                        # S2-05: large members are scanned STREAMING in
+                        # chunks; there is no size-based skip for text.
+                        scan_bytes_stream(
+                            _chunked_file(fp),
+                            "image:%s/%s" % (name, inner.name),
+                            inner.name,
+                            hits,
+                            unscanned,
+                            strict=False,
+                        )
 
 
 def scope_image(
     hits: list[Hit],
+    unscanned: list[dict[str, str]],
     *,
     build: bool,
     skip_unavailable: bool,
@@ -367,20 +736,39 @@ def scope_image(
         save = subprocess.run(["docker", "save", tag], capture_output=True)
         if save.returncode != 0:
             raise RuntimeError("docker save %s failed" % tag)
-        _scan_image_tarball(name, save.stdout, hits)
+        _scan_image_tarball(name, save.stdout, hits, unscanned)
 
 
 def build_report(
-    hits: list[Hit], scopes: list[str], exempt: dict[str, dict[str, str]]
+    hits: list[Hit],
+    scopes: list[str],
+    exempt: dict[str, dict[str, str]],
+    *,
+    unscanned: list[dict[str, str]] | None = None,
+    exemptions_used: list[Exemption] | None = None,
+    commit: str | None = None,
 ) -> dict[str, Any]:
     return {
         "scopes": scopes,
+        "commit": commit,
         "hits": [hit.to_dict() for hit in hits],
         "hit_count": len(hits),
+        "unscanned": list(unscanned or []),
+        "unscanned_count": len(unscanned or []),
         "exempt_files": {
             path: {"reason": info["reason"], "owner": info["owner"]}
             for path, info in exempt.items()
         },
+        "exemptions_used": [
+            {
+                "path": ex.path,
+                "rule": ex.rule,
+                "line": ex.line,
+                "owner": ex.owner,
+                "expires_at": ex.expires_at,
+            }
+            for ex in (exemptions_used or [])
+        ],
     }
 
 
@@ -397,6 +785,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-image", action="store_true",
                         help="build each context image before scanning (image scope)")
     parser.add_argument("--json", action="store_true", help="emit a JSON report")
+    parser.add_argument(
+        "--commit", default=None,
+        help="git commit whose tree the 'tree' scope scans (default HEAD)",
+    )
     args = parser.parse_args(argv)
 
     scopes = [s.strip() for s in args.scope.split(",") if s.strip()]
@@ -410,17 +802,19 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     hits: list[Hit] = []
+    unscanned: list[dict[str, str]] = []
     try:
         for scope in scopes:
             if scope == "tree":
-                scope_tree(hits)
+                scope_tree(hits, unscanned, commit=args.commit)
             elif scope == "index":
-                scope_index(hits)
+                scope_index(hits, unscanned)
             elif scope == "build-context":
-                scope_build_context(hits)
+                scope_build_context(hits, unscanned)
             elif scope == "image":
                 scope_image(
                     hits,
+                    unscanned,
                     build=args.build_image,
                     skip_unavailable=args.skip_unavailable,
                     image_tags=None,
@@ -429,16 +823,44 @@ def main(argv: list[str] | None = None) -> int:
         print("security scan error: %s" % exc, file=sys.stderr)
         return 2
 
-    report = build_report(hits, scopes, EXEMPT_FILES)
+    # S2-05 fail-closed: unreadable/binary members in strict scopes mean the
+    # scan cannot prove those scopes clean - never a silent skip.
+    strict_unscanned = [
+        item for item in unscanned
+        if item["location"].split(":", 1)[0] in STRICT_UNSCANNED_SCOPES
+    ]
+
+    report = build_report(
+        hits,
+        scopes,
+        {},
+        unscanned=unscanned,
+        commit=args.commit,
+    )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         for hit in hits:
             print("%s:%d: %s %s" % (hit.location, hit.line, hit.pattern, hit.fingerprint))
         print("security scan: %d hit(s) in %s" % (len(hits), ",".join(scopes)))
-        for path, info in sorted(EXEMPT_FILES.items()):
-            print("security scan: exempt %s (%s; owner=%s)"
-                  % (path, info["reason"], info["owner"]))
+        for item in unscanned:
+            print("security scan: unscanned %s (%s)" % (item["location"], item["reason"]))
+        for exemption in EXEMPTIONS:
+            state = "EXPIRED" if _exemption_expired(exemption) else "active"
+            print(
+                "security scan: exemption %s:%d (%s; owner=%s; expires=%s; %s)"
+                % (exemption.path, exemption.line, exemption.rule,
+                   exemption.owner, exemption.expires_at, state)
+            )
+
+    if strict_unscanned:
+        print(
+            "security scan error: %d tracked/index/build-context member(s) "
+            "could not be text-scanned (fail-closed); first: %s"
+            % (len(strict_unscanned), strict_unscanned[0]["location"]),
+            file=sys.stderr,
+        )
+        return 2
 
     if args.fail_on_hit and hits:
         return 1

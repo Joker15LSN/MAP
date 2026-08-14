@@ -13,6 +13,7 @@ __pycache__/
 *.so
 .Python
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
