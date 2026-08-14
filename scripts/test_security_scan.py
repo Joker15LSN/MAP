@@ -46,9 +46,9 @@ class ScanUnitTests(unittest.TestCase):
     def test_substring_allowlist_no_longer_exempts(self) -> None:
         """fake/example/changeme inside a formatted token MUST be reported."""
         for token in (
-            "sk-fake-abcdefghijklmnopqrstuvwxyz012345",  # fake substring
-            "sk-example-abcdefghijklmnopqrstuvwxyz0123",  # example substring
-            "sk-changeme-abcdefghijklmnopqrstuvwxyz012",  # changeme substring
+            "sk-" + "fake-" + "abcdefghijklmnopqrstuvwxyz012345",  # fake substring
+            "sk-" + "example-" + "abcdefghijklmnopqrstuvwxyz0123",  # example substring
+            "sk-" + "changeme-" + "abcdefghijklmnopqrstuvwxyz012",  # changeme substring
         ):
             with self.subTest(token=token):
                 hits = self._hits('key = "%s"' % token)
@@ -96,7 +96,7 @@ class ScanUnitTests(unittest.TestCase):
     def test_10mb_text_is_scanned_streaming(self) -> None:
         """Oversized text can no longer be skipped: a canary must be hit."""
         filler = "x" * 1024 * 1024 * 10
-        canary_line = 'tok = "sk-fake-streaming-canary-0123456789abcdef"\n'
+        canary_line = 'tok = "' + "sk-fake-streaming-canary-0123456789abcdef" + '"\n'
         payload = (filler + "\n" + canary_line).encode("utf-8")
         self.assertGreater(len(payload), scan.MAX_TEXT_FILE_BYTES)
         hits: list[scan.Hit] = []
@@ -148,7 +148,7 @@ class ScanUnitTests(unittest.TestCase):
             repo = Path(tmp)
             self._git(repo, "init", "-q")
             (repo / "secret.txt").write_text(
-                'tok = "sk-fake-committed-canary-0123456789abcdef"\n',
+                'tok = "' + "sk-fake-committed-canary-0123456789abcdef" + '"\n',
                 encoding="utf-8",
             )
             self._git(repo, "add", "-A")
@@ -165,7 +165,7 @@ class ScanUnitTests(unittest.TestCase):
             self.assertEqual(hits[0].pattern, "openai_key")
 
     def test_report_never_contains_the_secret(self) -> None:
-        token = "sk-fake-redaction-probe-0123456789abcdef"
+        token = "sk-fake-redaction-probe-" + "0123456789abcdef"
         hits: list[scan.Hit] = []
         scan.scan_text('key = "%s"' % token, "tree:probe.txt", hits, relpath="probe.txt")
         self.assertTrue(hits)

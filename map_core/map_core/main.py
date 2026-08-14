@@ -240,6 +240,24 @@ async def lifespan(app: FastAPI):
             app_logger.remove()
 
 
+def build_cors_kwargs(env: str | None = None) -> dict:
+    """S2-07: build the CORS middleware kwargs from the SHARED policy.
+
+    The same contract as the BFF (MAP_CORS_ORIGINS / MAP_CORS_ALLOW_
+    CREDENTIALS): malformed origins and production wildcard+credentials
+    fail closed here, at startup, before any request can be served.
+    """
+    from .utils.cors_policy import load_cors_policy
+
+    policy = load_cors_policy(env)
+    return {
+        "allow_origins": list(policy.origins),
+        "allow_credentials": policy.allow_credentials,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
+
+
 app = FastAPI(
     title="MAP 2.0",
     description="MAP 2.0 Service",
@@ -404,11 +422,8 @@ class RequestContextMiddleware:
 
 
 app.add_middleware(
-    CORSMiddleware,  # type: ignore
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware,  # S2-07: shared policy via build_cors_kwargs (fail-closed)
+    **build_cors_kwargs(_ensure_env()),
 )
 app.add_middleware(RequestContextMiddleware)
 # OTel SERVER span middleware wraps the whole request lifecycle (outermost).
