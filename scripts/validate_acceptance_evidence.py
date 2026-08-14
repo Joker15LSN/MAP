@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""Acceptance-evidence validator (review R-08).
+"""Acceptance-evidence validator (review R-08, second-round review S2-01).
 
-Stable entry point:
+Two EXPLICIT modes - structural integrity and release eligibility:
 
-    python3 scripts/validate_acceptance_evidence.py \
-        --profile TODO/acceptance-profile.yaml [--require-final]
+- structure (default): every required AC has exactly one current manifest at
+  the freeze sha; manifests are schema-valid (including the JSON Schema's
+  ``additionalProperties`` constraints), carry consistent
+  task_id/ac_id/implementation_sha vs. their directory path, pass waiver
+  expiry, artifact sha256 re-hash, status/exit-code consistency and
+  producer/time-order checks. Exit 0 means the evidence set is structurally
+  complete and consistent - it does NOT say anything about releasability.
+- eligibility (--require-final): everything structure mode checks, PLUS
+  every required AC's current manifest must be ``pass`` or a policy-approved
+  AND unexpired ``not-applicable-approved`` waiver. blocked/fail/running/
+  not-run/superseded make the release FAIL, with a per-status count and the
+  explicit list of non-releasable ACs printed. The FINAL release gate MUST
+  use this mode; anything else is not release evidence.
 
 Model. Git commits are immutable and evidence must describe a frozen code
 commit, so the manifest directory (tmp/acceptance/<TASK>/<commit-sha>/...)
@@ -20,13 +31,15 @@ carries the FREEZE SHA the evidence is about:
   (evidence-only tail) - i.e. the final HEAD carries the complete evidence
   set for its own frozen code.
 
-Checks: AC uniqueness, dependency acyclicity, schema/structure, conditional
-fields, real (non-placeholder) commands, status/exit-code consistency,
-artifact sha256 re-hashing against the working tree, waiver expiry.
+Exit codes: 0 = complete and consistent (and, with --require-final,
+releasable); 1 = validation or eligibility failures; 2 = usage / parse
+errors. Called by scripts/release_gate.sh - it is the single source of
+truth, no hand-counted totals allowed.
 
-Exit codes: 0 = complete and consistent; 1 = validation failures;
-2 = usage / parse errors. Called by scripts/release_gate.sh - it is the
-single source of truth, no hand-counted totals allowed.
+--report-json <path> writes a machine-readable report (mode, freeze sha,
+status counts, releasable flag, non-releasable AC list, problems) that
+scripts/release_gate.sh embeds into gate-summary.json so the release
+summary records coverage AND eligibility instead of a bare PASS.
 """
 
 from __future__ import annotations
@@ -40,8 +53,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 PROFILE_DEFAULT = "TODO/acceptance-profile.yaml"
+SCHEMA_DEFAULT = "TODO/evidence-manifest.schema.json"
 
 VALID_STATUSES = {
     "not-run",
@@ -52,6 +66,8 @@ VALID_STATUSES = {
     "superseded",
     "not-applicable-approved",
 }
+
+RELEASABLE_STATUSES = {"pass", "not-applicable-approved"}
 
 REQUIRED_FIELDS = (
     "schema_version",
@@ -84,34 +100,34 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PLACEHOLDER = re.compile(r"<[^>]+>")
 
 
-def git(*args: str) -> str:
+def git(root: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", "-C", str(ROOT), *args],
+        ["git", "-C", str(root), *args],
         capture_output=True,
         text=True,
         check=True,
     ).stdout.strip()
 
 
-def git_head() -> str:
-    return git("rev-parse", "HEAD")
+def git_head(root: Path) -> str:
+    return git(root, "rev-parse", "HEAD")
 
 
-def git_is_ancestor(sha: str) -> bool:
+def git_is_ancestor(root: Path, sha: str) -> bool:
     proc = subprocess.run(
-        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", sha, "HEAD"],
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", sha, "HEAD"],
         capture_output=True,
     )
     return proc.returncode == 0
 
 
-def git_changed_paths_since(sha: str) -> list[str]:
-    if sha == git_head():
+def git_changed_paths_since(root: Path, sha: str) -> list[str]:
+    if sha == git_head(root):
         return []
-    return git("diff", "--name-only", sha, "HEAD").splitlines()
+    return git(root, "diff", "--name-only", sha, "HEAD").splitlines()
 
 
-def load_profile(path: Path) -> dict:
+def load_profile(root: Path, path: Path) -> dict:
     if not path.is_file():
         raise SystemExit(f"profile not found: {path}")
     try:
@@ -193,10 +209,12 @@ def check_dependency_cycles(profile: dict) -> list[str]:
     return problems
 
 
-def collect_manifests(tasks: set[str]) -> list[tuple[Path, str]]:
-    """Return [(manifest_path, dir_sha)] under tmp/acceptance/<task>/<sha>/."""
-    found: list[tuple[Path, str]] = []
-    base = ROOT / "tmp" / "acceptance"
+def collect_manifests(
+    root: Path, tasks: set[str]
+) -> list[tuple[Path, str, str, str]]:
+    """Return [(manifest_path, task_dir, sha_dir, ac_dir)]."""
+    found: list[tuple[Path, str, str, str]] = []
+    base = root / "tmp" / "acceptance"
     if not base.is_dir():
         return found
     for task_dir in base.iterdir():
@@ -208,7 +226,9 @@ def collect_manifests(tasks: set[str]) -> list[tuple[Path, str]]:
             for ac_dir in sha_dir.iterdir():
                 manifest = ac_dir / "evidence-manifest.json"
                 if manifest.is_file():
-                    found.append((manifest, sha_dir.name))
+                    found.append(
+                        (manifest, task_dir.name, sha_dir.name, ac_dir.name)
+                    )
     return found
 
 
@@ -223,11 +243,167 @@ def parse_ts(value: str) -> datetime | None:
         return None
 
 
-def validate_manifest(
-    manifest: Path, *, freeze_sha: str, verify_artifacts: bool
+# ---------------------------------------------------------------------------
+# Minimal embedded JSON Schema validator (draft 2020-12 subset).
+#
+# The evidence manifest schema uses: type (incl. unions), const, enum,
+# pattern, minLength, minItems, uniqueItems, required, properties,
+# additionalProperties (false / schema), items, allOf, if/then/else, not,
+# $ref / $defs. This subset checker executes those constraints directly so
+# the validator does not depend on an external jsonschema install (the gate
+# runs under the system python3).
+# ---------------------------------------------------------------------------
+
+
+def _type_ok(instance: object, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(instance, dict)
+    if expected == "array":
+        return isinstance(instance, list)
+    if expected == "string":
+        return isinstance(instance, str)
+    if expected == "integer":
+        return isinstance(instance, int) and not isinstance(instance, bool)
+    if expected == "number":
+        return isinstance(instance, (int, float)) and not isinstance(instance, bool)
+    if expected == "boolean":
+        return isinstance(instance, bool)
+    if expected == "null":
+        return instance is None
+    return False
+
+
+def schema_matches(instance: object, schema: dict, defs: dict) -> bool:
+    """True when ``instance`` satisfies ``schema`` (violation-free)."""
+    return not _schema_check(instance, schema, defs, "")
+
+
+def _schema_check(
+    instance: object, schema: dict, defs: dict, path: str
 ) -> list[str]:
     problems: list[str] = []
-    rel = str(manifest.relative_to(ROOT))
+    if not isinstance(schema, dict):
+        return problems
+
+    if "$ref" in schema:
+        ref = schema["$ref"]
+        if ref.startswith("#/$defs/"):
+            return _schema_check(instance, defs[ref[len("#/$defs/"):]], defs, path)
+        problems.append(f"{path}: unsupported $ref {ref}")
+        return problems
+
+    expected = schema.get("type")
+    if expected:
+        choices = expected if isinstance(expected, list) else [expected]
+        if not any(_type_ok(instance, choice) for choice in choices):
+            problems.append(
+                f"{path}: expected type {expected}, got {type(instance).__name__}"
+            )
+    if "const" in schema and instance != schema["const"]:
+        problems.append(f"{path}: expected const {schema['const']!r}")
+    if "enum" in schema and instance not in schema["enum"]:
+        problems.append(f"{path}: value not in enum")
+    if isinstance(instance, str):
+        if "pattern" in schema and not re.fullmatch(schema["pattern"], instance):
+            problems.append(f"{path}: does not match pattern {schema['pattern']}")
+        if "minLength" in schema and len(instance) < schema["minLength"]:
+            problems.append(f"{path}: shorter than minLength {schema['minLength']}")
+    if isinstance(instance, list):
+        if "minItems" in schema and len(instance) < schema["minItems"]:
+            problems.append(f"{path}: fewer than minItems {schema['minItems']}")
+        if schema.get("uniqueItems") and len(
+            {json.dumps(x, sort_keys=True, default=str) for x in instance}
+        ) != len(instance):
+            problems.append(f"{path}: uniqueItems violated")
+        if "items" in schema and isinstance(schema["items"], dict):
+            for idx, item in enumerate(instance):
+                problems.extend(
+                    _schema_check(item, schema["items"], defs, f"{path}[{idx}]")
+                )
+    if isinstance(instance, dict):
+        if "required" in schema:
+            for key in schema["required"]:
+                if key not in instance:
+                    problems.append(f"{path}: missing required field {key!r}")
+        props = schema.get("properties") or {}
+        additional = schema.get("additionalProperties", True)
+        for key, value in instance.items():
+            if key in props:
+                problems.extend(
+                    _schema_check(value, props[key], defs, f"{path}.{key}")
+                )
+            elif additional is False:
+                problems.append(f"{path}: unknown field {key!r}")
+            elif isinstance(additional, dict):
+                problems.extend(
+                    _schema_check(value, additional, defs, f"{path}.{key}")
+                )
+    if "allOf" in schema:
+        for sub in schema["allOf"]:
+            if isinstance(sub, dict):
+                problems.extend(_schema_check(instance, sub, defs, path))
+    if "if" in schema and isinstance(schema["if"], dict):
+        branch = "then" if schema_matches(instance, schema["if"], defs) else "else"
+        if branch in schema and isinstance(schema[branch], dict):
+            problems.extend(_schema_check(instance, schema[branch], defs, path))
+    if "not" in schema and isinstance(schema["not"], dict):
+        if schema_matches(instance, schema["not"], defs):
+            problems.append(f"{path}: violates 'not' constraint")
+    return problems
+
+
+def load_schema(root: Path, path: Path) -> dict:
+    with open(path, encoding="utf-8") as fh:
+        schema = json.load(fh)
+    if not isinstance(schema, dict):
+        raise SystemExit(f"schema {path} must be a JSON object")
+    return schema
+
+
+def check_path_consistency(
+    manifest: Path, task_dir: str, sha_dir: str, ac_dir: str, root: Path
+) -> list[str]:
+    """S2-01: task_id/ac_id/implementation_sha must agree with the directory
+    path (tmp/acceptance/<task_id>/<implementation_sha>/<ac_id>/).
+
+    Runs for EVERY collected manifest - including manifests whose directory
+    names fall outside the expected set, so a misplaced manifest can never
+    hide behind a "no current evidence" message.
+    """
+    rel = str(manifest.relative_to(root))
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return [f"{rel}: unreadable/invalid JSON: {exc}"]
+    if not isinstance(data, dict):
+        return [f"{rel}: manifest must be a JSON object"]
+    problems: list[str] = []
+    if data.get("task_id") != task_dir:
+        problems.append(
+            f"{rel}: task_id {data.get('task_id')!r} does not match directory {task_dir!r}"
+        )
+    if data.get("ac_id") != ac_dir:
+        problems.append(
+            f"{rel}: ac_id {data.get('ac_id')!r} does not match directory {ac_dir!r}"
+        )
+    if data.get("implementation_sha") != sha_dir:
+        problems.append(
+            f"{rel}: implementation_sha {data.get('implementation_sha')!r} does not "
+            f"match directory {sha_dir!r}"
+        )
+    return problems
+
+
+def validate_manifest(
+    manifest: Path,
+    *,
+    schema: dict,
+    freeze_sha: str,
+    verify_artifacts: bool,
+    root: Path,
+) -> list[str]:
+    problems: list[str] = []
+    rel = str(manifest.relative_to(root))
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
@@ -240,8 +416,10 @@ def validate_manifest(
             problems.append(f"{rel}: missing required field {field!r}")
             return problems
 
-    if data["schema_version"] != "1.1.0":
-        problems.append(f"{rel}: schema_version must be 1.1.0")
+    # S2-01: the full evidence-manifest.schema.json is executed directly,
+    # including additionalProperties / conditional (if-then) constraints.
+    problems.extend(_schema_check(data, schema, schema.get("$defs", {}), rel))
+
     if data["status"] not in VALID_STATUSES:
         problems.append(f"{rel}: unknown status {data['status']!r}")
     for oid_field in ("baseline_sha", "implementation_sha"):
@@ -249,9 +427,17 @@ def validate_manifest(
             problems.append(f"{rel}: {oid_field} is not a git OID")
     if not SHA256.fullmatch(str(data["environment_digest"])):
         problems.append(f"{rel}: environment_digest must be sha256 hex")
-    for ts_field in ("started_at", "finished_at"):
-        if parse_ts(str(data[ts_field])) is None:
+    started = parse_ts(str(data["started_at"]))
+    finished = parse_ts(str(data["finished_at"]))
+    for ts_field, parsed in (("started_at", started), ("finished_at", finished)):
+        if parsed is None:
             problems.append(f"{rel}: {ts_field} is not a valid timestamp")
+    # S2-01: time ordering - finished_at may never precede started_at.
+    if started is not None and finished is not None and finished < started:
+        problems.append(
+            f"{rel}: finished_at {data['finished_at']} precedes "
+            f"started_at {data['started_at']}"
+        )
     if not isinstance(data["command"], str) or not data["command"].strip():
         problems.append(f"{rel}: command is empty")
     elif PLACEHOLDER.search(data["command"]):
@@ -309,7 +495,7 @@ def validate_manifest(
             if not isinstance(artifact, dict):
                 problems.append(f"{rel}: artifact entry is not an object")
                 continue
-            path = ROOT / str(artifact.get("path") or "")
+            path = root / str(artifact.get("path") or "")
             if not path.is_file():
                 problems.append(f"{rel}: artifact {artifact.get('path')} missing at HEAD")
                 continue
@@ -331,13 +517,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-final", action="store_true")
     parser.add_argument("--task", default=None, help="validate a single task")
     parser.add_argument("--ac", default=None, help="validate a single AC (needs --task)")
+    parser.add_argument(
+        "--root", default=str(DEFAULT_ROOT),
+        help="repository root (default: the repo containing this script)",
+    )
+    parser.add_argument(
+        "--report-json", default=None,
+        help="write a machine-readable report to this path",
+    )
     args = parser.parse_args(argv)
 
+    root = Path(args.root).resolve()
+    if not (root / ".git").exists():
+        print(f"evidence validator error: {root} is not a git repository", file=sys.stderr)
+        return 2
+
     try:
-        head = git_head()
-        profile = load_profile(ROOT / args.profile)
+        head = git_head(root)
+        profile = load_profile(root, root / args.profile)
         ac_by_task = required_ac_by_task(profile)
+        schema = load_schema(root, root / SCHEMA_DEFAULT)
     except (SystemExit, ValueError, subprocess.CalledProcessError) as exc:
+        print(f"evidence validator error: {exc}", file=sys.stderr)
+        return 2
+    except FileNotFoundError as exc:
         print(f"evidence validator error: {exc}", file=sys.stderr)
         return 2
 
@@ -351,15 +554,21 @@ def main(argv: list[str] | None = None) -> int:
                 problems.append(f"AC {ac} declared by both {seen[ac]} and {task}")
             seen[ac] = task
 
-    manifests = collect_manifests(set(ac_by_task))
-    by_ac: dict[str, list[tuple[Path, str]]] = {}
-    for manifest, dir_sha in manifests:
-        by_ac.setdefault(manifest.parent.name, []).append((manifest, dir_sha))
+    manifests = collect_manifests(root, set(ac_by_task))
+    # S2-01: every collected manifest - regardless of directory - must have
+    # task_id/ac_id/implementation_sha matching its path.
+    for manifest, task_dir, sha_dir, ac_dir in manifests:
+        problems.extend(
+            check_path_consistency(manifest, task_dir, sha_dir, ac_dir, root)
+        )
+    by_ac: dict[str, list[tuple[Path, str, str, str]]] = {}
+    for manifest, task_dir, sha_dir, ac_dir in manifests:
+        by_ac.setdefault(ac_dir, []).append((manifest, task_dir, sha_dir, ac_dir))
 
     # Determine the freeze sha: the implementation_sha of every
     # non-superseded manifest must agree on exactly one commit.
     freeze_candidates: set[str] = set()
-    for manifest, dir_sha in manifests:
+    for manifest, _task_dir, _sha_dir, _ac_dir in manifests:
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -377,28 +586,28 @@ def main(argv: list[str] | None = None) -> int:
 
     # Honesty rule: manifests under a non-freeze sha must be superseded/fail.
     if freeze_sha:
-        for manifest, dir_sha in manifests:
-            if dir_sha != freeze_sha:
+        for manifest, _task_dir, sha_dir, _ac_dir in manifests:
+            if sha_dir != freeze_sha:
                 try:
                     data = json.loads(manifest.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, OSError):
                     continue
                 if isinstance(data, dict) and data.get("status") not in {"superseded", "fail"}:
                     problems.append(
-                        f"{manifest.relative_to(ROOT)}: stale manifest (dir sha "
-                        f"{dir_sha[:12]}) not marked superseded/failed"
+                        f"{manifest.relative_to(root)}: stale manifest (dir sha "
+                        f"{sha_dir[:12]}) not marked superseded/failed"
                     )
 
     if args.require_final:
         if freeze_sha is None:
             problems.append("--require-final: no current (non-superseded) evidence exists")
         else:
-            if freeze_sha != head and not git_is_ancestor(freeze_sha):
+            if freeze_sha != head and not git_is_ancestor(root, freeze_sha):
                 problems.append(
                     f"--require-final: freeze sha {freeze_sha[:12]} is not HEAD "
                     "or an ancestor of HEAD"
                 )
-            changed = git_changed_paths_since(freeze_sha)
+            changed = git_changed_paths_since(root, freeze_sha)
             non_evidence = [
                 p for p in changed
                 if not p.startswith("tmp/acceptance/")
@@ -424,13 +633,19 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         expected = {args.ac: expected[args.ac]}
 
+    status_counts: dict[str, int] = {status: 0 for status in VALID_STATUSES}
+    not_releasable: list[dict[str, str]] = []
+
     for ac, task in sorted(expected.items()):
         if freeze_sha is None:
             problems.append(
                 f"AC {ac} (task {task}): no current evidence (no freeze sha)"
             )
             continue
-        current = [m for m, sha in by_ac.get(ac, []) if sha == freeze_sha]
+        current = [
+            item for item in by_ac.get(ac, [])
+            if item[2] == freeze_sha and item[3] == ac
+        ]
         if not current:
             problems.append(
                 f"AC {ac} (task {task}): no current evidence at "
@@ -439,28 +654,81 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if len(current) > 1:
             problems.append(f"AC {ac}: duplicate current manifests: {current}")
-        for manifest in current:
+        for manifest, task_dir, sha_dir, ac_dir in current:
             problems.extend(
-                validate_manifest(manifest, freeze_sha=freeze_sha, verify_artifacts=True)
+                validate_manifest(
+                    manifest,
+                    schema=schema,
+                    freeze_sha=freeze_sha,
+                    verify_artifacts=True,
+                    root=root,
+                )
             )
         # every other manifest for this AC is historical: structure only
-        for manifest, sha in by_ac.get(ac, []):
-            if sha == freeze_sha:
+        for manifest, task_dir, sha_dir, ac_dir in by_ac.get(ac, []):
+            if sha_dir == freeze_sha:
                 continue
             problems.extend(
-                validate_manifest(manifest, freeze_sha=freeze_sha, verify_artifacts=False)
+                validate_manifest(
+                    manifest,
+                    schema=schema,
+                    freeze_sha=freeze_sha,
+                    verify_artifacts=False,
+                    root=root,
+                )
+            )
+        # S2-01 eligibility accounting: only the current manifest decides.
+        current_manifest = current[0][0]
+        try:
+            current_data = json.loads(current_manifest.read_text(encoding="utf-8"))
+            current_status = current_data.get("status")
+        except (json.JSONDecodeError, OSError):
+            current_status = "fail"
+        if current_status in status_counts:
+            status_counts[current_status] += 1
+        else:
+            status_counts[current_status] = status_counts.get(current_status, 0) + 1
+        if args.require_final and current_status not in RELEASABLE_STATUSES:
+            not_releasable.append(
+                {"ac_id": ac, "task_id": task, "status": current_status}
             )
 
     if args.ac:
         if args.ac not in expected or problems:
             return 1
-        current = [m for m, sha in by_ac.get(args.ac, []) if sha == freeze_sha]
+        current = [
+            item for item in by_ac.get(args.ac, []) if item[2] == freeze_sha
+        ]
         if not current:
             return 1
-        data = json.loads(current[0].read_text(encoding="utf-8"))
+        data = json.loads(current[0][0].read_text(encoding="utf-8"))
         return 0 if data["status"] == "pass" else 1
 
     total = len(expected)
+    releasable = not problems and not not_releasable
+
+    report = {
+        "mode": "final" if args.require_final else "structure",
+        "profile": args.profile,
+        "head": head,
+        "freeze_sha": freeze_sha,
+        "required_ac_total": total,
+        "status_counts": status_counts,
+        "releasable": releasable if args.require_final else None,
+        "not_releasable": not_releasable if args.require_final else [],
+        "problems": problems,
+        "exit_code": 0 if releasable else 1,
+    }
+    if args.report_json:
+        Path(args.report_json).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.report_json).write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    # S2-01: every run prints the per-status counts, never just "OK".
+    status_line = " ".join(
+        f"{status}={status_counts.get(status, 0)}" for status in VALID_STATUSES
+    )
     if problems:
         print(
             f"evidence validation FAILED ({len(problems)} problem(s), "
@@ -470,10 +738,38 @@ def main(argv: list[str] | None = None) -> int:
         )
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
+        print(f"evidence status counts: {status_line}", file=sys.stderr)
+        if args.require_final and not_releasable:
+            print(
+                f"evidence NOT RELEASABLE: {len(not_releasable)} required AC(s) "
+                "not in a releasable state (pass / unexpired "
+                "not-applicable-approved):",
+                file=sys.stderr,
+            )
+            for item in not_releasable:
+                print(
+                    f"  - {item['ac_id']} (task {item['task_id']}): {item['status']}",
+                    file=sys.stderr,
+                )
         return 1
+    if args.require_final and not_releasable:
+        print(
+            f"evidence NOT RELEASABLE: {len(not_releasable)} required AC(s) not "
+            "in a releasable state (pass / unexpired not-applicable-approved):",
+            file=sys.stderr,
+        )
+        for item in not_releasable:
+            print(
+                f"  - {item['ac_id']} (task {item['task_id']}): {item['status']}",
+                file=sys.stderr,
+            )
+        print(f"evidence status counts: {status_line}", file=sys.stderr)
+        return 1
+    mode_word = "OK (releasable)" if args.require_final else "OK (structure only)"
     print(
-        f"evidence validation OK: {total} required AC(s) covered by unique "
-        f"current manifests at freeze sha {freeze_sha[:12]}"
+        f"evidence validation {mode_word}: {total} required AC(s) covered by "
+        f"unique current manifests at freeze sha {freeze_sha[:12]}; "
+        f"status counts: {status_line}"
     )
     return 0
 
