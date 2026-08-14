@@ -289,15 +289,19 @@ def psql(ctx: Ctx, sql: str) -> str:
 
 
 def mongosh_eval(ctx: Ctx, expr: str) -> str:
+    # R-03: the query must use the SAME one-shot credentials the stack was
+    # started with (ctx.env), never fixed user/password literals.
+    mongo_user = ctx.env.get("MAP_MONGO_ROOT_USER") or "map"
+    mongo_password = ctx.env.get("MAP_MONGO_ROOT_PASSWORD") or ""
     result = docker_exec(
         ctx.mongo_container,
         [
             "mongosh",
             "--quiet",
             "-u",
-            "map",
+            mongo_user,
             "-p",
-            "map",
+            mongo_password,
             "--authenticationDatabase",
             "admin",
             "map_db_dev",

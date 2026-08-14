@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -14,16 +13,10 @@ _STARTED_AT = datetime.now(timezone.utc)
 _START_MONOTONIC = time.monotonic()
 _ENV = os.environ.get("ENV", "dev")
 
-try:
-    _GIT_SHA = (
-        subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
-        )
-        .decode()
-        .strip()
-    )
-except Exception:
-    _GIT_SHA = "unknown"
+# P0-SEC-01 (review R-02): no host subprocess in production code. The
+# version is injected by the deployment (MAP_CORE_VERSION) - the container
+# image has no .git tree, so a git subprocess could never work there anyway.
+_VERSION = os.environ.get("MAP_CORE_VERSION", "unknown")
 
 
 def _get_process_rss_bytes() -> int | None:
@@ -58,7 +51,7 @@ async def status_check():
     return {
         "name": "MAP 2.0 Service",
         "env": _ENV,
-        "version": _GIT_SHA,
+        "version": _VERSION,
         "started_at": _STARTED_AT.isoformat(),
         "uptime_seconds": round(uptime_seconds, 3),
         "thread_count": thread_count,

@@ -2,7 +2,7 @@
   "schema_version": "1.1.0",
   "task_id": "P0-CONTRACT-01",
   "ac_id": "AC-CONTRACT-01",
-  "status": "pass",
+  "status": "superseded",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
   "implementation_sha": "5b188eaf18518c7741bb92716b4f5bf717d1967e",
   "environment_digest": "0d58da78eeff131f7c9c62f96a6733357b6b43d339c2a4ff50ad4a8a50296c42",
@@ -15,6 +15,8 @@
   "not_applicable_reason": null,
   "blocked_reason": null,
   "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P0-CONTRACT-01/5a25346f710aef95610df71d2f7c3078b69fe470/AC-CONTRACT-01/evidence-manifest.json",
+  "superseded_reason": "Superseded by review R-05: cancel-state predicate and exhaustive negative coverage were defective; evidence regenerated at final HEAD",
   "producer": {
     "agent": "reasonix",
     "version": "1.0.0"

@@ -182,6 +182,18 @@ else
 fi
 run compose-config "$ROOT" docker compose config --quiet
 
+# ---- R-01 / R-08: unified credential scanner and evidence validator.
+# The scanner covers tree/index/build-context and always redacts output;
+# the evidence validator checks coverage/integrity/currentness from the
+# profile registry (no hand-counted totals). FINAL mode additionally
+# requires the freeze sha to be the final HEAD's own frozen code commit.
+run security-scan "$ROOT" python3 scripts/security_scan.py --scope tree,index,build-context --redact --fail-on-hit
+if [ "$FINAL_MODE" = "1" ]; then
+    run evidence-validate "$ROOT" python3 scripts/validate_acceptance_evidence.py --profile TODO/acceptance-profile.yaml --require-final
+else
+    run evidence-validate "$ROOT" python3 scripts/validate_acceptance_evidence.py --profile TODO/acceptance-profile.yaml
+fi
+
 # ---- Python backends: frozen sync, then the unified ruff + pytest commands
 run bff-deps "$ROOT/map-business-backend" uv sync --frozen
 run bff-lint "$ROOT/map-business-backend" uv run ruff check app tests

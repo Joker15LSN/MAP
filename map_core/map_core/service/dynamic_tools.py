@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 import re
 from typing import Any
 
@@ -92,69 +90,31 @@ async def _call_http_mcp_tool(
     )
 
 
-async def _call_stdio_mcp_tool(
+def _stdio_mcp_disabled_result(
     *,
     server: dict[str, Any],
     tool_name: str,
-    args: dict[str, Any],
 ) -> ToolResult:
-    command = str(server.get("command") or "").strip()
-    if not command:
-        return ToolResult(
-            success=False,
-            name=tool_name,
-            error="MCP stdio command is empty.",
-        )
-    env = os.environ.copy()
-    for env_name, env_ref in (server.get("env_refs") or {}).items():
-        if env_ref in os.environ:
-            env[str(env_name)] = os.environ[str(env_ref)]
-    proc = await asyncio.create_subprocess_exec(
-        command,
-        *[str(item) for item in server.get("args") or []],
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    request = {
-        "jsonrpc": "2.0",
-        "id": "map-mcp-tool-call",
-        "method": "tools/call",
-        "params": {"name": tool_name, "arguments": args},
-    }
-    assert proc.stdin is not None
-    proc.stdin.write((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
-    await proc.stdin.drain()
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=max(5, int(server.get("timeout_s") or 30)),
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        return ToolResult(
-            success=False,
-            name=tool_name,
-            error="MCP stdio tool call timeout.",
-        )
-    if proc.returncode not in {0, None} and stderr:
-        return ToolResult(
-            success=False,
-            name=tool_name,
-            error=stderr.decode("utf-8", errors="ignore")[:1000],
-        )
-    text = stdout.decode("utf-8", errors="ignore").strip()
-    try:
-        parsed = json.loads(text.splitlines()[-1]) if text else {}
-    except json.JSONDecodeError:
-        parsed = {"content": text}
-    result = parsed.get("result") if isinstance(parsed, dict) else parsed
+    """Fail-closed stdio MCP result (P0-SEC-01, review R-02).
+
+    stdio MCP servers would run as in-process subprocesses on the host with
+    command/args from the request body. That boundary is closed until stdio
+    MCP is moved into the OpenSandbox Server; no process is ever spawned and
+    no host environment variable is forwarded.
+    """
     return ToolResult(
+        success=False,
         name=tool_name,
-        content=_stringify_mcp_result(result),
-        data_source={"source": "mcp", "server_id": server.get("server_id"), "raw": result},
+        error=(
+            "CAPABILITY_DISABLED: stdio MCP servers are disabled until they "
+            "run inside the OpenSandbox Server"
+        ),
+        data_source={
+            "source": "mcp",
+            "server_id": server.get("server_id"),
+            "transport": "stdio",
+            "error_code": "CAPABILITY_DISABLED",
+        },
     )
 
 
@@ -207,10 +167,11 @@ def build_mcp_tools(servers: list[dict[str, Any]]) -> dict[str, Tool]:
                         tool_name=current_tool_name,
                         args=args,
                     )
-                return await _call_stdio_mcp_tool(
+                # P0-SEC-01 (review R-02): stdio transport is fail-closed;
+                # no host subprocess is ever spawned.
+                return _stdio_mcp_disabled_result(
                     server=current_server,
                     tool_name=current_tool_name,
-                    args=args,
                 )
 
             tools[runtime_name] = Tool(

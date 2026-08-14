@@ -37,7 +37,8 @@ logs/
 
 # Documentation
 docs/
-README.md
+# README.md is intentionally NOT ignored: the Dockerfile copies it
+# (uv sync requires the project readme).
 
 # Development
 debugs/

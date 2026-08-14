@@ -25,8 +25,8 @@ from app.core.service_identity import ServiceCredential, parse_service_credentia
 from app.main import create_app
 from app.settings import Settings
 
-SECRET = "s3cret-value-42"
-OTHER_SECRET = "other-value-99"
+SECRET = "fake-s3cret-value-42"
+OTHER_SECRET = "fake-other-value-99"
 
 
 def _app(settings: Settings):
@@ -153,6 +153,47 @@ def test_health_and_ready_probes_pass_gate_without_credentials() -> None:
 def test_prod_with_dev_mode_fails_startup() -> None:
     with pytest.raises(RuntimeError, match="forbidden in production"):
         create_app(settings=Settings(auth_mode=AuthMode.DEV, env="prod"))
+
+
+def test_prod_wildcard_cors_with_credentials_fails_startup() -> None:
+    """AC-SEC-11: production refuses wildcard CORS + credentials."""
+    with pytest.raises(RuntimeError, match="wildcard CORS with credentials"):
+        create_app(
+            settings=Settings(
+                auth_mode=AuthMode.TRUSTED_HEADER,
+                trusted_proxy_secret=SECRET,
+                env="prod",
+                cors_origins="*",
+                cors_allow_credentials=True,
+            )
+        )
+
+
+def test_prod_explicit_cors_origins_are_allowed() -> None:
+    """Explicit origins (or credentials off) are not wildcard-refused."""
+    app = _app(
+        Settings(
+            auth_mode=AuthMode.TRUSTED_HEADER,
+            trusted_proxy_secret=SECRET,
+            env="prod",
+            cors_origins="https://app.example.com,https://admin.example.com",
+            cors_allow_credentials=True,
+        )
+    )
+    # CORS middleware is applied with the explicit origin list (preflight
+    # on an identity-gate-excluded probe path so the auth layer doesn't
+    # short-circuit the OPTIONS request).
+    client = TestClient(app)
+    response = client.options(
+        "/ready",
+        headers={
+            "Origin": "https://app.example.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert response.headers.get("access-control-allow-origin") == (
+        "https://app.example.com"
+    )
 
 
 def test_prod_with_trusted_header_verification_disabled_fails_startup() -> None:

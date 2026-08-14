@@ -415,5 +415,7 @@ evidence_manifest:
     - not_applicable_reason
     - blocked_reason
     - blocker_owner
+    - superseded_by
+    - superseded_reason
     - producer
   one_final_manifest_per_p0_p1_ac: true

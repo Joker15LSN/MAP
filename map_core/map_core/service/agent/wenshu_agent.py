@@ -657,11 +657,23 @@ class WenshuAgent(TraceableAgent):
 
         #! legacy business_domain will become agent_id
 
-        # P0-SEC-01: no hardcoded credentials; unset password fails closed.
+        # P0-SEC-01 / R-07: no hardcoded credentials, no defaults and no
+        # empty-token network calls. Missing user/password fails closed
+        # BEFORE any connection attempt (capability unavailable).
+        milvus_user = (os.getenv("MAP_MILVUS_USER") or "").strip()
+        milvus_password = (os.getenv("MAP_MILVUS_PASSWORD") or "").strip()
+        if not milvus_user or not milvus_password:
+            logger.warning(
+                f"{MSG_HEADER} Milvus capability unavailable: "
+                "MAP_MILVUS_USER/MAP_MILVUS_PASSWORD not configured "
+                "(CAPABILITY_CONFIG_MISSING)"
+            )
+            return [query]
+
         milvus_client = MilvusClient(
             uri=METRIC_MILVUS_URI,
-            user=os.getenv("MAP_MILVUS_USER", "root"),
-            password=os.getenv("MAP_MILVUS_PASSWORD", ""),
+            user=milvus_user,
+            password=milvus_password,
             db_name=f"{MILVUS_DB_NAME_PREFIX}{agent_id}",
         )
         await milvus_client.connect()

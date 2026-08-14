@@ -64,6 +64,18 @@ class Settings:
     service_audience: str = field(
         default_factory=lambda: _env_or("MAP_SERVICE_AUDIENCE", "map-bff")
     )
+    # CORS (AC-SEC-11 / R-10): comma-separated origins. Production refuses
+    # to start with a wildcard origin combined with credentials
+    # (validate_settings in app/main.py fails closed).
+    cors_origins: str = field(
+        default_factory=lambda: _env_or("MAP_CORS_ORIGINS", "*")
+    )
+    cors_allow_credentials: bool = field(
+        default_factory=lambda: (
+            _env_or("MAP_CORS_ALLOW_CREDENTIALS", "true").lower()
+            in {"1", "true", "yes"}
+        )
+    )
 
 
 def load_settings() -> Settings:
@@ -82,4 +94,7 @@ def load_settings() -> Settings:
             default_audience=_env_or("MAP_SERVICE_AUDIENCE", "map-bff"),
         ),
         service_audience=_env_or("MAP_SERVICE_AUDIENCE", "map-bff"),
+        cors_origins=_env_or("MAP_CORS_ORIGINS", "*"),
+        cors_allow_credentials=_env_or("MAP_CORS_ALLOW_CREDENTIALS", "true").lower()
+        in {"1", "true", "yes"},
     )

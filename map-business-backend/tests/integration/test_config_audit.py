@@ -39,7 +39,7 @@ from app.store import AdminStateStore
 pytestmark = pytest.mark.asyncio
 
 WORKSPACE = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
-SECRET = "Bearer super-secret-token-abc"
+SECRET = "Bearer fake-super-secret-token"
 
 
 @pytest_asyncio.fixture

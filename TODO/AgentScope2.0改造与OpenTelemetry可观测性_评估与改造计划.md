@@ -84,7 +84,7 @@ MAP 是从 hgt 系列项目签出演化而来的多智能体编排平台。当�
 | 心流模式无参考实现 | **中** | hgt-2 无 `flow_domain`/`scenario_hub`/`skill_hub`（被 Capability Gateway 抽象替代）。心流模式的执行图循环调用 `run_single_agent`，需自行将节点执行切换到 `AgentScopeSceneAgent`；好在心流的图循环/verdict/修复逻辑在 Agent 之上，Agent 内核替换对其透明。 |
 | SSE 事件顺序回归 | 中 | 前端 `RequestCallTree` 与 BFF 依赖事件顺序。必须建立黄金轨迹（golden trace）回归集，逐事件比对新旧实现输出。 |
 | 版本锁定 | 低 | 锁定 `agentscope==2.0.4`（与 hgt-2 一致）；升级需重新核对 `Agent`/`ChatModelBase`/`ToolBase`/`Message`/`Event` 契约。 |
-| 中断恢复/会话记忆 | 中 | MAP `ToolCallAgent` 支持中断恢复与跨轮记忆；需验证 AgentScope Memory 与 MAP 的 `agent_memory_store` 的桥接（hgt-2 用独立 ReMe Adapter，MAP 可先保留自有 memory store 注入 history）。 |
+| 中断恢复/会话记忆 | 中 | 本文已被黄金任务书取代；最新决策是 MAP 通过认证 HTTP client 调用独立 OpenViking Server，不再保留自有/Mongo memory provider 作为目标态。 |
 | 二次鉴权时序 | 低 | `SkillPolicyChecker` 必须在 `HGTToolAdapter.execute` 内、真实工具调用前执行，保持"预挂载 + 运行时校验"两阶段语义不变。 |
 
 ### 3.2 OpenTelemetry 可观测性可行性：**高（几乎零风险）**

@@ -14,8 +14,6 @@ from .disabled_capabilities import (
     is_disabled_capability,
 )
 from .efficiency_pi_agent import EfficiencyPiAgent
-from .file_read_tool import create_attachment_file_read_tool
-from .file_write_tool import create_attachment_file_write_tool
 from .general_qa_agent import GeneralQAAgent
 from .industry_chat_agent import IndustryChatAgent
 from .kb_tools import (
@@ -96,9 +94,12 @@ def _tool_registrations() -> list[ToolRegistration]:
 
 
 def _standalone_tools() -> dict[str, Tool]:
+    # P0-SEC-01 (review R-02): attachment_file_read_tool and
+    # attachment_file_write_tool are removed from the production registry
+    # (host file IO) and stay known-but-disabled via
+    # DISABLED_HOST_EXEC_CAPABILITIES; any invocation fails closed in
+    # ToolExecutor before touching the filesystem.
     return {
-        "attachment_file_read_tool": create_attachment_file_read_tool(),
-        "attachment_file_write_tool": create_attachment_file_write_tool(),
         create_query_kb_chunk_tool().name: create_query_kb_chunk_tool(),  # TODO other strategy to align name and tool
         create_search_uploaded_file_chunk_tool().name: create_search_uploaded_file_chunk_tool(),
         create_search_kb_chunk_tool().name: create_search_kb_chunk_tool(),

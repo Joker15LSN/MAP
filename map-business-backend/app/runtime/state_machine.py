@@ -300,6 +300,15 @@ def validate_transition(machine: str, current: str, target: str) -> None:
         raise StateTransitionError(machine, current, target)
 
 
+# R-05: cancel may only be submitted from an explicit allow-list of
+# pre-terminal run states. Deriving this from the transition table's keys
+# wrongly allowed "cancelling" (which has an out-edge to "cancelled") to be
+# cancelled again; the frozen set is the single source of truth.
+RUN_CANCEL_ALLOWED_FROM: Final[frozenset[str]] = frozenset(
+    {RunState.QUEUED, RunState.RUNNING, RunState.PAUSED}
+)
+
+
 def run_cancel_allowed_from(state: str) -> bool:
-    """Cancel commands may only be issued from pre-terminal run states."""
-    return state in TRANSITIONS.get("run", {})
+    """Cancel commands may only be issued from the explicit allow-list."""
+    return state in RUN_CANCEL_ALLOWED_FROM

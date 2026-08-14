@@ -1,11 +1,17 @@
-"""P0-CONTRACT-01 contract tests (AC-CONTRACT-01/03/05/07/08).
+"""P0-CONTRACT-01 contract tests (AC-CONTRACT-01/03/05/07/08, review R-04/R-05/R-09).
 
 - AC-CONTRACT-01: exhaustive transition-table coverage for all five machines
-  (legal transitions pass, illegal / terminal out-edges / unknown states fail).
+  (legal transitions pass, illegal / terminal out-edges / unknown states
+  fail) with SPECIFIC exceptions only - pytest.raises(Exception) is banned.
+- R-05: run_cancel_allowed_from uses the explicit allow-list; every run
+  state (including the non-canonical "cancel_pending") is covered.
 - AC-CONTRACT-03: SSE frame shape + client dedupe key semantics.
-- AC-CONTRACT-05: 64KiB boundary (<=65536 inline, >65536 ArtifactRef-only).
-- AC-CONTRACT-07: typed error codes stable.
-- AC-CONTRACT-08: unknown major/event-type fail closed; minor forward compat.
+- AC-CONTRACT-05: REAL EventEnvelope 64KiB boundary at 65535/65536/65537
+  bytes including multibyte characters, plus non-JSON value rejection.
+- AC-CONTRACT-07: typed error codes verified against the real registry and
+  the real HTTP/SSE mapping (app.runtime.error_mapping).
+- AC-CONTRACT-08: unknown major/event-type fail closed; minor forward
+  compatibility through the REAL parser (from_dict/from_json).
 """
 
 from __future__ import annotations
@@ -16,12 +22,16 @@ import pytest
 
 from app.runtime import (
     ARTIFACT_PAYLOAD_TOO_LARGE,
+    ARTIFACT_REF_INVALID,
+    EVENT_ENVELOPE_INVALID,
     EVENT_SCHEMA_VERSION,
     IDEMPOTENCY_CONFLICT,
+    PAYLOAD_NOT_SERIALIZABLE,
     RUN_TERMINAL_STATE,
     STATE_TRANSITION_VIOLATION,
     UNKNOWN_EVENT_TYPE,
     UNKNOWN_EVENT_VERSION,
+    ArtifactRef,
     EventEnvelope,
     EventEnvelopeError,
     StateTransitionError,
@@ -36,6 +46,9 @@ from app.runtime import (
 )
 
 MACHINES = ("run", "step", "effect", "model_invocation", "evidence")
+
+RUN_ID = "11111111-1111-1111-1111-111111111111"
+WORKSPACE_ID = "22222222-2222-2222-2222-222222222222"
 
 
 def test_machine_enum_values_match_acceptance_profile() -> None:
@@ -85,13 +98,16 @@ def test_every_illegal_transition_fails_closed(machine: str) -> None:
             if current == target:
                 continue  # self-loop is not a transition
             assert not can_transition(machine, current, target), (machine, current, target)
-            with pytest.raises(Exception) as exc_info:
+            with pytest.raises(StateTransitionError) as exc_info:
                 validate_transition(machine, current, target)
             assert str(exc_info.value).startswith(STATE_TRANSITION_VIOLATION), (
                 machine,
                 current,
                 target,
             )
+            assert exc_info.value.machine == machine
+            assert exc_info.value.current == current
+            assert exc_info.value.target == target
             illegal_count += 1
     assert illegal_count > 0
 
@@ -118,15 +134,34 @@ def test_unknown_states_fail_closed(machine: str) -> None:
     with pytest.raises(StateTransitionError) as exc_info:
         validate_transition(machine, "totally_unknown_state", all_states(machine)[0])
     assert str(exc_info.value).startswith(STATE_TRANSITION_VIOLATION)
+    assert exc_info.value.current == "totally_unknown_state"
+
+
+# --- R-05: cancel predicate is an explicit allow-list ------------------------
+
+ALL_RUN_STATES = [
+    "queued",
+    "running",
+    "paused",
+    "cancelling",
+    "cancel_pending",  # not a canonical run state; must never be allowed
+    "timed_out",
+    "failed",
+    "completed",
+    "cancelled",
+]
+
+CANCEL_ALLOWED = {"queued", "running", "paused"}
+
+
+@pytest.mark.parametrize("state", ALL_RUN_STATES)
+def test_run_cancel_allowed_from_exhaustive(state: str) -> None:
+    expected = state in CANCEL_ALLOWED
+    assert run_cancel_allowed_from(state) is expected, state
 
 
 def test_run_cancel_race_converges_to_allowed_terminal() -> None:
     """cancel/done/timeout race: loser must fail closed, never invent states."""
-    assert run_cancel_allowed_from("running")
-    assert run_cancel_allowed_from("queued")
-    assert run_cancel_allowed_from("paused")
-    assert not run_cancel_allowed_from("completed")
-    assert not run_cancel_allowed_from("cancelled")
     # done wins first -> cancel attempt on terminal fails closed
     with pytest.raises(StateTransitionError) as exc_info:
         validate_transition("run", "completed", "cancelling")
@@ -136,14 +171,18 @@ def test_run_cancel_race_converges_to_allowed_terminal() -> None:
     validate_transition("run", "cancelling", "cancelled")
     with pytest.raises(StateTransitionError):
         validate_transition("run", "cancelling", "completed")
+    # cancelling must NOT be a valid cancel entry point (R-05)
+    assert not run_cancel_allowed_from("cancelling")
 
+
+# --- AC-CONTRACT-03: SSE frame and dedupe key --------------------------------
 
 def test_event_envelope_sse_frame_and_dedupe_key() -> None:
     env = EventEnvelope.build(
-        run_id="11111111-1111-1111-1111-111111111111",
+        run_id=RUN_ID,
         seq=7,
         event_type="run.started",
-        workspace_id="22222222-2222-2222-2222-222222222222",
+        workspace_id=WORKSPACE_ID,
         data={"hello": "world"},
     )
     frame = env.sse_frame()
@@ -152,53 +191,100 @@ def test_event_envelope_sse_frame_and_dedupe_key() -> None:
     assert lines[1] == "event: run.started"
     payload = json.loads(lines[2][len("data: "):])
     # client dedupe key = (run_id, seq)
-    assert (payload["run_id"], payload["seq"]) == (
-        "11111111-1111-1111-1111-111111111111",
-        7,
-    )
+    assert (payload["run_id"], payload["seq"]) == (RUN_ID, 7)
     # replayed frame keeps the same key so clients can dedupe terminal events
     replay = EventEnvelope.build(
-        run_id="11111111-1111-1111-1111-111111111111",
+        run_id=RUN_ID,
         seq=7,
         event_type="run.started",
-        workspace_id="22222222-2222-2222-2222-222222222222",
+        workspace_id=WORKSPACE_ID,
     )
     assert (replay.run_id, replay.seq) == (env.run_id, env.seq)
 
 
 def test_event_envelope_seq_must_be_positive() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(EventEnvelopeError) as exc_info:
         EventEnvelope.build(
-            run_id="11111111-1111-1111-1111-111111111111",
+            run_id=RUN_ID,
             seq=0,
             event_type="run.started",
-            workspace_id="22222222-2222-2222-2222-222222222222",
+            workspace_id=WORKSPACE_ID,
         )
+    assert exc_info.value.code == EVENT_ENVELOPE_INVALID
 
 
-def test_payload_64k_boundary() -> None:
-    """json.dumps({"x": s}) is exactly 9 + len(s) bytes; boundary must be exact."""
-    # at the limit (9 + 65527 = 65536) -> allowed inline
-    assert validate_payload_size({"x": "a" * 65527}) == 65536
-    # one byte over (9 + 65528 = 65537) -> ARTIFACT_PAYLOAD_TOO_LARGE
+# --- AC-CONTRACT-05: REAL envelope 64KiB boundary ----------------------------
+
+def _build_with_data(data: dict) -> EventEnvelope:
+    return EventEnvelope.build(
+        run_id=RUN_ID,
+        seq=1,
+        event_type="run.started",
+        workspace_id=WORKSPACE_ID,
+        data=data,
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_bytes", "allowed"),
+    [
+        (65527, True),  # json.dumps({"x": s}) == 9 + len(s) == 65536
+        (65528, False),  # 65537 -> ARTIFACT_PAYLOAD_TOO_LARGE
+        (65526, True),  # 65535 -> inline
+    ],
+)
+def test_real_envelope_64k_boundary(extra_bytes: int, allowed: bool) -> None:
+    data = {"x": "a" * extra_bytes}
+    if allowed:
+        envelope = _build_with_data(data)  # must not raise
+        assert validate_payload_size(envelope.data) <= 65536
+        # serialization (DB write / SSE outbound) succeeds too
+        assert len(envelope.to_json()) > 0
+    else:
+        with pytest.raises(EventEnvelopeError) as exc_info:
+            _build_with_data(data)
+        assert exc_info.value.code == ARTIFACT_PAYLOAD_TOO_LARGE
+
+
+def test_real_envelope_multibyte_boundary() -> None:
+    # Byte count, not character count: 21845 x 3-byte chars + 1 = 65536.
+    # "界" is 3 UTF-8 bytes; json.dumps({"x": s}) is 9 + 3n bytes.
+    data = {"x": "界" * 21842}  # 9 + 65526 = 65535 -> inline
+    envelope = _build_with_data(data)
+    assert len(envelope.to_json().encode("utf-8")) > 0
     with pytest.raises(EventEnvelopeError) as exc_info:
-        validate_payload_size({"x": "a" * 65528})
+        _build_with_data({"x": "界" * 21843})  # 65538 -> too large
     assert exc_info.value.code == ARTIFACT_PAYLOAD_TOO_LARGE
-    # smaller payloads stay inline
-    assert validate_payload_size({"x": "a" * 65526}) == 65535
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        float("nan"),
+        float("inf"),
+        -float("inf"),
+        {"obj": object()},
+        {"set": {1, 2, 3}},
+        {"bytes": b"raw"},
+    ],
+)
+def test_real_envelope_rejects_non_json_values(bad_value) -> None:
+    with pytest.raises(EventEnvelopeError) as exc_info:
+        _build_with_data({"payload": bad_value})
+    assert exc_info.value.code == PAYLOAD_NOT_SERIALIZABLE
 
 
 def test_payload_over_limit_requires_artifact_ref() -> None:
     """Oversized payload must travel via ArtifactRef manifest, not inline."""
-    from app.runtime import ArtifactRef
-
     ref = ArtifactRef(
         artifact_id="33333333-3333-3333-3333-333333333333",
-        workspace_id="22222222-2222-2222-2222-222222222222",
+        workspace_id=WORKSPACE_ID,
         sha256="a" * 64,
         size_bytes=123456,
         content_type="application/octet-stream",
         policy_labels=("internal",),
+        expires_at="2026-08-14T00:05:00+00:00",
+        created_at="2026-08-14T00:00:00+00:00",
     )
     manifest = ref.to_dict()
     for required in (
@@ -207,6 +293,7 @@ def test_payload_over_limit_requires_artifact_ref() -> None:
         "sha256",
         "size_bytes",
         "content_type",
+        "policy_labels",
         "created_at",
         "expires_at",
     ):
@@ -214,17 +301,68 @@ def test_payload_over_limit_requires_artifact_ref() -> None:
     assert manifest["policy_labels"] == ["internal"]
 
 
+# --- ArtifactRef per-field typed errors (R-04) -------------------------------
+
+def _valid_ref(**overrides) -> dict:
+    base = {
+        "artifact_id": "33333333-3333-3333-3333-333333333333",
+        "workspace_id": WORKSPACE_ID,
+        "sha256": "a" * 64,
+        "size_bytes": 10,
+        "content_type": "text/plain",
+        "policy_labels": ("internal",),
+        "expires_at": "2026-08-14T00:05:00+00:00",
+        "created_at": "2026-08-14T00:00:00+00:00",
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"artifact_id": ""},
+        {"artifact_id": "not-a-uuid"},
+        {"workspace_id": ""},
+        {"workspace_id": "nope"},
+        {"sha256": ""},
+        {"sha256": "a" * 63},
+        {"sha256": "A" * 64},
+        {"sha256": "g" * 64},
+        {"size_bytes": -1},
+        {"size_bytes": 1.5},
+        {"size_bytes": True},
+        {"content_type": ""},
+        {"content_type": "no-slash"},
+        {"content_type": "bad//type"},
+        {"policy_labels": ()},
+        {"policy_labels": ("",)},
+        {"policy_labels": ("ok", "  ")},
+        {"created_at": "not-a-date"},
+        {"expires_at": "not-a-date"},
+        {"expires_at": "2026-08-14T00:00:00+00:00"},  # equals created_at
+        {"expires_at": "2026-08-13T23:00:00+00:00"},  # before created_at
+    ],
+)
+def test_artifact_ref_invalid_field_typed_error(overrides: dict) -> None:
+    with pytest.raises(EventEnvelopeError) as exc_info:
+        ArtifactRef(**_valid_ref(**overrides))
+    assert exc_info.value.code == ARTIFACT_REF_INVALID
+
+
+# --- AC-CONTRACT-07/08: versions and typed errors ----------------------------
+
 def test_unknown_event_version_fails_closed() -> None:
     with pytest.raises(EventEnvelopeError) as exc_info:
         EventEnvelope(
             schema_version=99,
             schema_minor=0,
             event_id="e",
-            run_id="r",
+            run_id=RUN_ID,
             seq=1,
             type="run.started",
             occurred_at="now",
-            workspace_id="w",
+            workspace_id=WORKSPACE_ID,
         )
     assert exc_info.value.code == UNKNOWN_EVENT_VERSION
 
@@ -232,55 +370,107 @@ def test_unknown_event_version_fails_closed() -> None:
 def test_unknown_event_type_fails_closed() -> None:
     with pytest.raises(EventEnvelopeError) as exc_info:
         EventEnvelope.build(
-            run_id="r",
+            run_id=RUN_ID,
             seq=1,
             event_type="run.not_a_real_event",
-            workspace_id="w",
+            workspace_id=WORKSPACE_ID,
         )
     assert exc_info.value.code == UNKNOWN_EVENT_TYPE
     # unknown prefix also fails closed
     with pytest.raises(EventEnvelopeError) as exc_info2:
         EventEnvelope.build(
-            run_id="r", seq=1, event_type="mystery.explosion", workspace_id="w"
+            run_id=RUN_ID, seq=1, event_type="mystery.explosion", workspace_id=WORKSPACE_ID
         )
     assert exc_info2.value.code == UNKNOWN_EVENT_TYPE
 
 
-def test_minor_version_forward_compatible() -> None:
-    """Unknown minor fields are preserved, never dropped."""
-    env = EventEnvelope.build(
-        run_id="r",
+def test_minor_version_forward_compatible_through_real_parser() -> None:
+    """A newer minor version parsed from JSON keeps unknown fields intact."""
+    envelope = EventEnvelope.build(
+        run_id=RUN_ID,
         seq=1,
         event_type="run.started",
-        workspace_id="w",
+        workspace_id=WORKSPACE_ID,
         schema_minor=7,
         data={"future_field": "kept"},
     )
-    payload = env.to_dict()
-    assert payload["schema_version"] == EVENT_SCHEMA_VERSION
-    assert payload["schema_minor"] == 7
-    assert payload["data"]["future_field"] == "kept"
+    raw = envelope.to_json()
+    parsed = EventEnvelope.from_json(raw)
+    assert parsed.schema_version == EVENT_SCHEMA_VERSION
+    assert parsed.schema_minor == 7
+    assert parsed.data["future_field"] == "kept"
+    # unknown TOP-LEVEL fields of a future minor are preserved too
+    future_payload = json.loads(raw)
+    future_payload["schema_minor"] = 8
+    future_payload["future_top_field"] = "preserved"
+    reparsed = EventEnvelope.from_dict(future_payload)
+    assert reparsed.extra_fields["future_top_field"] == "preserved"
+    assert reparsed.to_dict()["future_top_field"] == "preserved"
 
 
-def test_typed_error_codes_stable() -> None:
-    """AC-CONTRACT-07: the code registry must not drift silently."""
-    expected = {
+def test_from_json_rejects_malformed_and_missing_fields() -> None:
+    with pytest.raises(EventEnvelopeError) as exc_info:
+        EventEnvelope.from_json("{not json")
+    assert exc_info.value.code == EVENT_ENVELOPE_INVALID
+
+    valid = json.loads(
+        EventEnvelope.build(
+            run_id=RUN_ID,
+            seq=1,
+            event_type="run.started",
+            workspace_id=WORKSPACE_ID,
+        ).to_json()
+    )
+    del valid["workspace_id"]
+    with pytest.raises(EventEnvelopeError) as exc_info2:
+        EventEnvelope.from_dict(valid)
+    assert exc_info2.value.code == EVENT_ENVELOPE_INVALID
+
+
+def test_from_json_rejects_unknown_major() -> None:
+    valid = json.loads(
+        EventEnvelope.build(
+            run_id=RUN_ID,
+            seq=1,
+            event_type="run.started",
+            workspace_id=WORKSPACE_ID,
+        ).to_json()
+    )
+    valid["schema_version"] = 2
+    with pytest.raises(EventEnvelopeError) as exc_info:
+        EventEnvelope.from_dict(valid)
+    assert exc_info.value.code == UNKNOWN_EVENT_VERSION
+
+
+def test_typed_error_codes_stable_and_mapped() -> None:
+    """AC-CONTRACT-07: the registry and the HTTP/SSE projection are real."""
+    from app.runtime import EVENT_STALE_SEQ
+    from app.runtime.error_mapping import (
+        CAPABILITY_DISABLED,
+        HTTP_STATUS_BY_ERROR_CODE,
+        http_status_for,
+        sse_error_frame,
+    )
+
+    expected_codes = {
         STATE_TRANSITION_VIOLATION,
         RUN_TERMINAL_STATE,
         UNKNOWN_EVENT_VERSION,
         UNKNOWN_EVENT_TYPE,
         ARTIFACT_PAYLOAD_TOO_LARGE,
+        PAYLOAD_NOT_SERIALIZABLE,
+        ARTIFACT_REF_INVALID,
+        EVENT_ENVELOPE_INVALID,
         IDEMPOTENCY_CONFLICT,
+        CAPABILITY_DISABLED,
+        EVENT_STALE_SEQ,
     }
-    from app.runtime import EVENT_STALE_SEQ
+    assert set(HTTP_STATUS_BY_ERROR_CODE) == expected_codes
+    assert http_status_for(ARTIFACT_PAYLOAD_TOO_LARGE) == 413
+    assert http_status_for(UNKNOWN_EVENT_VERSION) == 400
+    assert http_status_for("NONEXISTENT_CODE") == 500  # fail-closed
 
-    expected.add(EVENT_STALE_SEQ)
-    assert expected == {
-        "STATE_TRANSITION_VIOLATION",
-        "RUN_TERMINAL_STATE",
-        "UNKNOWN_EVENT_VERSION",
-        "UNKNOWN_EVENT_TYPE",
-        "ARTIFACT_PAYLOAD_TOO_LARGE",
-        "IDEMPOTENCY_CONFLICT",
-        "EVENT_STALE_SEQ",
-    }
+    frame = sse_error_frame(ARTIFACT_PAYLOAD_TOO_LARGE, "payload too large")
+    assert frame.splitlines()[0] == "event: error"
+    decoded = json.loads(frame.splitlines()[1][len("data: "):])
+    assert decoded == {"code": ARTIFACT_PAYLOAD_TOO_LARGE, "message": "payload too large"}

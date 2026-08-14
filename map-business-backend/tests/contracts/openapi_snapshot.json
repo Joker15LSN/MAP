@@ -5516,7 +5516,7 @@
     },
     "/ready": {
       "get": {
-        "description": "Return 200 only when DB is reachable, migrated to head and seeded.\n\nUses its own short-lived connection (NullPool) so readiness never\ndepends on or pollutes the shared engine pool.",
+        "description": "Return 200 only when DB is configured, reachable, migrated and seeded.\n\nUses its own short-lived connection (NullPool) so readiness never\ndepends on or pollutes the shared engine pool. R-06: a missing or empty\nDSN is HTTP 503 with the fixed body shape (never FastAPI's default 200).",
         "operationId": "ready_ready_get",
         "responses": {
           "200": {
@@ -5525,7 +5525,10 @@
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "All required dependencies are available"
+          },
+          "503": {
+            "description": "Not ready: DSN missing/malformed/unreachable, schema behind head, or seed missing"
           }
         },
         "summary": "Ready",

@@ -25,6 +25,8 @@
     "not_applicable_reason",
     "blocked_reason",
     "blocker_owner",
+    "superseded_by",
+    "superseded_reason",
     "producer"
   ],
   "properties": {
@@ -46,6 +48,7 @@
         "pass",
         "fail",
         "blocked",
+        "superseded",
         "not-applicable-approved"
       ]
     },
@@ -125,6 +128,13 @@
     "blocker_owner": {
       "type": ["string", "null"]
     },
+    "superseded_by": {
+      "type": ["string", "null"],
+      "description": "Replacement evidence location (task/sha/ac path) when status=superseded"
+    },
+    "superseded_reason": {
+      "type": ["string", "null"]
+    },
     "producer": {
       "type": "object",
       "additionalProperties": false,
@@ -193,6 +203,34 @@
         "properties": {
           "blocked_reason": {"type": "null"},
           "blocker_owner": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {"const": "superseded"}
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "superseded_by": {"type": "string", "minLength": 1},
+          "superseded_reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {"not": {"const": "superseded"}}
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "superseded_by": {"type": "null"},
+          "superseded_reason": {"type": "null"}
         }
       }
     },

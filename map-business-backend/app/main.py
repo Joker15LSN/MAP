@@ -60,6 +60,16 @@ def validate_settings(settings: Settings) -> None:
                 "MAP_TRUSTED_PROXY_SECRET is required when "
                 "MAP_AUTH_MODE=trusted_header (fail-closed)"
             )
+    # AC-SEC-11 / R-10: wildcard CORS combined with credentials is refused
+    # in production (fail-closed at startup).
+    if settings.env in {"prod", "production"}:
+        origins = {origin.strip() for origin in settings.cors_origins.split(",")}
+        if "*" in origins and settings.cors_allow_credentials:
+            raise RuntimeError(
+                "wildcard CORS with credentials is forbidden in production; "
+                "set MAP_CORS_ORIGINS to explicit origins or "
+                "MAP_CORS_ALLOW_CREDENTIALS=false (fail-closed)"
+            )
 
 
 def create_app(
@@ -107,10 +117,13 @@ def create_app(
     # MAP_OTEL_ENABLED is truthy). Must run before requests are served.
     configure_bff_telemetry(app)
 
+    cors_origins = [
+        origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=settings.cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )

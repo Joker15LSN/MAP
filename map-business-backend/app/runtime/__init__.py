@@ -6,9 +6,12 @@ State machines + versioned event envelope live here; PG durable tables
 
 from .event_envelope import (
     ARTIFACT_PAYLOAD_TOO_LARGE,
+    ARTIFACT_REF_INVALID,
+    EVENT_ENVELOPE_INVALID,
     EVENT_SCHEMA_VERSION,
     EVENT_STALE_SEQ,
     IDEMPOTENCY_CONFLICT,
+    PAYLOAD_NOT_SERIALIZABLE,
     UNKNOWN_EVENT_TYPE,
     UNKNOWN_EVENT_VERSION,
     ArtifactRef,
@@ -18,6 +21,7 @@ from .event_envelope import (
 )
 from .state_machine import (
     CANONICAL_STATES,
+    RUN_CANCEL_ALLOWED_FROM,
     RUN_TERMINAL_STATE,
     STATE_TRANSITION_VIOLATION,
     EffectState,
@@ -37,10 +41,14 @@ from .state_machine import (
 
 __all__ = [
     "ARTIFACT_PAYLOAD_TOO_LARGE",
+    "ARTIFACT_REF_INVALID",
     "CANONICAL_STATES",
+    "EVENT_ENVELOPE_INVALID",
     "EVENT_SCHEMA_VERSION",
     "EVENT_STALE_SEQ",
     "IDEMPOTENCY_CONFLICT",
+    "PAYLOAD_NOT_SERIALIZABLE",
+    "RUN_CANCEL_ALLOWED_FROM",
     "RUN_TERMINAL_STATE",
     "STATE_TRANSITION_VIOLATION",
     "UNKNOWN_EVENT_TYPE",

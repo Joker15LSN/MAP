@@ -460,5 +460,3 @@ async def query_chunks_by_file(
     # res.sort(key=lambda x: x.chunk_index)
     assert isinstance(res, list)
     return res
-
-

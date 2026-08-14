@@ -31,7 +31,14 @@ from map_core.service.agent.tool_registry import (
 from map_core.service.agent.tool_runtime import ToolSet
 from map_core.service.agentscope2.agent import AgentScopeSceneAgent
 
-DISABLED_TOOLS = ["python_exec_tool", "bash_tool"]
+DISABLED_TOOLS = [
+    "python_exec_tool",
+    "bash_tool",
+    # review R-02: model-controlled local file IO is closed until it is
+    # served by OpenSandbox + the private artifact store.
+    "attachment_file_read_tool",
+    "attachment_file_write_tool",
+]
 
 
 class _FakeLLMConfig:

@@ -23,13 +23,10 @@
 set -euo pipefail
 
 APP_USER="${MAP_POSTGRES_APP_USER:-map}"
-# P0-SEC-01: passwords have no repository defaults — fail fast when unset.
-APP_PASSWORD="${MAP_POSTGRES_APP_PASSWORD:?MAP_POSTGRES_APP_PASSWORD is required}"
 MIGRATOR_USER="${MAP_POSTGRES_MIGRATOR_USER:-map_migrator}"
-MIGRATOR_PASSWORD="${MAP_POSTGRES_MIGRATOR_PASSWORD:?MAP_POSTGRES_MIGRATOR_PASSWORD is required}"
 
-# Fail closed on non-simple role names BEFORE any SQL runs; the message
-# intentionally contains no secret material.
+# Fail closed on non-simple role names BEFORE any secret handling or SQL
+# runs; the message intentionally contains no secret material.
 valid_role_name() {
     [[ "$1" =~ ^[a-z_][a-z0-9_]{0,62}$ ]]
 }
@@ -39,6 +36,10 @@ for role_name in "$APP_USER" "$MIGRATOR_USER"; do
         exit 1
     fi
 done
+
+# P0-SEC-01: passwords have no repository defaults — fail fast when unset.
+APP_PASSWORD="${MAP_POSTGRES_APP_PASSWORD:?MAP_POSTGRES_APP_PASSWORD is required}"
+MIGRATOR_PASSWORD="${MAP_POSTGRES_MIGRATOR_PASSWORD:?MAP_POSTGRES_MIGRATOR_PASSWORD is required}"
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
     -v app_user="$APP_USER" \

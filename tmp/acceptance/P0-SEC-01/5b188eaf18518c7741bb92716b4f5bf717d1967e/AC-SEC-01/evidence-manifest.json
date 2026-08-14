@@ -2,7 +2,7 @@
   "schema_version": "1.1.0",
   "task_id": "P0-SEC-01",
   "ac_id": "AC-SEC-01",
-  "status": "pass",
+  "status": "superseded",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
   "implementation_sha": "5b188eaf18518c7741bb92716b4f5bf717d1967e",
   "environment_digest": "0d58da78eeff131f7c9c62f96a6733357b6b43d339c2a4ff50ad4a8a50296c42",
@@ -15,11 +15,13 @@
   "not_applicable_reason": null,
   "blocked_reason": null,
   "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P0-SEC-01/5a25346f710aef95610df71d2f7c3078b69fe470/AC-SEC-01/evidence-manifest.json",
+  "superseded_reason": "AC-SEC-01 pass claim was based on a scan that only covered map_core python sources while the incident doc still contained usable credential material; superseded by review R-01, evidence regenerated at final HEAD",
   "producer": {
     "agent": "reasonix",
     "version": "1.0.0"
   },
-  "command": "grep -rnE '<credential-patterns>' . (filtered); map_core/.venv/bin/python -m pytest map_core/tests/test_hardcoded_credential_scan.py -q",
+  "command": "map_core/.venv/bin/python -m pytest map_core/tests/test_hardcoded_credential_scan.py -q",
   "exit_code": 0,
   "artifacts": [
     {

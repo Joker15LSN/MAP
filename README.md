@@ -9,6 +9,25 @@ MAP 是一个面向企业场景的多智能体应用平台。它把业务 UI、�
 
 浏览器只访问 BFF，不直接访问算法服务。跨服务契约以 [`SPEC/contracts/`](SPEC/contracts/) 为准。
 
+## 当前实现状态（诚实声明，R-10）
+
+本分支状态为 **P0 止血与契约基础，未完成**，不宣称黄金任务书已完成：
+
+- 已完成：宿主执行止血（python_exec_tool/bash_tool/本地文件读写/stdio MCP
+  全部 fail-closed）、仓库凭据清理与统一扫描门禁（scripts/security_scan.py）、
+  OpenSandbox 认证 HTTP 客户端、Canonical Run/Event/Artifact 契约
+  （状态机 + 事件 envelope + 64KiB/ArtifactRef 校验 + typed error 映射）、
+  readiness/Compose/CI 门禁修复、验收证据校验器
+  （scripts/validate_acceptance_evidence.py）。
+- 未完成（blocked，见 tmp/acceptance/<TASK>/<sha>/ 证据）：
+  OpenSandbox Server 部署与真实集成（AC-SEC-12）、OpenViking Server
+  集成、durable Run/Checkpoint/worker（P1-RUN-01）、DAG/HITL/PLAN/CTX/SUB、
+  OTel 单入口与观测融合、PG 版本化配置、/api/chat* 删除（需流量取证）、
+  AgentScope 2.0.6 单引擎收敛与 CLEAN 系列任务。
+- 已泄漏凭据的外部吊销（撤销工单）待 security owner 出具后 AC-SEC-01
+  才可转为 pass；当前为 blocked（见
+  security/INCIDENT-2026-08-13-hardcoded-credentials.md）。
+
 ## 核心能力
 
 - 多智能体执行：场景识别、业务智能体调度、工具调用、结果聚合，以及 ScenarioHub/SkillHub 心流编排。

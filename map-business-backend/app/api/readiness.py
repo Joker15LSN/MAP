@@ -1,14 +1,20 @@
-"""Readiness endpoint (FIX-P1-DEPLOY-01).
+"""Readiness endpoint (FIX-P1-DEPLOY-01, review R-06).
 
-``/ready`` proves the product database is actually usable: reachable,
-migrated to head, and carrying the default workspace seed. ``/health``
-(liveness) stays downstream-free and only reports process state.
+/ready proves the product database is actually usable: configured,
+reachable, migrated to head, and carrying the default workspace seed.
+Missing/malformed/unreachable DSN, unmigrated schema or a missing seed all
+return HTTP 503 with a fixed body shape - never a bare 200. /health
+(liveness, see app/api/chat.py) stays downstream-free.
+
+Response bodies must never contain connection credentials: every error
+detail is passed through redact_dsn before serialization.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 
 from alembic.script import ScriptDirectory
@@ -26,6 +32,18 @@ router = APIRouter(tags=["health"])
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "db" / "migrations"
 
+# asyncpg connect timeout keeps /ready from hanging on blackholed networks.
+DB_CONNECT_TIMEOUT_SECONDS = 5
+
+_DSN_CRED_PATTERN = re.compile(r"(://[^/\s:@]+):([^/\s@]+)@")
+_DSN_PARAM_PATTERN = re.compile(r"([?&](?:password|passwd|pwd)=)[^&\s]+", re.IGNORECASE)
+
+
+def redact_dsn(text: str) -> str:
+    """Remove userinfo passwords and password query params from a string."""
+    redacted = _DSN_CRED_PATTERN.sub(r"\1:<redacted>@", text)
+    return _DSN_PARAM_PATTERN.sub(r"\1<redacted>", redacted)
+
 
 def current_head_revision() -> str | None:
     """Return the head revision id from the local migration scripts."""
@@ -37,41 +55,63 @@ def current_head_revision() -> str | None:
         return None
 
 
-@router.get("/ready")
+def _check_error(label: str, exc: Exception) -> dict[str, object]:
+    """Build a check failure body; the message is redacted and DSN-free."""
+    message = redact_dsn(str(exc))[:200]
+    return {"ok": False, "error": message}
+
+
+def _not_ready(checks: dict[str, object]) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
+
+
+@router.get(
+    "/ready",
+    responses={
+        200: {"description": "All required dependencies are available"},
+        503: {"description": "Not ready: DSN missing/malformed/unreachable, "
+                             "schema behind head, or seed missing"},
+    },
+)
 async def ready(request: Request) -> JSONResponse:
-    """Return 200 only when DB is reachable, migrated to head and seeded.
+    """Return 200 only when DB is configured, reachable, migrated and seeded.
 
     Uses its own short-lived connection (NullPool) so readiness never
-    depends on or pollutes the shared engine pool.
+    depends on or pollutes the shared engine pool. R-06: a missing or empty
+    DSN is HTTP 503 with the fixed body shape (never FastAPI's default 200).
     """
     checks: dict[str, object] = {}
     ok = True
 
-    dsn = os.getenv("MAP_CONTROL_DB_DSN", "")
+    dsn = os.getenv("MAP_CONTROL_DB_DSN", "").strip()
     if not dsn:
-        # P0-SEC-01: no repository default DSN — degrade to "not ready".
-        return {
+        # P0-SEC-01 / R-06: no repository default DSN - degrade to "not
+        # ready" with the fixed 503 envelope (no DSN material involved).
+        checks["database"] = {
             "ok": False,
-            "checks": {
-                "database": {
-                    "ok": False,
-                    "error": "MAP_CONTROL_DB_DSN is not configured",
-                }
-            },
+            "error": "MAP_CONTROL_DB_DSN is not configured",
         }
+        return _not_ready(checks)
 
-    engine = create_async_engine(
-        dsn,
-        poolclass=NullPool,
-        pool_pre_ping=True,
-    )
+    try:
+        engine = create_async_engine(
+            dsn,
+            poolclass=NullPool,
+            pool_pre_ping=True,
+            connect_args={"timeout": DB_CONNECT_TIMEOUT_SECONDS},
+        )
+    except Exception as exc:  # noqa: BLE001 - malformed DSN
+        logger.warning("MAP_CONTROL_DB_DSN is malformed")
+        checks["database"] = _check_error("database", exc)
+        return _not_ready(checks)
+
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-        checks["database"] = True
+        checks["database"] = {"ok": True}
     except Exception as exc:  # noqa: BLE001
         ok = False
-        checks["database"] = {"ok": False, "error": str(exc)[:200]}
+        checks["database"] = _check_error("database", exc)
 
     if ok:
         head = current_head_revision()
@@ -89,7 +129,7 @@ async def ready(request: Request) -> JSONResponse:
                 ok = False
         except Exception as exc:  # noqa: BLE001
             ok = False
-            checks["migration"] = {"ok": False, "error": str(exc)[:200]}
+            checks["migration"] = _check_error("migration", exc)
 
     if ok:
         # R2-P2-04: the seed is only valid if the STABLE UUID *and* the
@@ -116,7 +156,7 @@ async def ready(request: Request) -> JSONResponse:
                 ok = False
         except Exception as exc:  # noqa: BLE001
             ok = False
-            checks["seed"] = {"ok": False, "error": str(exc)[:200]}
+            checks["seed"] = _check_error("seed", exc)
 
     await engine.dispose()
     status_code = 200 if ok else 503

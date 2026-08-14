@@ -44,14 +44,44 @@ services:
     ports:
       - "${MAP_MONGO_PORT:-27017}:27017"
     healthcheck:
+      # R-03: the healthcheck uses the SAME credentials the container was
+      # started with ($$ so compose interpolation passes the literal text
+      # to the container, where the shell resolves the env vars at runtime).
+      # No fixed credentials and no host-side interpolation of the password.
       test:
         [
           "CMD-SHELL",
-          "mongosh --quiet -u map -p map --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1",
+          "mongosh --quiet -u \"$${MONGO_INITDB_ROOT_USERNAME}\" -p \"$${MONGO_INITDB_ROOT_PASSWORD}\" --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1",
         ]
       interval: 10s
       timeout: 8s
       retries: 12
+
+  # OpenSandbox Server (P0-SEC-01 action 5, review R-02). Opt-in profile:
+  #   docker compose --profile sandbox up -d opensandbox-server
+  # The algorithm link only talks to it via the authenticated HTTP client
+  # (map_core.service.opensandbox_client); there is NO docker socket mount,
+  # kubeconfig mount or host-exec fallback in any service.
+  # NOTE: the exact image digest and OpenAPI contract are pinned during the
+  # OpenSandbox deployment task; until then AC-SEC-12 stays blocked.
+  opensandbox-server:
+    image: ghcr.io/opensandbox-group/opensandbox:0.2.2
+    container_name: map-opensandbox-server
+    profiles: ["sandbox"]
+    environment:
+      OPENSANDBOX_API_KEY: ${MAP_OPENSANDBOX_API_KEY:-}
+      OPENSANDBOX_MAX_SANDBOXES_PER_WORKSPACE: "16"
+    ports:
+      - "${MAP_OPENSANDBOX_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()\"",
+        ]
+      interval: 15s
+      timeout: 8s
+      retries: 10
 
   algorithm-service:
     platform: ${MAP_ALGO_PLATFORM:-linux/amd64}
@@ -67,6 +97,24 @@ services:
       MAP_LLM_BASE_URL: ${MAP_LLM_BASE_URL:-https://api.deepseek.com}
       MAP_LLM_MODEL: ${MAP_LLM_MODEL:-deepseek-v4-flash}
       MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
+      # R-07: downstream capability secrets come exclusively from the secret
+      # provider (.env for local dev). No repository defaults; capabilities
+      # whose required values are unset fail closed before any network call.
+      MAP_RERANK_BASE_URL: ${MAP_RERANK_BASE_URL:-}
+      MAP_RERANK_MODEL_NAME: ${MAP_RERANK_MODEL_NAME:-}
+      MAP_RERANK_AUTH_TOKEN: ${MAP_RERANK_AUTH_TOKEN:-}
+      MAP_INDUSTRY_CHAT_URL: ${MAP_INDUSTRY_CHAT_URL:-}
+      MAP_INDUSTRY_CHAT_API_KEY: ${MAP_INDUSTRY_CHAT_API_KEY:-}
+      MAP_MILVUS_USER: ${MAP_MILVUS_USER:-}
+      MAP_MILVUS_PASSWORD: ${MAP_MILVUS_PASSWORD:-}
+      MAP_MINIO_BASE_URL: ${MAP_MINIO_BASE_URL:-}
+      MAP_MINIO_ACCESS_KEY: ${MAP_MINIO_ACCESS_KEY:-}
+      MAP_MINIO_SECRET_KEY: ${MAP_MINIO_SECRET_KEY:-}
+      MAP_MINIO_BUCKET: ${MAP_MINIO_BUCKET:-}
+      # OpenSandbox (R-02): empty by default - the capability is unavailable
+      # until a server is deployed (see the sandbox profile below).
+      MAP_OPENSANDBOX_URL: ${MAP_OPENSANDBOX_URL:-}
+      MAP_OPENSANDBOX_API_KEY: ${MAP_OPENSANDBOX_API_KEY:-}
       MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
       MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
       # Highest-priority kill switch, always passed through: OTEL_SDK_DISABLED
