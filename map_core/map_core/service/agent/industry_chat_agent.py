@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field
 
-from ...utils.sensitive_data import redact_mapping, redact_text
+from ...utils.sensitive_data import SecretRedactor
 from .base import AgentRequest, AgentResult
 from .traceable_agent import TraceableAgent
 
@@ -50,6 +50,16 @@ class IndustryChatAgent(TraceableAgent):
     def __init__(self, llm, **kwargs):
         super().__init__(llm, name=self.tool_name, **kwargs)
 
+    @property
+    def _sanitizer(self) -> SecretRedactor:
+        """S2-04: ONE sanitizer for every output surface of this agent.
+
+        Seeded with the exact API key in use, so an upstream that echoes the
+        key back inside an ordinary answer/message/error field is wiped
+        before content, data_source, record_message or trace attributes.
+        """
+        return SecretRedactor((self._api_key,))
+
     def _build_payload(self, query: str) -> dict[str, Any]:
         return {
             "api_key": self._api_key,
@@ -63,20 +73,22 @@ class IndustryChatAgent(TraceableAgent):
         }
 
     def _format_exception_detail(self, exc: Exception) -> str:
-        # R-07: every fragment is redacted - the upstream may echo the
-        # request (including api_key) back in the error body.
-        detail = redact_text(str(exc).strip() or repr(exc))
+        # R-07 + S2-04: every fragment is redacted with the SAME sanitizer -
+        # the upstream may echo the request (including api_key) back in the
+        # error body, so exact-value wiping must run on exceptions too.
+        sanitizer = self._sanitizer
+        detail = sanitizer.redact_text(str(exc).strip() or repr(exc))
 
         if isinstance(exc, httpx.HTTPStatusError):
             response = exc.response
             status = response.status_code if response is not None else "unknown"
-            body = redact_text(response.text) if response is not None else ""
+            body = sanitizer.redact_text(response.text) if response is not None else ""
             return f"{type(exc).__name__}: {detail}; status={status}; body={body}"
 
         if isinstance(exc, httpx.RequestError):
             request = exc.request
             method = request.method if request is not None else "unknown"
-            url = redact_text(str(request.url)) if request is not None else "unknown"
+            url = sanitizer.redact_text(str(request.url)) if request is not None else "unknown"
             return f"{type(exc).__name__}: {detail}; request={method} {url}"
 
         return f"{type(exc).__name__}: {detail}"
@@ -117,21 +129,21 @@ class IndustryChatAgent(TraceableAgent):
             return data
 
     def _safe_context(self, query: str) -> dict[str, Any]:
-        """Redacted context for results, logs and traces (R-07).
+        """Redacted context for results, logs and traces (R-07 / S2-04).
 
         Never carries the api_key: the request is reduced to the query, the
-        api_url is userinfo-redacted, and any response goes through
-        redact_mapping before being recorded.
+        api_url is userinfo-redacted, and any response goes through the
+        unified sanitizer before being recorded.
         """
         return {
             "source": "industry_chat",
-            "api_url": redact_text(self._api_url),
+            "api_url": self._sanitizer.redact_text(self._api_url),
             "request": {"query": query},
         }
 
     async def run(self, request: AgentRequest, *, parid: str = "-") -> AgentResult:
         query = request.query.strip()
-        payload = self._build_payload(query)
+        sanitizer = self._sanitizer
         self.record_tool_call(self.tool_name, {"query": query})
 
         # R-07: fail closed BEFORE the first network call when the
@@ -156,11 +168,13 @@ class IndustryChatAgent(TraceableAgent):
 
         try:
             response_data = await self._call_industry_chat(query)
-            content = self._extract_content(response_data)
-            # R-07: the recorded response must never leak the api_key even
-            # when the upstream echoes the request back.
+            # S2-04: content/data_source/record_message/trace attributes all
+            # use the SAME sanitizer - an upstream echoing the api_key in a
+            # plain answer/message field is wiped everywhere at once.
+            content = sanitizer.redact_text(self._extract_content(response_data))
+            redacted_response = sanitizer.redact_mapping(response_data)
             self.record_tool_result(
-                self.tool_name, redact_mapping(response_data)
+                self.tool_name, redacted_response
             )
             self.record_message("assistant", content)
             return AgentResult(
@@ -169,7 +183,7 @@ class IndustryChatAgent(TraceableAgent):
                 content=content,
                 data_source={
                     **self._safe_context(query),
-                    "response": redact_mapping(response_data),
+                    "response": redacted_response,
                 },
                 meta_data={},
             )

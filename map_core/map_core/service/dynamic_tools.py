@@ -4,12 +4,19 @@ import json
 import re
 from typing import Any
 
-import httpx
 from opentelemetry.propagate import inject as otel_inject
 
 from ..utils.llm_engine import LLMEngine
+from ..utils.sensitive_data import make_redactor
 from .agent.base import AgentRequest, ToolResult
 from .agent.tool_runtime import Tool
+from .mcp_egress import (
+    EgressPolicy,
+    MCPEgressError,
+    ResolvedHeaders,
+    post_json_stream_guarded,
+    validate_mcp_url,
+)
 
 
 def _slugify(value: str, *, prefix: str) -> str:
@@ -43,11 +50,35 @@ async def _call_http_mcp_tool(
             name=tool_name,
             error="MCP server url is empty.",
         )
-    headers = {
-        str(key): str(value)
-        for key, value in (server.get("headers") or {}).items()
-        if value
-    }
+
+    # S2-04: the single egress policy gate - scheme, allowlist and
+    # post-resolution IP policy are all enforced BEFORE any connection.
+    policy = EgressPolicy.from_env()
+    url_problems = validate_mcp_url(url, policy)
+    if url_problems:
+        return ToolResult(
+            success=False,
+            name=tool_name,
+            error=(
+                "MCP_EGRESS_POLICY_DENIED: "
+                + "; ".join(url_problems)
+            ),
+            data_source={"source": "mcp", "error_code": "MCP_EGRESS_POLICY_DENIED"},
+        )
+
+    # S2-04: request headers must come from secret references; literal
+    # header values in server config are rejected outright.
+    try:
+        resolved_headers = ResolvedHeaders.from_config(server.get("headers"))
+    except MCPEgressError as exc:
+        return ToolResult(
+            success=False,
+            name=tool_name,
+            error=str(exc),
+            data_source={"source": "mcp", "error_code": exc.code},
+        )
+
+    headers = dict(resolved_headers.headers)
     # Propagate the current Tool span to the MCP service. Business headers
     # configured by admins win, but W3C propagation fields must always be
     # generated dynamically: a statically configured traceparent would pin
@@ -70,23 +101,61 @@ async def _call_http_mcp_tool(
         "method": "tools/call",
         "params": {"name": tool_name, "arguments": args},
     }
+    # S2-04: every response fragment (content, raw, error) goes through the
+    # same redactor seeded with the resolved secret values, so an upstream
+    # echo in an ordinary answer/message/error field cannot leak.
+    redactor = make_redactor(resolved_headers.secret_values)
     timeout_s = max(5, int(server.get("timeout_s") or 30))
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=5.0)) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+    try:
+        response = await post_json_stream_guarded(
+            url=url,
+            json_payload=payload,
+            headers=headers,
+            timeout_s=timeout_s,
+            max_response_bytes=policy.max_response_bytes,
+        )
+    except MCPEgressError as exc:
+        return ToolResult(
+            success=False,
+            name=tool_name,
+            error=redactor.redact_text(str(exc)),
+            data_source={"source": "mcp", "error_code": exc.code},
+        )
+    try:
         data = response.json()
+    except json.JSONDecodeError:
+        return ToolResult(
+            success=False,
+            name=tool_name,
+            error="MCP server returned non-JSON response.",
+        )
+    if response.status_code >= 400:
+        return ToolResult(
+            success=False,
+            name=tool_name,
+            error=redactor.redact_text(
+                json.dumps(data, ensure_ascii=False)[:2000]
+            ),
+            data_source={"source": "mcp", "http_status": response.status_code},
+        )
     if isinstance(data, dict) and data.get("error"):
         return ToolResult(
             success=False,
             name=tool_name,
-            error=json.dumps(data.get("error"), ensure_ascii=False),
-            data_source={"raw": data},
+            error=redactor.redact_text(
+                json.dumps(data.get("error"), ensure_ascii=False)
+            ),
+            data_source=redactor.redact_mapping(
+                {"source": "mcp", "raw": data}
+            ),
         )
     result = data.get("result") if isinstance(data, dict) else data
     return ToolResult(
         name=tool_name,
-        content=_stringify_mcp_result(result),
-        data_source={"source": "mcp", "server_id": server.get("server_id"), "raw": result},
+        content=redactor.redact_text(_stringify_mcp_result(result)),
+        data_source=redactor.redact_mapping(
+            {"source": "mcp", "server_id": server.get("server_id"), "raw": result}
+        ),
     )
 
 
