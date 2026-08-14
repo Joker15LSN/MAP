@@ -17,10 +17,13 @@ oversized payloads must travel via a validated ArtifactRef.
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any, Final
 
 UNKNOWN_EVENT_VERSION = "UNKNOWN_EVENT_VERSION"
@@ -117,6 +120,82 @@ def _require_uuid(value: str, field_name: str) -> None:
         ) from exc
 
 
+# ---- S2-02: reserved-field + deep-freeze helpers ----------------------------
+
+RESERVED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
+    {
+        "schema_version",
+        "schema_minor",
+        "event_id",
+        "run_id",
+        "seq",
+        "type",
+        "occurred_at",
+        "workspace_id",
+        "data",
+    }
+)
+
+_JSON_SCALARS = (str, int, float, bool, type(None))
+
+
+def _validate_json_types(value: Any, path: str = "$") -> None:
+    """Every value inside data/extra_fields must be canonical JSON.
+
+    Non-JSON values (bytes, sets, arbitrary objects, NaN/Infinity) fail at
+    construction with the typed PAYLOAD_NOT_SERIALIZABLE error instead of
+    reaching storage/SSE.
+    """
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise EventEnvelopeError(
+                    PAYLOAD_NOT_SERIALIZABLE,
+                    f"{path}: object keys must be strings, got {type(key).__name__}",
+                )
+            _validate_json_types(item, f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_json_types(item, f"{path}[{index}]")
+        return
+    if isinstance(value, _JSON_SCALARS):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise EventEnvelopeError(
+                PAYLOAD_NOT_SERIALIZABLE, f"{path}: non-finite float is not JSON"
+            )
+        return
+    raise EventEnvelopeError(
+        PAYLOAD_NOT_SERIALIZABLE,
+        f"{path}: {type(value).__name__} is not canonical JSON",
+    )
+
+
+def _deep_freeze(value: Any) -> Any:
+    """Deep immutable snapshot: dicts -> MappingProxyType, lists -> tuples.
+
+    Nested mutation is impossible afterwards: ``envelope.data["x"] = ...``
+    and ``envelope.data["nested"]["y"] = ...`` both raise TypeError, so a
+    payload can never be inflated after construction (S2-02).
+    """
+    if isinstance(value, dict):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
+
+
+def _deep_thaw(value: Any) -> Any:
+    """Recreate plain dict/list JSON structures from a frozen snapshot."""
+    if isinstance(value, Mapping):
+        return {key: _deep_thaw(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_deep_thaw(item) for item in value]
+    return value
+
+
 def validate_event_type(event_type: str) -> None:
     if not any(event_type.startswith(prefix) for prefix in _EVENT_TYPE_PREFIXES):
         raise EventEnvelopeError(
@@ -142,9 +221,16 @@ def _canonical_json_bytes(payload: Any) -> bytes:
     R-04: json.dumps defaults would silently emit NaN/Infinity (invalid
     JSON) and TypeErrors for non-serializable objects; both must fail with
     the typed PAYLOAD_NOT_SERIALIZABLE error instead of reaching storage.
+    S2-02: frozen snapshots (MappingProxyType/tuples) are thawed to plain
+    JSON structures first, so validated envelopes stay serializable.
     """
     try:
-        text = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+        text = json.dumps(
+            _deep_thaw(payload),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
     except (TypeError, ValueError) as exc:
         raise EventEnvelopeError(
             PAYLOAD_NOT_SERIALIZABLE,
@@ -276,10 +362,25 @@ class EventEnvelope:
     extra_fields: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # R-04: the full validation runs at construction time, so a 70KB
-        # payload (or a non-JSON payload) can never exist as an object.
+        # S2-02: strict typed validation at construction - seq must be a
+        # non-bool positive integer, schema_minor a non-bool non-negative
+        # integer, event_id a UUID, occurred_at a timezone-aware timestamp,
+        # data/extra_fields JSON objects with canonical JSON values.
         validate_schema_version(self.schema_version)
+        if not isinstance(self.schema_minor, int) or isinstance(self.schema_minor, bool):
+            raise EventEnvelopeError(
+                EVENT_ENVELOPE_INVALID, "schema_minor must be an integer"
+            )
+        if self.schema_minor < 0:
+            raise EventEnvelopeError(
+                EVENT_ENVELOPE_INVALID, "schema_minor must be >= 0"
+            )
         validate_event_type(self.type)
+        if not isinstance(self.seq, int) or isinstance(self.seq, bool):
+            raise EventEnvelopeError(
+                EVENT_ENVELOPE_INVALID,
+                f"seq must be a positive integer, got {self.seq!r}",
+            )
         if self.seq < 1:
             raise EventEnvelopeError(EVENT_ENVELOPE_INVALID, "seq must be >= 1")
         for field_name, value in (
@@ -292,10 +393,50 @@ class EventEnvelope:
                 raise EventEnvelopeError(
                     EVENT_ENVELOPE_INVALID, f"{field_name} must be a non-empty string"
                 )
+        _require_uuid(self.event_id, "event_id")
         _require_uuid(self.run_id, "run_id")
         _require_uuid(self.workspace_id, "workspace_id")
+        # S2-02: occurred_at must parse as a timezone-AWARE timestamp
+        try:
+            parsed_at = datetime.fromisoformat(self.occurred_at.replace("Z", "+00:00"))
+        except (ValueError, TypeError) as exc:
+            raise EventEnvelopeError(
+                EVENT_ENVELOPE_INVALID,
+                f"occurred_at must be an ISO-8601 timestamp, got {self.occurred_at!r}",
+            ) from exc
+        if parsed_at.tzinfo is None:
+            raise EventEnvelopeError(
+                EVENT_ENVELOPE_INVALID,
+                "occurred_at must carry a timezone offset (naive timestamps are rejected)",
+            )
+
+        if not isinstance(self.data, dict):
+            raise EventEnvelopeError(
+                EVENT_ENVELOPE_INVALID, "data must be a JSON object"
+            )
+        if not isinstance(self.extra_fields, dict):
+            raise EventEnvelopeError(
+                EVENT_ENVELOPE_INVALID, "extra_fields must be a JSON object"
+            )
+        # S2-02: extra_fields may NEVER override a canonical field - unknown
+        # minor fields only ADD, they cannot shadow schema_version/run_id/
+        # data/...
+        for reserved in RESERVED_ENVELOPE_FIELDS:
+            if reserved in self.extra_fields:
+                raise EventEnvelopeError(
+                    EVENT_ENVELOPE_INVALID,
+                    f"extra_fields cannot redefine the canonical field {reserved!r}",
+                )
+        _validate_json_types(self.data, "data")
+        _validate_json_types(self.extra_fields, "extra_fields")
+        # R-04: the 64KiB inline limit runs at construction
         validate_payload_size(self.data)
         validate_payload_size(self.extra_fields)
+        # S2-02: deep immutable snapshot - post-construction mutation of
+        # data/extra_fields (the review's 70KB inflation bypass) is
+        # impossible: MappingProxyType raises TypeError on any write.
+        object.__setattr__(self, "data", _deep_freeze(self.data))
+        object.__setattr__(self, "extra_fields", _deep_freeze(self.extra_fields))
 
     @classmethod
     def build(
@@ -331,21 +472,28 @@ class EventEnvelope:
             "type": self.type,
             "occurred_at": self.occurred_at,
             "workspace_id": self.workspace_id,
-            "data": self.data,
+            "data": _deep_thaw(self.data),
         }
-        payload.update(self.extra_fields)
+        # unknown minor fields are appended AFTER the canonical fields and
+        # can never override them (reserved fields are rejected at
+        # construction, so no key can shadow a canonical one here)
+        payload.update(_deep_thaw(self.extra_fields))
         return payload
 
     def to_json(self) -> str:
         """Canonical JSON used for DB writes and SSE frames (validated).
 
-        The shared serializer is the same code path used by the size check
-        (validate_payload_size), so DB writes and SSE frames can never
-        bypass construction-time validation.
+        S2-02 defense in depth: the FULL validation (serializability + the
+        64KiB inline limit on data and extra_fields) re-runs here on every
+        serialization, so DB writes and SSE frames share the exact same
+        boundary behavior as construction.
         """
-        _canonical_json_bytes(self.to_dict())
+        payload = self.to_dict()
+        _canonical_json_bytes(payload)
+        validate_payload_size(_deep_thaw(self.data))
+        validate_payload_size(_deep_thaw(self.extra_fields))
         return json.dumps(
-            self.to_dict(), ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")
         )
 
     def sse_frame(self) -> str:
@@ -391,6 +539,14 @@ class EventEnvelope:
         known = {"schema_version", "schema_minor", "event_id", "run_id", "seq",
                  "type", "occurred_at", "workspace_id", "data"}
         extra_fields = {k: v for k, v in payload.items() if k not in known}
+        # S2-02: unknown minor fields may only ADD - a payload that tries to
+        # shadow a canonical field is rejected outright (fail-closed).
+        for reserved in RESERVED_ENVELOPE_FIELDS:
+            if reserved in extra_fields:
+                raise EventEnvelopeError(
+                    EVENT_ENVELOPE_INVALID,
+                    f"envelope payload redefines the canonical field {reserved!r}",
+                )
         data = payload.get("data", {})
         if not isinstance(data, dict):
             raise EventEnvelopeError(

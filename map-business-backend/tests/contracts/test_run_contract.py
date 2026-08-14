@@ -228,9 +228,9 @@ def _build_with_data(data: dict) -> EventEnvelope:
 @pytest.mark.parametrize(
     ("extra_bytes", "allowed"),
     [
-        (65527, True),  # json.dumps({"x": s}) == 9 + len(s) == 65536
-        (65528, False),  # 65537 -> ARTIFACT_PAYLOAD_TOO_LARGE
-        (65526, True),  # 65535 -> inline
+        (65527, True),  # compact json.dumps({"x": s}) == 8 + len(s) == 65535
+        (65528, True),  # 65536 == the inline limit, allowed
+        (65529, False),  # 65537 -> ARTIFACT_PAYLOAD_TOO_LARGE
     ],
 )
 def test_real_envelope_64k_boundary(extra_bytes: int, allowed: bool) -> None:
@@ -248,12 +248,12 @@ def test_real_envelope_64k_boundary(extra_bytes: int, allowed: bool) -> None:
 
 def test_real_envelope_multibyte_boundary() -> None:
     # Byte count, not character count: 21845 x 3-byte chars + 1 = 65536.
-    # "界" is 3 UTF-8 bytes; json.dumps({"x": s}) is 9 + 3n bytes.
-    data = {"x": "界" * 21842}  # 9 + 65526 = 65535 -> inline
+    # "界" is 3 UTF-8 bytes; compact json.dumps({"x": s}) is 8 + 3n bytes.
+    data = {"x": "界" * 21842}  # 8 + 65526 = 65534 -> inline
     envelope = _build_with_data(data)
     assert len(envelope.to_json().encode("utf-8")) > 0
     with pytest.raises(EventEnvelopeError) as exc_info:
-        _build_with_data({"x": "界" * 21843})  # 65538 -> too large
+        _build_with_data({"x": "界" * 21843})  # 65537 -> too large
     assert exc_info.value.code == ARTIFACT_PAYLOAD_TOO_LARGE
 
 

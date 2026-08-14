@@ -788,3 +788,78 @@ async def test_create_conversation_idempotency_key(app_and_core, session) -> Non
 
         listed = (await client.get("/api/v1/conversations")).json()
         assert len([c for c in listed if c["title"] == "幂等"]) == 1
+
+
+# ---- S2-02: run-event frames on the conversation SSE channel ---------------
+
+
+def _run_event_frame(event_type: str, data: dict, seq: int = 1) -> bytes:
+    return f"event: {event_type}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode()
+
+
+def _valid_run_event(event_type: str = "run.started", seq: int = 1) -> dict:
+    return {
+        "schema_version": 1,
+        "schema_minor": 0,
+        "event_id": str(uuid.uuid4()),
+        "run_id": str(uuid.uuid4()),
+        "seq": seq,
+        "type": event_type,
+        "occurred_at": "2026-08-13T12:00:00+00:00",
+        "workspace_id": WORKSPACE,
+        "data": {"step": "boot"},
+    }
+
+
+async def test_valid_run_event_frames_are_forwarded(app_and_core, session) -> None:
+    """S2-02: contract-valid run events pass through the real SSE path."""
+    app, _ = app_and_core
+    run_frame = _run_event_frame("run.started", _valid_run_event("run.started"))
+    stream = (
+        b'event: start\ndata: {"message_id":"m1"}\n\n'
+        + run_frame
+        + b'event: content_delta\ndata: {"content":"\\u4f60"}\n\n'
+        + b'event: done\ndata: {"content":"\\u4f60"}\n\n'
+    )
+    app.state.core_client = FakeStreamCoreClient(stream=stream)
+    async with await _client(app) as client:
+        conversation_id = await _new_conversation(client)
+        response = await client.post(
+            f"/api/v1/conversations/{conversation_id}/messages:stream",
+            json={"query": "hi", "request_id": "req-run-ok"},
+        )
+        events = _parse_sse(response.content)
+        run_events = [data for event, data in events if event == "run.started"]
+        assert len(run_events) == 1
+        assert run_events[0]["type"] == "run.started"
+        assert run_events[0]["data"] == {"step": "boot"}
+        assert events[-1][0] == "done"
+        assert events[-1][1]["status"] == "completed"
+
+
+async def test_invalid_run_event_frame_fails_stream_stably(app_and_core, session) -> None:
+    """S2-02: an envelope violating the contract fails the stream with the
+    stable typed code instead of being forwarded."""
+    app, _ = app_and_core
+    # unknown major version: the contract rejects it with a typed error
+    poisoned = _valid_run_event("run.started")
+    poisoned["schema_version"] = 99
+    run_frame = _run_event_frame("run.started", poisoned)
+    stream = (
+        b'event: start\ndata: {"message_id":"m1"}\n\n'
+        + run_frame
+        + b'event: done\ndata: {"content":"x"}\n\n'
+    )
+    app.state.core_client = FakeStreamCoreClient(stream=stream)
+    async with await _client(app) as client:
+        conversation_id = await _new_conversation(client)
+        response = await client.post(
+            f"/api/v1/conversations/{conversation_id}/messages:stream",
+            json={"query": "hi", "request_id": "req-run-bad"},
+        )
+        events = _parse_sse(response.content)
+        assert any(event == "error" for event, _ in events)
+        error_event = next(data for event, data in events if event == "error")
+        assert error_event["code"] == "UNKNOWN_EVENT_VERSION"
+        done = next(data for event, data in events if event == "done")
+        assert done["status"] == "failed"
