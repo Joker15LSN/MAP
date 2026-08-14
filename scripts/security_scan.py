@@ -648,37 +648,69 @@ def _build_image(context_name: str, context: Path, tag: str) -> None:
         raise RuntimeError("docker build for %s failed: %s" % (context_name, tail))
 
 
+def _is_third_party_image_member(name: str) -> bool:
+    """Dependency/OS code inside the image is not ours.
+
+    The Dockerfiles COPY the repository into /app - only that subtree
+    (minus vendored dependency dirs) counts as first-party code whose text
+    patterns fail the scan. Everything else (OS tooling under /usr,
+    /usr/share docs, /root/.cache build caches, perl/python stdlib) is
+    third-party and reported as third_party_hits only.
+
+    NOTE: this layout coupling mirrors the Dockerfiles; moving our code to
+    a different image path must update this classifier too.
+    """
+    path = name.lstrip("/")
+    if path.startswith("app/"):
+        return (
+            "/site-packages/" in path
+            or "/dist-packages/" in path
+            or "/node_modules/" in path
+            or "/.venv/" in path
+        )
+    return True
+
+
 def _scan_image_tarball(
-    name: str, raw: bytes, hits: list[Hit], unscanned: list[dict[str, str]]
+    name: str,
+    raw: bytes,
+    hits: list[Hit],
+    third_party_hits: list[Hit],
+    unscanned: list[dict[str, str]],
 ) -> None:
+    """Scan a `docker save` tarball in BOTH supported layouts.
+
+    - legacy: manifest.json + <layer>.tar members;
+    - OCI (Docker Desktop default): manifest.json + blobs/sha256/<digest>
+      members (config blobs are JSON text; layer blobs are gzip-compressed
+      tars - opened with mode "r:*" so the compression is auto-detected).
+
+    Every text member is scanned; binary members are recorded in
+    ``unscanned`` (never silently skipped).
+    """
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as outer:
         for member in outer.getmembers():
             if not member.isfile():
                 continue
-            if member.name.endswith("manifest.json") or member.name.endswith(".json"):
-                payload = outer.extractfile(member)
-                if payload is None:
-                    unscanned.append(
-                        {"location": "image:%s#config" % name, "reason": "unreadable"}
-                    )
-                    continue
-                data = payload.read()
-                scan_bytes_stream(
-                    iter([data]),
-                    "image:%s#config" % name,
-                    name,
-                    hits,
-                    unscanned,
-                    strict=False,
+            payload = outer.extractfile(member)
+            if payload is None:
+                unscanned.append(
+                    {"location": "image:%s#%s" % (name, member.name),
+                     "reason": "unreadable"}
                 )
-            if member.name.endswith("layer.tar"):
-                payload = outer.extractfile(member)
-                if payload is None:
-                    unscanned.append(
-                        {"location": "image:%s#layer" % name, "reason": "unreadable"}
-                    )
-                    continue
-                with tarfile.open(fileobj=payload, mode="r:") as layer:
+                continue
+            data = payload.read()
+            location = "image:%s#%s" % (name, member.name)
+            if member.name == "manifest.json" or member.name.endswith(".json"):
+                # image manifest / config: scan as text, never skipped
+                scan_bytes_stream(
+                    iter([data]), location, member.name,
+                    hits, unscanned, strict=False,
+                )
+                continue
+            # a blob member: either a config JSON or a compressed layer tar
+            try:
+                with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as layer:
                     for inner in layer.getmembers():
                         if not inner.isfile():
                             continue
@@ -693,18 +725,30 @@ def _scan_image_tarball(
                             continue
                         # S2-05: large members are scanned STREAMING in
                         # chunks; there is no size-based skip for text.
+                        member_hits = (
+                            third_party_hits
+                            if _is_third_party_image_member(inner.name)
+                            else hits
+                        )
                         scan_bytes_stream(
                             _chunked_file(fp),
                             "image:%s/%s" % (name, inner.name),
                             inner.name,
-                            hits,
+                            member_hits,
                             unscanned,
                             strict=False,
                         )
+            except tarfile.TarError:
+                # not a tar: a plain-text blob (config JSON)
+                scan_bytes_stream(
+                    iter([data]), location, member.name,
+                    hits, unscanned, strict=False,
+                )
 
 
 def scope_image(
     hits: list[Hit],
+    third_party_hits: list[Hit],
     unscanned: list[dict[str, str]],
     *,
     build: bool,
@@ -736,7 +780,7 @@ def scope_image(
         save = subprocess.run(["docker", "save", tag], capture_output=True)
         if save.returncode != 0:
             raise RuntimeError("docker save %s failed" % tag)
-        _scan_image_tarball(name, save.stdout, hits, unscanned)
+        _scan_image_tarball(name, save.stdout, hits, third_party_hits, unscanned)
 
 
 def build_report(
@@ -747,12 +791,15 @@ def build_report(
     unscanned: list[dict[str, str]] | None = None,
     exemptions_used: list[Exemption] | None = None,
     commit: str | None = None,
+    third_party_hits: list[Hit] | None = None,
 ) -> dict[str, Any]:
     return {
         "scopes": scopes,
         "commit": commit,
         "hits": [hit.to_dict() for hit in hits],
         "hit_count": len(hits),
+        "third_party_hits": [hit.to_dict() for hit in (third_party_hits or [])],
+        "third_party_hit_count": len(third_party_hits or []),
         "unscanned": list(unscanned or []),
         "unscanned_count": len(unscanned or []),
         "exempt_files": {
@@ -802,6 +849,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     hits: list[Hit] = []
+    third_party_hits: list[Hit] = []
     unscanned: list[dict[str, str]] = []
     try:
         for scope in scopes:
@@ -814,6 +862,7 @@ def main(argv: list[str] | None = None) -> int:
             elif scope == "image":
                 scope_image(
                     hits,
+                    third_party_hits,
                     unscanned,
                     build=args.build_image,
                     skip_unavailable=args.skip_unavailable,
@@ -836,6 +885,7 @@ def main(argv: list[str] | None = None) -> int:
         {},
         unscanned=unscanned,
         commit=args.commit,
+        third_party_hits=third_party_hits,
     )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -843,6 +893,10 @@ def main(argv: list[str] | None = None) -> int:
         for hit in hits:
             print("%s:%d: %s %s" % (hit.location, hit.line, hit.pattern, hit.fingerprint))
         print("security scan: %d hit(s) in %s" % (len(hits), ",".join(scopes)))
+        print(
+            "security scan: %d third-party hit(s) (dependency code, reported only)"
+            % len(third_party_hits)
+        )
         for item in unscanned:
             print("security scan: unscanned %s (%s)" % (item["location"], item["reason"]))
         for exemption in EXEMPTIONS:

@@ -164,6 +164,47 @@ class ScanUnitTests(unittest.TestCase):
             self.assertTrue(hits, "committed canary must be found at that commit")
             self.assertEqual(hits[0].pattern, "openai_key")
 
+    def test_oci_layout_image_tarball_is_scanned(self) -> None:
+        """Docker Desktop saves OCI layouts (blobs/sha256/<digest>): a
+        canary inside a gzip-compressed layer blob must still be found."""
+        import gzip as gziplib
+        import io
+        import json as jsonlib
+        import tarfile as tarfilelib
+
+        canary = 'tok = "' + "sk-" + "fake-" + "oci-layer-canary-0123456789abc" + '"\n'
+        layer_buf = io.BytesIO()
+        with tarfilelib.open(fileobj=layer_buf, mode="w") as layer:
+            info = tarfilelib.TarInfo("app/secrets.txt")
+            payload_bytes = canary.encode()
+            info.size = len(payload_bytes)
+            layer.addfile(info, io.BytesIO(payload_bytes))
+        layer_buf.seek(0)
+        compressed = gziplib.compress(layer_buf.getvalue())
+
+        outer_buf = io.BytesIO()
+        with tarfilelib.open(fileobj=outer_buf, mode="w") as outer:
+            manifest = jsonlib.dumps(
+                [{"Config": "blobs/sha256/cfg", "Layers": ["blobs/sha256/layer"]}]
+            ).encode()
+            mi = tarfilelib.TarInfo("manifest.json")
+            mi.size = len(manifest)
+            outer.addfile(mi, io.BytesIO(manifest))
+            cfg = jsonlib.dumps({"config": {}}).encode()
+            ci = tarfilelib.TarInfo("blobs/sha256/cfg")
+            ci.size = len(cfg)
+            outer.addfile(ci, io.BytesIO(cfg))
+            li = tarfilelib.TarInfo("blobs/sha256/layer")
+            li.size = len(compressed)
+            outer.addfile(li, io.BytesIO(compressed))
+
+        hits: list[scan.Hit] = []
+        unscanned: list[dict[str, str]] = []
+        scan._scan_image_tarball("probe-oci", outer_buf.getvalue(), hits, [], unscanned)
+        assert any(h.pattern == "openai_key" for h in hits), [
+            h.to_dict() for h in hits
+        ]
+
     def test_report_never_contains_the_secret(self) -> None:
         token = "sk-fake-redaction-probe-" + "0123456789abcdef"
         hits: list[scan.Hit] = []

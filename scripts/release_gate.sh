@@ -201,8 +201,10 @@ run security-scan-self-test "$ROOT" python3 scripts/test_security_scan.py
 if [ "$FINAL_MODE" = "1" ]; then
     # S2-05: the FINAL gate must also build and scan the shipping images.
     # The image scope fails closed (exit 2) when docker is unavailable -
-    # an unavailable scan is never recorded as pass.
-    run security-scan-image "$ROOT" python3 scripts/security_scan.py --scope image --build-image --redact --fail-on-hit --json
+    # an unavailable scan is never recorded as pass. DOCKER_BUILDKIT=0
+    # keeps the build deterministic on hosts where the buildx activity
+    # store is unavailable (CI runners use the same legacy path).
+    run security-scan-image "$ROOT" env DOCKER_BUILDKIT=0 python3 scripts/security_scan.py --scope image --build-image --redact --fail-on-hit --json
 fi
 # S2-01: the validator's own failure matrix runs before trusting it with
 # release evidence (blocked evidence, stale sha, wrong dirs, extra fields,

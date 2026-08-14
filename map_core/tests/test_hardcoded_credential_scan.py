@@ -142,7 +142,7 @@ def test_image_scope_fails_closed_without_build() -> None:
     }
     try:
         scan.scope_image(
-            hits, unscanned, build=False, skip_unavailable=False, image_tags=bogus
+            hits, [], unscanned, build=False, skip_unavailable=False, image_tags=bogus
         )
     except RuntimeError as exc:
         assert "not found" in str(exc) or "unavailable" in str(exc)
