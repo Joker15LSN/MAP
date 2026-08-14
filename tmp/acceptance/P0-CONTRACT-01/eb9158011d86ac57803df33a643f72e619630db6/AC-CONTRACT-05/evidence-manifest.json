@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.1.0",
+  "task_id": "P0-CONTRACT-01",
+  "ac_id": "AC-CONTRACT-05",
+  "status": "pass",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "eb9158011d86ac57803df33a643f72e619630db6",
+  "environment_digest": "483ea2d8423a7bda6cd2e2f312ce120888a4d909f1acc626cf918c66b5af5543",
+  "started_at": "2026-08-14T15:53:12.742099+00:00",
+  "finished_at": "2026-08-14T15:53:12.742122+00:00",
+  "command": "map-business-backend/.venv/bin/python -m pytest map-business-backend/tests/contracts/test_run_contract.py -q -k '64k or boundary or multibyte or artifact_ref or non_json or payload'",
+  "exit_code": 0,
+  "artifacts": [
+    {
+      "path": "TODO/acceptance-profile.yaml",
+      "sha256": "dca9d1a85a44acbd08bd53d97d8b5a2fbd8b82f88966032fe93464aaf089e8e7",
+      "media_type": "text/yaml"
+    },
+    {
+      "path": "SPEC/contracts/run.md",
+      "sha256": "7f56da7979911c39db29a4b661c31f424de4b063f05c3b46f8af01a5a9875985",
+      "media_type": "text/markdown"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "real_envelope_64k_boundary",
+      "expected": "EventEnvelope construction/serialization rejects payloads above 65536 bytes and non-JSON values",
+      "actual": "65535/65536 accepted, 65537 + multibyte + NaN/Inf/object rejected with typed errors",
+      "result": "pass"
+    },
+    {
+      "name": "artifact_ref_validated",
+      "expected": "invalid ArtifactRef fields raise ARTIFACT_REF_INVALID",
+      "actual": "21 parametrized invalid-field cases raise the typed error",
+      "result": "pass"
+    },
+    {
+      "name": "pytest_suite_green",
+      "expected": "pytest exit 0",
+      "actual": "exit 0: 32 selected tests passed",
+      "result": "pass"
+    }
+  ],
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": null,
+  "superseded_reason": null,
+  "producer": {
+    "agent": "developer-agent",
+    "version": "1.0.0"
+  }
+}

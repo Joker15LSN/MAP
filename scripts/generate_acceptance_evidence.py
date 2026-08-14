@@ -215,6 +215,51 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def supersede_stale_manifests(freeze_sha: str) -> int:
+    """S2-01 completion rule: evidence frozen at an older sha is marked
+    superseded (pointing at the new freeze sha) instead of being silently
+    overwritten or left to look current."""
+    base = ROOT / "tmp" / "acceptance"
+    superseded = 0
+    for manifest in base.glob("*/*/*/evidence-manifest.json"):
+        sha_dir = manifest.parent.parent.name
+        ac_dir = manifest.parent.name
+        task_dir = manifest.parent.parent.parent.name
+        if sha_dir == freeze_sha:
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        replacement = (
+            base / task_dir / freeze_sha / ac_dir / "evidence-manifest.json"
+        )
+        data["status"] = "superseded"
+        data["superseded_by"] = str(replacement.relative_to(ROOT))
+        data["superseded_reason"] = (
+            f"superseded by evidence at freeze sha {freeze_sha}"
+        )
+        # Status-specific fields must go back to null (schema conditional
+        # constraints: a superseded manifest carries no blocked/waiver
+        # payloads).
+        for status_field in (
+            "blocked_reason",
+            "blocker_owner",
+            "waiver_id",
+            "waiver_owner",
+            "waiver_expires_at",
+            "not_applicable_reason",
+        ):
+            data[status_field] = None
+        manifest.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        superseded += 1
+    return superseded
+
+
 def build_blocked_manifest(
     task: str,
     ac: str,
@@ -257,9 +302,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", default="TODO/acceptance-profile.yaml")
     args = parser.parse_args(argv)
 
-    profile = load_profile(ROOT / args.profile)
+    profile = load_profile(ROOT, ROOT / args.profile)
     ac_by_task = required_ac_by_task(profile)
-    freeze_sha = git_head()
+    freeze_sha = git_head(ROOT)
+    # S2-01 completion rule: stale evidence from older freeze shas is
+    # marked superseded (never silently overwritten, never left current).
+    superseded = supersede_stale_manifests(freeze_sha)
+    if superseded:
+        print(f"evidence: {superseded} stale manifest(s) marked superseded")
 
     artifacts = [
         {
