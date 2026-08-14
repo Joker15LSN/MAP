@@ -95,17 +95,27 @@ if (typeof globalThis.fetch !== 'undefined') {
 }
 if (typeof window !== 'undefined' && window.XMLHttpRequest) {
   const OriginalXHR = window.XMLHttpRequest;
-  window.XMLHttpRequest = class BlockedXHR extends OriginalXHR {
-    open(...args: Parameters<OriginalXHR['open']>) {
-      const url = String(args[1]);
-      if (!url.startsWith('/') && !url.startsWith('http://localhost')) {
+  const BlockedXHR = function (this: XMLHttpRequest) {
+    const xhr = new OriginalXHR();
+    const originalOpen = xhr.open.bind(xhr) as (
+      ...args: unknown[]
+    ) => unknown;
+    xhr.open = function (
+      method: string,
+      url: string | URL,
+      ...rest: unknown[]
+    ) {
+      const target = String(url);
+      if (!target.startsWith('/') && !target.startsWith('http://localhost')) {
         throw new Error(
-          `tests must not open external resources (undeclared network access): ${url}`,
+          `tests must not open external resources (undeclared network access): ${target}`,
         );
       }
-      return super.open(...args);
-    }
+      return originalOpen(method, url, ...rest) as void;
+    } as XMLHttpRequest['open'];
+    return xhr;
   } as unknown as typeof XMLHttpRequest;
+  window.XMLHttpRequest = BlockedXHR;
 }
 
 /**
