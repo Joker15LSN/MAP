@@ -54,7 +54,7 @@ async def _call_http_mcp_tool(
     # S2-04: the single egress policy gate - scheme, allowlist and
     # post-resolution IP policy are all enforced BEFORE any connection.
     policy = EgressPolicy.from_env()
-    url_problems = validate_mcp_url(url, policy)
+    url_problems, allowed_ips = validate_mcp_url(url, policy)
     if url_problems:
         return ToolResult(
             success=False,
@@ -113,6 +113,7 @@ async def _call_http_mcp_tool(
             headers=headers,
             timeout_s=timeout_s,
             max_response_bytes=policy.max_response_bytes,
+            allowed_ips=allowed_ips,
         )
     except MCPEgressError as exc:
         return ToolResult(

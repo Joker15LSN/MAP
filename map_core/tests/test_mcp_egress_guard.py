@@ -59,19 +59,19 @@ def _clean_env(monkeypatch):
 class TestUrlPolicy:
     def test_loopback_ip_rejected(self) -> None:
         _policy("127.0.0.1")
-        problems = validate_mcp_url("https://127.0.0.1:8443/mcp", EgressPolicy.from_env())
+        problems, _allowed = validate_mcp_url("https://127.0.0.1:8443/mcp", EgressPolicy.from_env())
         assert any("loopback" in problem for problem in problems)
 
     def test_metadata_ip_rejected(self) -> None:
         _policy("169.254.169.254")
-        problems = validate_mcp_url(
+        problems, _allowed = validate_mcp_url(
             "https://169.254.169.254/latest/meta-data", EgressPolicy.from_env()
         )
         assert any("link-local" in problem for problem in problems)
 
     def test_ipv6_loopback_rejected(self) -> None:
         _policy("[::1]")
-        problems = validate_mcp_url("https://[::1]:8443/mcp", EgressPolicy.from_env())
+        problems, _allowed = validate_mcp_url("https://[::1]:8443/mcp", EgressPolicy.from_env())
         assert any("loopback" in problem for problem in problems)
 
     def test_private_range_resolution_rejected(self) -> None:
@@ -80,7 +80,7 @@ class TestUrlPolicy:
             "map_core.service.mcp_egress.resolve_ips",
             return_value=["10.0.0.5"],
         ):
-            problems = validate_mcp_url(
+            problems, _allowed = validate_mcp_url(
                 "https://api.internal.example:443/mcp", EgressPolicy.from_env()
             )
         assert any("private" in problem for problem in problems)
@@ -91,7 +91,7 @@ class TestUrlPolicy:
             "map_core.service.mcp_egress.resolve_ips",
             return_value=["93.184.216.34", "192.168.1.10"],
         ):
-            problems = validate_mcp_url(
+            problems, _allowed = validate_mcp_url(
                 "https://api.example.com:443/mcp", EgressPolicy.from_env()
             )
         assert any("private" in problem for problem in problems)
@@ -102,7 +102,7 @@ class TestUrlPolicy:
             "map_core.service.mcp_egress.resolve_ips",
             return_value=["93.184.216.34"],
         ):
-            problems = validate_mcp_url(
+            problems, _allowed = validate_mcp_url(
                 "https://evil.example.com/mcp", EgressPolicy.from_env()
             )
         assert any("allowlist" in problem for problem in problems)
@@ -113,7 +113,7 @@ class TestUrlPolicy:
             "map_core.service.mcp_egress.resolve_ips",
             return_value=["93.184.216.34"],
         ):
-            problems = validate_mcp_url(
+            problems, _allowed = validate_mcp_url(
                 "https://allowed.example.com:8443/mcp", EgressPolicy.from_env()
             )
         assert any("allowlist" in problem for problem in problems)
@@ -124,19 +124,19 @@ class TestUrlPolicy:
             "map_core.service.mcp_egress.resolve_ips",
             return_value=["93.184.216.34"],
         ):
-            problems = validate_mcp_url(
+            problems, _allowed = validate_mcp_url(
                 "https://allowed.example.com:443/mcp", EgressPolicy.from_env()
             )
         assert problems == []
 
     def test_plain_http_requires_local_optin(self) -> None:
         _policy("127.0.0.1", local=False)
-        problems = validate_mcp_url("http://127.0.0.1:9/mcp", EgressPolicy.from_env())
+        problems, _allowed = validate_mcp_url("http://127.0.0.1:9/mcp", EgressPolicy.from_env())
         assert any("MAP_MCP_ALLOW_INSECURE_LOCAL" in problem for problem in problems)
 
     def test_plain_http_local_optin_only_loopback(self) -> None:
         _policy("localhost", local=True)
-        problems = validate_mcp_url(
+        problems, _allowed = validate_mcp_url(
             "http://localhost:9999/mcp", EgressPolicy.from_env()
         )
         assert problems == []
@@ -147,7 +147,7 @@ class TestUrlPolicy:
             "map_core.service.mcp_egress.resolve_ips",
             return_value=["93.184.216.34"],
         ):
-            problems = validate_mcp_url(
+            problems, _allowed = validate_mcp_url(
                 "http://allowed.example.com/mcp", EgressPolicy.from_env()
             )
         assert any("only admits" in problem for problem in problems)
@@ -158,7 +158,7 @@ class TestUrlPolicy:
             "map_core.service.mcp_egress.resolve_ips",
             return_value=["93.184.216.34"],
         ):
-            problems = validate_mcp_url(
+            problems, _allowed = validate_mcp_url(
                 "https://allowed.example.com/mcp", policy
             )
         assert any("allowlist" in problem for problem in problems)
@@ -366,3 +366,121 @@ class TestGuardedToolCall:
             )
         assert result.success is False
         assert "MCP_RESPONSE_TOO_LARGE" in result.error
+
+
+# ---------------------------------------------------------------------------
+# S3-02: sequential-DNS (rebinding) and peer-address defenses
+# ---------------------------------------------------------------------------
+
+
+class TestDnsRebindingDefense:
+    def test_sequential_dns_change_rejected_before_dial(self) -> None:
+        """Validation saw a public IP; the dial-time re-resolution returns a
+        private one - the request must fail BEFORE any bytes are sent."""
+        import asyncio
+
+        from map_core.service.mcp_egress import (
+            EGRESS_DENIED,
+            MCPEgressError,
+            post_json_stream_guarded,
+        )
+
+        # the dial-time re-resolution (first call inside post_json_stream_
+        # guarded) now answers with the metadata address
+        with mock.patch(
+            "map_core.service.mcp_egress.resolve_ips",
+            return_value=["169.254.169.254"],
+        ):
+            with pytest.raises(MCPEgressError) as exc_info:
+                asyncio.run(
+                    post_json_stream_guarded(
+                        url="https://api.example.com/mcp",
+                        json_payload={},
+                        headers={},
+                        timeout_s=5,
+                        max_response_bytes=1024 * 1024,
+                        allowed_ips=frozenset({"93.184.216.34"}),
+                    )
+                )
+        assert exc_info.value.code == EGRESS_DENIED
+        assert "rebinding" in str(exc_info.value)
+
+    def test_peer_address_must_be_in_validated_set(self) -> None:
+        """The ACTUAL peer of the established connection must be one of the
+        validated addresses (post-connect check)."""
+        import asyncio
+
+        import httpx as httpx_module
+
+        from map_core.service.mcp_egress import (
+            EGRESS_DENIED,
+            MCPEgressError,
+            post_json_stream_guarded,
+        )
+
+        class _FakeStream:
+            def get_extra_info(self, name: str):
+                if name == "peername":
+                    return ("10.0.0.5", 443)
+                return None
+
+        class _FakeResponseCtx:
+            status_code = 200
+            headers = httpx_module.Headers()
+            extensions = {"network_stream": _FakeStream()}
+
+            def __init__(self, body: bytes) -> None:
+                self._body = body
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args) -> None:
+                return None
+
+            async def aiter_bytes(self):
+                yield self._body
+
+        class _FakeClient:
+            def __init__(self, response_ctx: _FakeResponseCtx) -> None:
+                self._ctx = response_ctx
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args) -> None:
+                return None
+
+            def stream(self, *args, **kwargs):
+                return self._ctx
+
+        async def _scenario() -> None:
+            fake_client = _FakeClient(_FakeResponseCtx(b'{"ok": true}'))
+            with mock.patch(
+                "map_core.service.mcp_egress.httpx.AsyncClient",
+                return_value=fake_client,
+            ), mock.patch(
+                "map_core.service.mcp_egress.resolve_ips",
+                return_value=["93.184.216.34"],
+            ):
+                with pytest.raises(MCPEgressError) as exc_info:
+                    await post_json_stream_guarded(
+                        url="https://api.example.com/mcp",
+                        json_payload={},
+                        headers={},
+                        timeout_s=5,
+                        max_response_bytes=1024 * 1024,
+                        allowed_ips=frozenset({"93.184.216.34"}),
+                    )
+                assert exc_info.value.code == EGRESS_DENIED
+                assert "peer" in str(exc_info.value)
+        asyncio.run(_scenario())
+
+    def test_unparseable_port_is_a_typed_error_not_a_traceback(self) -> None:
+        """https://example.com:notaport must produce a typed policy denial."""
+        _policy("example.com")
+        problems, _allowed = validate_mcp_url(
+            "https://example.com:notaport/mcp", EgressPolicy.from_env()
+        )
+        assert problems, "unparseable port must be rejected"
+        assert all("port" in problem for problem in problems)

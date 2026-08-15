@@ -179,24 +179,33 @@ def resolve_ips(host: str) -> list[str]:
     return seen
 
 
-def validate_mcp_url(url: str, policy: EgressPolicy) -> list[str]:
-    """Return a list of problems; empty list means the URL may be dialed.
+def validate_mcp_url(url: str, policy: EgressPolicy) -> tuple[list[str], frozenset[str]]:
+    """Return (problems, allowed_ips).
 
-    S2-04: this is the single address policy gate - every HTTP MCP request
-    must pass it before any connection is opened.
+    ``allowed_ips`` is the set of addresses the hostname resolved to at
+    validation time and which passed the IP policy - the ONLY addresses the
+    connection may later use (see post_json_stream_guarded).
     """
     problems: list[str] = []
+    allowed_ips: set[str] = set()
     try:
         parts = urlsplit(url)
+        # S3-02: an unparseable port raises ValueError inside .port - turn
+        # it into a typed policy denial instead of a traceback.
+        try:
+            parts.port  # noqa: B018 - property access performs the parse
+        except ValueError as exc:
+            problems.append(f"unparseable port in URL: {exc}")
+            return problems, frozenset()
     except ValueError as exc:
-        return [f"unparseable URL: {exc}"]
+        return [f"unparseable URL: {exc}"], frozenset()
     scheme = parts.scheme.lower()
     host = (parts.hostname or "").lower()
     port = parts.port
 
     if scheme not in {"https", "http"}:
         problems.append(f"scheme {scheme!r} is not https")
-        return problems
+        return problems, frozenset()
 
     if scheme == "http":
         if not policy.allow_insecure_local:
@@ -221,7 +230,7 @@ def validate_mcp_url(url: str, policy: EgressPolicy) -> list[str]:
 
     if not host:
         problems.append("URL has no hostname")
-        return problems
+        return problems, frozenset()
 
     # Post-resolution IP policy: every resolved address must be public.
     # The local http opt-in (MAP_MCP_ALLOW_INSECURE_LOCAL=1) admits loopback
@@ -231,7 +240,7 @@ def validate_mcp_url(url: str, policy: EgressPolicy) -> list[str]:
         ips = resolve_ips(host)
     except MCPEgressError as exc:
         problems.append(str(exc))
-        return problems
+        return problems, frozenset()
     for raw_ip in ips:
         try:
             ip = ipaddress.ip_address(raw_ip)
@@ -241,11 +250,14 @@ def validate_mcp_url(url: str, policy: EgressPolicy) -> list[str]:
         reason = _forbidden_ip_reason(ip)
         if reason:
             if local_http_optin and ip.is_loopback:
+                allowed_ips.add(raw_ip)
                 continue
             problems.append(
                 f"host {host!r} resolves to {raw_ip} ({reason}); "
                 "non-public egress is forbidden"
             )
+            continue
+        allowed_ips.add(raw_ip)
 
     if local_http_optin and not problems:
         # local opt-in: only loopback resolution is acceptable
@@ -253,7 +265,10 @@ def validate_mcp_url(url: str, policy: EgressPolicy) -> list[str]:
             ipaddress.ip_address(raw).is_loopback for raw in ips
         ):
             problems.append("local http opt-in requires loopback resolution only")
-    return problems
+            return problems, frozenset()
+    if problems:
+        return problems, frozenset()
+    return problems, frozenset(allowed_ips)
 
 
 @dataclass
@@ -323,14 +338,40 @@ async def post_json_stream_guarded(
     headers: dict[str, str],
     timeout_s: int,
     max_response_bytes: int,
+    allowed_ips: frozenset[str] | None = None,
 ) -> GuardedResponse:
-    """POST with no redirects and a hard streaming response-size cap.
+    """POST with no redirects, a hard streaming response-size cap and
+    DNS-rebinding protection (S3-02).
+
+    ``allowed_ips`` is the address set the URL was validated against
+    (validate_mcp_url). Immediately BEFORE dialing, the hostname is
+    re-resolved and must be a subset of that set - a hostname that resolved
+    to a public address during validation but to a private/metadata address
+    at dial time is rejected before any bytes leave. After the response is
+    fully read, the peer address of the established connection is checked
+    against the same set.
 
     Raises MCPEgressError(RESPONSE_TOO_LARGE) the moment the body exceeds
     max_response_bytes - the connection is aborted before the full payload
     is ever buffered.
     """
     try:
+        host = (urlsplit(url).hostname or "").lower()
+        if allowed_ips is not None and host:
+            # pre-dial re-resolution: the OS would resolve AGAIN inside
+            # httpx; compare the fresh answer against the validated set
+            # before anything is sent (S3-02 sequential-DNS defense).
+            try:
+                fresh_ips = resolve_ips(host)
+            except MCPEgressError as exc:
+                raise MCPEgressError(EGRESS_DENIED, str(exc)) from exc
+            if not set(fresh_ips) <= set(allowed_ips):
+                raise MCPEgressError(
+                    EGRESS_DENIED,
+                    f"host {host!r} changed its DNS answer between "
+                    "validation and dial (possible rebinding): "
+                    f"validated {sorted(allowed_ips)}, now {sorted(fresh_ips)}",
+                )
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_s, connect=5.0),
             follow_redirects=False,
@@ -348,6 +389,19 @@ async def post_json_stream_guarded(
                             f"MCP response exceeded {max_response_bytes} bytes",
                         )
                     chunks.append(chunk)
+                # post-connect peer check: the ACTUAL peer of the established
+                # connection must be one of the validated addresses.
+                network_stream = response.extensions.get("network_stream")
+                if network_stream is not None and allowed_ips is not None:
+                    peer = network_stream.get_extra_info("peername")
+                    if peer is not None:
+                        peer_ip = str(peer[0])
+                        if peer_ip not in allowed_ips:
+                            raise MCPEgressError(
+                                EGRESS_DENIED,
+                                f"connection peer {peer_ip} is not in the "
+                                "validated address set",
+                            )
                 return GuardedResponse(
                     status_code=response.status_code,
                     headers=response.headers,
