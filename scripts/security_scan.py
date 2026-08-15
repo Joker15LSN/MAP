@@ -289,6 +289,55 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:f384c1854ca16e74",
     ),
+    # S5-01 crash-recovery fixtures: the same local dev DSN default and the
+    # same fake api_key used by the S4-01 suite; test doubles, never secrets.
+    Exemption(
+        "map_core/tests/test_sandbox_ledger.py", "uri_embedded_password", 294,
+        "S5-01 local dev DSN default (map:map), never a real credential",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:f384c1854ca16e74",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_ledger.py", "uri_embedded_password", 331,
+        "S5-01 local dev DSN default (map:map), never a real credential",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:f384c1854ca16e74",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_crash_recovery.py",
+        "uri_embedded_password", 52,
+        "S5-01 crash-window fixture: local dev DSN default, never a secret",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:f384c1854ca16e74",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_reconciler.py",
+        "literal_secret_assignment", 149,
+        "S5-01 reconciler fixture: fake api_key for the OpenSandbox double",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:5ee001bc1d740c5c",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_router.py",
+        "literal_secret_assignment", 103,
+        "S5-01 router fixture: fake api_key for the OpenSandbox double",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:5ee001bc1d740c5c",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_tools.py",
+        "literal_secret_assignment", 592,
+        "S5-01 crash-window fixture: fake api_key for the OpenSandbox double",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:5ee001bc1d740c5c",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_tools.py",
+        "literal_secret_assignment", 637,
+        "S5-01 crash-window fixture: fake api_key for the OpenSandbox double",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:5ee001bc1d740c5c",
+    ),
     Exemption(
         "scripts/test_security_scan.py", "literal_secret_assignment", 354,
         "S4-04 counterexample matrix: unregistered placeholder must hit",
