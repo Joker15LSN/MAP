@@ -33,7 +33,8 @@ STATE = {
     "creates": {},   # idempotency key -> sandbox_id
     "sandboxes": {},  # workspace_id -> {sandbox_id, status, executions}
 }
-LOCK = threading.Lock()
+# RLock: do_POST holds the lock across _read() which also needs it.
+LOCK = threading.RLock()
 
 
 class Handler(BaseHTTPRequestHandler):
