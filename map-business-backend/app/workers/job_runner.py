@@ -72,10 +72,34 @@ class JobExecutionContext:
     lease_lost: asyncio.Event
     cancel: asyncio.Event
     session_factory: async_sessionmaker[AsyncSession] | None = None
+    run_id: str | None = None
+    client_request_id: str | None = None
 
     @property
     def lease_ok(self) -> bool:
         return not self.lease_lost.is_set() and not self.cancel.is_set()
+
+    @property
+    def attempt_id(self) -> str:
+        """Stable attempt identity for the durable run chain."""
+        return f"att-{self.attempt}"
+
+    def sandbox_identity_extra(
+        self, *, step_id: str, invocation_id: str
+    ) -> dict[str, str | None]:
+        """Build the six-field durable identity a Core tool invocation needs.
+
+        S4-01: the run worker owns run/attempt/client_request; Core mints
+        step/invocation per tool call and fails closed if any field is missing.
+        """
+        return {
+            "workspace_id": str(self.workspace_id),
+            "run_id": self.run_id or str(self.job_id),
+            "step_id": step_id,
+            "attempt_id": self.attempt_id,
+            "invocation_id": invocation_id,
+            "client_request_id": self.client_request_id or self.idempotency_key,
+        }
 
 
 _current_ctx: ContextVar[JobExecutionContext | None] = ContextVar("map_job_ctx", default=None)
@@ -958,6 +982,8 @@ class JobRunner:
             attempt=attempt,
             lease_expires_at=job.lease_expires_at,
             idempotency_key=job.idempotency_key,
+            run_id=str(job.id),
+            client_request_id=job.idempotency_key,
             lease_lost=asyncio.Event(),
             cancel=asyncio.Event(),
             session_factory=self._session_factory,

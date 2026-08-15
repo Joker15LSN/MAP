@@ -285,8 +285,17 @@ class ToolExecutor:
                 meta = {**tool_meta, "tool_id": tool_call_id}
             else:
                 tool_request = request.model_copy()
+                # Isolate the per-call extra so concurrent tool calls within a
+                # step never race on a shared dict.
+                tool_request.extra = dict(tool_request.extra)
                 if self.owner.name:
                     tool_request.extra["caller_agent_name"] = self.owner.name
+
+            # S4-01: carry the per-tool-call durable identity (step + invocation)
+            # so the sandbox tool can fail closed on a complete identity chain.
+            tool_request.extra["step_id"] = f"step-{step_index}"
+            if tool_call_id:
+                tool_request.extra["invocation_id"] = str(tool_call_id)
 
             tool_display_name = self._resolve_tool_display_name(tool_name)
             tool_query_preview = self._resolve_tool_query_preview(

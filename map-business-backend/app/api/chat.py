@@ -41,6 +41,14 @@ def _forward_headers(
         headers["X-Session-ID"] = request.state.session_id
     if getattr(request.state, "workspace_id", None):
         headers["X-Workspace-ID"] = request.state.workspace_id
+    # S4-01: forward the frozen durable run identity (run/attempt/
+    # client_request) so map_core's sandbox tool sees a complete chain.
+    if getattr(request.state, "run_id", None):
+        headers["X-Run-ID"] = request.state.run_id
+    if getattr(request.state, "attempt_id", None):
+        headers["X-Attempt-ID"] = request.state.attempt_id
+    if getattr(request.state, "client_request_id", None):
+        headers["X-Client-Request-ID"] = request.state.client_request_id
     # Forward inbound W3C propagation headers so an existing upstream trace
     # continues even when OTel is disabled. With OTel enabled the httpx
     # instrumentation additionally injects a dynamic traceparent referencing
