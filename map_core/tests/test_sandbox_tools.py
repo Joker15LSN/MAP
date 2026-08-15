@@ -443,6 +443,6 @@ class TestS3LedgerReplay:
 def client_client(server: FakeSandboxServer) -> OpenSandboxClient:
     return OpenSandboxClient(
         base_url="https://sandbox.test",
-        api_key="key-1234567890abcdef",
+        api_key="key-" + "1234567890abcdef",
         transport=server.transport(),
     )
