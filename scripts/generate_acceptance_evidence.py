@@ -382,12 +382,13 @@ def build_blocked_manifest(
     }
 
 
-def ci_signing_context() -> tuple[str, str, str, str] | None:
-    """S5-02: the protected-CI signing context, resolved from the CI env.
+def ci_signing_context() -> tuple[str, str, str, str, str] | None:
+    """S5-02/S6-04: the protected-CI signing context, from the CI env.
 
-    Returns (secret_hex, repository, git_ref, run_id) only when BOTH the
-    CI marker and the injected signing key are present. Local development
-    never returns a context - local keys cannot produce a releasable pass.
+    Returns (secret_hex, repository, git_ref, run_id, run_attempt) only
+    when BOTH the CI marker and the injected signing key are present.
+    Local development never returns a context - local keys cannot produce
+    a releasable pass.
     """
     if os.getenv("MAP_EVIDENCE_CI", "").strip() != "1":
         return None
@@ -406,6 +407,10 @@ def ci_signing_context() -> tuple[str, str, str, str] | None:
         os.getenv("MAP_EVIDENCE_RUN_ID", "").strip()
         or os.getenv("GITHUB_RUN_ID", "").strip()
     )
+    run_attempt = (
+        os.getenv("MAP_EVIDENCE_RUN_ATTEMPT", "").strip()
+        or os.getenv("GITHUB_RUN_ATTEMPT", "").strip()
+    ) or None
     if not repository or not git_ref or not run_id:
         print(
             "warning: MAP_EVIDENCE_CI=1 but the CI identity "
@@ -414,7 +419,7 @@ def ci_signing_context() -> tuple[str, str, str, str] | None:
             file=sys.stderr,
         )
         return None
-    return secret, repository, git_ref, run_id
+    return secret, repository, git_ref, run_id, run_attempt
 
 
 def sign_pass_manifest(manifest: dict) -> dict:
@@ -428,7 +433,7 @@ def sign_pass_manifest(manifest: dict) -> dict:
     if context is None:
         manifest["attestation"] = None
         return manifest
-    secret, repository, git_ref, run_id = context
+    secret, repository, git_ref, run_id, run_attempt = context
     return sign_manifest(
         manifest,
         secret,
@@ -438,6 +443,7 @@ def sign_pass_manifest(manifest: dict) -> dict:
         repository=repository,
         git_ref=git_ref,
         run_id=run_id,
+        run_attempt=run_attempt,
     )
 
 

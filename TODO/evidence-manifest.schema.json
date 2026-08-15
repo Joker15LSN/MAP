@@ -145,10 +145,10 @@
       }
     },
     "attestation": {
-      "description": "S5-02: SLSA/in-toto-like attestation binding the manifest to a trusted CI workflow AND its CI identity (repository/git_ref/run_id). Null for non-releasable statuses and for locally produced evidence; the release validator (--require-final) requires a non-null attestation for pass / not-applicable-approved.",
+      "description": "S5-02/S6-04: SLSA/in-toto-like attestation binding the manifest to a trusted CI workflow AND its CI identity (repository/git_ref/run_id/run_attempt/issued_at). Null for non-releasable statuses and for locally produced evidence; the release validator (--require-final) requires a non-null attestation for pass / not-applicable-approved and compares the run identity against the externally injected expected CI run.",
       "type": ["object", "null"],
       "additionalProperties": false,
-      "required": ["type", "issuer", "workflow", "repository", "git_ref", "run_id", "signatures"],
+      "required": ["type", "issuer", "workflow", "repository", "git_ref", "run_id", "issued_at", "signatures"],
       "properties": {
         "type": {"const": "map-acceptance-evidence/v1"},
         "issuer": {"type": "string", "minLength": 1},
@@ -156,6 +156,8 @@
         "repository": {"type": "string", "minLength": 1},
         "git_ref": {"type": "string", "minLength": 1},
         "run_id": {"type": "string", "minLength": 1},
+        "run_attempt": {"type": ["string", "null"]},
+        "issued_at": {"type": "string", "minLength": 1},
         "signatures": {
           "type": "array",
           "minItems": 1,

@@ -266,6 +266,8 @@ def build_statement(manifest, attestation):
         "repository": attestation.get("repository"),
         "git_ref": attestation.get("git_ref"),
         "run_id": attestation.get("run_id"),
+        "run_attempt": attestation.get("run_attempt"),
+        "issued_at": attestation.get("issued_at"),
         "manifest": subject,
     }
 
@@ -274,20 +276,39 @@ def statement_bytes(statement):
     return canonical_json(statement).encode("utf-8")
 
 
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def sign_manifest(
-    manifest, secret_hex, *, issuer, workflow, key_id, repository, git_ref, run_id
+    manifest,
+    secret_hex,
+    *,
+    issuer,
+    workflow,
+    key_id,
+    repository,
+    git_ref,
+    run_id,
+    run_attempt=None,
+    issued_at=None,
 ):
     """Attach a CI-bound attestation to one manifest.
 
-    S5-02: repository/git_ref/run_id are REQUIRED and become part of the
-    signed statement - a signature produced outside the pinned protected
-    workflow never verifies.
+    S5-02/S6-04: repository/git_ref/run_id are REQUIRED and become part of
+    the signed statement; run_attempt and issued_at (the signing time) are
+    included too, so a REPLAY of an older CI run is rejected by exact
+    comparison with the externally injected expected run identity.
     """
     if not repository or not git_ref or not run_id:
         raise ValueError(
             "repository, git_ref and run_id are required to sign "
             "acceptance evidence (S5-02 CI-bound attestation)"
         )
+    if issued_at is None:
+        issued_at = _now_iso()
     secret = bytes.fromhex(secret_hex)
     public = public_key_bytes(secret)
     meta = {
@@ -297,6 +318,8 @@ def sign_manifest(
         "repository": repository,
         "git_ref": git_ref,
         "run_id": run_id,
+        "run_attempt": run_attempt,
+        "issued_at": issued_at,
     }
     attestation = {
         **meta,
@@ -332,6 +355,9 @@ def verify_attestation(
     expected_workflow,
     expected_repository,
     allowed_refs,
+    expected_run_id=None,
+    expected_run_attempt=None,
+    now=None,
 ):
     attestation = manifest.get("attestation")
     if not isinstance(attestation, dict):
@@ -369,6 +395,44 @@ def verify_attestation(
         )
     if not attestation.get("run_id"):
         problems.append("attestation run_id is missing")
+    # S6-04: when the protected CI injects the EXPECTED run identity, the
+    # attestation must match it EXACTLY - replaying a manifest signed by an
+    # older run (or an older run attempt) can never pass the release gate.
+    if expected_run_id is not None and attestation.get("run_id") != expected_run_id:
+        problems.append(
+            "attestation run_id " + repr(attestation.get("run_id"))
+            + " != expected protected-CI run " + repr(expected_run_id)
+        )
+    if expected_run_attempt is not None and str(
+        attestation.get("run_attempt") or ""
+    ) != str(expected_run_attempt):
+        problems.append(
+            "attestation run_attempt " + repr(attestation.get("run_attempt"))
+            + " != expected protected-CI attempt " + repr(expected_run_attempt)
+        )
+    # S6-04: the signed statement carries the ISSUING TIME; a missing,
+    # malformed or future issued_at (beyond a small clock-skew window) is
+    # rejected.
+    issued_at_raw = attestation.get("issued_at")
+    if not issued_at_raw:
+        problems.append("attestation issued_at is missing")
+    elif now is not None:
+        try:
+            from datetime import datetime, timedelta, timezone
+
+            issued = datetime.fromisoformat(str(issued_at_raw).replace("Z", "+00:00"))
+            if issued.tzinfo is None:
+                issued = issued.replace(tzinfo=timezone.utc)
+            skew = timedelta(minutes=5)
+            if issued > now + skew:
+                problems.append(
+                    "attestation issued_at " + repr(issued_at_raw)
+                    + " is in the future (clock-skew window exceeded)"
+                )
+        except ValueError:
+            problems.append(
+                "attestation issued_at " + repr(issued_at_raw) + " is malformed"
+            )
 
     signatures = attestation.get("signatures")
     if not isinstance(signatures, list) or not signatures:

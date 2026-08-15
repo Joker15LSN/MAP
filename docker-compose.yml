@@ -118,6 +118,14 @@ services:
       # until a server is deployed (see the sandbox profile below).
       MAP_OPENSANDBOX_URL: ${MAP_OPENSANDBOX_URL:-}
       MAP_OPENSANDBOX_API_KEY: ${MAP_OPENSANDBOX_API_KEY:-}
+      # S6-03: internal service credentials for POST /sandbox/exec. The
+      # worker presents a Bearer token that MUST match this deployment
+      # registry (audience map-core + sandbox:execute scope); the six
+      # identity headers are correlation only. Empty registry = endpoint
+      # rejects every caller (fail-closed). Credentials come ONLY from the
+      # secret provider - no repository defaults.
+      MAP_SANDBOX_SERVICE_CREDENTIALS: ${MAP_SANDBOX_SERVICE_CREDENTIALS:-}
+      MAP_SANDBOX_SERVICE_AUDIENCE: ${MAP_SANDBOX_SERVICE_AUDIENCE:-map-core}
       MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
       MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
       # Highest-priority kill switch, always passed through: OTEL_SDK_DISABLED
@@ -141,7 +149,11 @@ services:
       mongo:
         condition: service_healthy
     ports:
-      - "${MAP_ALGO_PORT:-10000}:10000"
+      # S6-03: bind to the loopback interface only - the sandbox execution
+      # endpoint must never be reachable from outside the host in ANY
+      # environment; production additionally removes the port entirely
+      # (docker-compose.prod.yml).
+      - "127.0.0.1:${MAP_ALGO_PORT:-10000}:10000"
     healthcheck:
       test:
         [
@@ -231,6 +243,10 @@ services:
       MAP_CORE_API_ORIGIN: http://algorithm-service:10000
       MAP_BFF_STATE_FILE: /app/data/admin_state.json
       MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
+      # S6-03: the Bearer credential the worker presents to Core's
+      # POST /sandbox/exec (must be registered in algorithm-service's
+      # MAP_SANDBOX_SERVICE_CREDENTIALS with the sandbox:execute scope).
+      MAP_SANDBOX_CORE_TOKEN: ${MAP_SANDBOX_CORE_TOKEN:-}
       MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
       MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}

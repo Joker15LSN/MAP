@@ -42,6 +42,18 @@ _STRIP_KEYS = (
     "MAP_ENV",
     "MAP_CORS_ORIGINS",
     "MAP_CORS_ALLOW_CREDENTIALS",
+    # S6-03: the prod override :?requires the sandbox credential registry.
+    "MAP_SANDBOX_SERVICE_CREDENTIALS",
+    "MAP_SANDBOX_SERVICE_AUDIENCE",
+    "MAP_SANDBOX_CORE_TOKEN",
+)
+
+# S6-03: prod compose tests must inject a (fake) credential registry so
+# the :? interpolation succeeds; the value itself is asserted separately.
+_SANDBOX_CREDENTIALS = (
+    '[{"key_id":"k-test","token":"fake-sandbox-token",'
+    '"service_name":"map-worker","audience":"map-core",'
+    '"scopes":["sandbox:execute"]}]'
 )
 
 # P0-SEC-01: base compose passwords are :?required; inject fake one-shot
@@ -76,6 +88,10 @@ def _env(env_override: dict[str, str] | None = None) -> dict[str, str]:
     for key in _FAKE_COMPOSE_CREDENTIALS:
         env.pop(key, None)
     env.update(_FAKE_COMPOSE_CREDENTIALS)
+    # S6-03: satisfy the prod override's :?required credential registry by
+    # default so CORS/MAP_ENV assertions stay focused (a test that targets
+    # the registry itself overrides this explicitly).
+    env.setdefault("MAP_SANDBOX_SERVICE_CREDENTIALS", _SANDBOX_CREDENTIALS)
     env.update(env_override or {})
     return env
 
@@ -311,6 +327,55 @@ def test_base_compose_keeps_dev_cors_defaults() -> None:
         env = _service_env(config, service)
         assert env["MAP_CORS_ORIGINS"] == "*", service
         assert env["MAP_CORS_ALLOW_CREDENTIALS"] == "true", service
+
+
+# --- S6-03: the sandbox execution surface stays off the host ----------------
+
+def test_prod_compose_removes_algorithm_service_host_port() -> None:
+    """Production publishes NO host port for map_core: the privileged
+    /sandbox/exec surface is reachable only on the private compose
+    network."""
+    config = _compose_config(
+        *_OVERRIDE_ARGS,
+        env_override={"MAP_ENV": "prod", "MAP_CORS_ORIGINS": "https://app.example.com"},
+    )
+    algo_ports = config["services"]["algorithm-service"].get("ports") or []
+    assert algo_ports == [], f"algorithm-service publishes ports in prod: {algo_ports}"
+
+
+def test_base_compose_binds_algo_port_to_loopback_only() -> None:
+    """The dev port is bound to 127.0.0.1 (defense in depth: never on
+    all interfaces in any environment)."""
+    config = _compose_config("-f", "docker-compose.yml", env_override={"MAP_ENV": "dev"})
+    algo_ports = config["services"]["algorithm-service"].get("ports") or []
+    assert algo_ports, "base compose must publish the dev algo port"
+    for entry in algo_ports:
+        host_ip = entry.get("host_ip") or entry.get("published", "").split(":", 1)[0]
+        assert "127.0.0.1" in str(host_ip), f"dev algo port not loopback-bound: {entry}"
+
+
+def test_prod_compose_requires_sandbox_service_credentials() -> None:
+    """Missing the credential registry fails the prod config interpolation
+    (fail-closed before startup)."""
+    result = _compose(
+        *_OVERRIDE_ARGS,
+        env_override={
+            "MAP_ENV": "prod",
+            "MAP_CORS_ORIGINS": "https://app.example.com",
+            "MAP_SANDBOX_SERVICE_CREDENTIALS": "",
+        },
+    )
+    assert result.returncode != 0
+    assert "MAP_SANDBOX_SERVICE_CREDENTIALS" in result.stderr
+
+
+def test_prod_compose_injects_sandbox_credentials_into_algo() -> None:
+    config = _compose_config(
+        *_OVERRIDE_ARGS,
+        env_override={"MAP_ENV": "prod", "MAP_CORS_ORIGINS": "https://app.example.com"},
+    )
+    env = _service_env(config, "algorithm-service")
+    assert "sandbox:execute" in env["MAP_SANDBOX_SERVICE_CREDENTIALS"]
 
 
 # --- S5-03 startup path: create_app honours the resolved container env -----

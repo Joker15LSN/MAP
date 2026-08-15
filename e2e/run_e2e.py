@@ -74,6 +74,7 @@ COMPOSE_FILES = [
 SERVICES = [
     "postgres",
     "mongo",
+    "opensandbox-double",
     "fake-llm",
     "migrate",
     "algorithm-service",
@@ -95,6 +96,7 @@ RUNNING_REQUIRED = HEALTHY_REQUIRED | {
     "frontend-service",
     "otel-collector",
     "jaeger",
+    "opensandbox-double",
 }
 
 ANSWER = "这是 MAP 端到端测试的确定性回答。"
@@ -147,6 +149,7 @@ class Ctx:
         self.frontend: str = ""
         self.jaeger: str = ""
         self.fake_llm: str = ""
+        self.sandbox_double: str = ""
         self.postgres_container = f"{self.prefix}-postgres"
         self.mongo_container = f"{self.prefix}-mongo"
         self.algo_container = f"{self.prefix}-algorithm-service"
@@ -972,6 +975,125 @@ def scenario_worker_reconcile(ctx: Ctx, happy: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+
+def scenario_sandbox_worker_exactly_once(ctx: Ctx) -> None:
+    """S6-02/S6-03 acceptance with REAL workers, REAL PostgreSQL, REAL Core
+    and a REAL HTTP OpenSandbox contract double:
+
+    1. forged / unauthenticated requests to Core's POST /sandbox/exec are
+       rejected BEFORE any ledger write or any provider byte;
+    2. a sandbox_exec job whose worker is killed AFTER the remote execute
+       landed but BEFORE the job complete is taken over by a second worker
+       with the SAME deterministic invocation identity; the provider's
+       create/execute action counts stay EXACTLY 1 and the job reaches
+       succeeded at attempt 2.
+    """
+    algo = f"http://127.0.0.1:{ctx.ports['MAP_ALGO_PORT']}"
+    detail: dict = {}
+    forged_headers = {
+        "X-Workspace-ID": WORKSPACE_ID,
+        "X-Run-ID": "run-forged",
+        "X-Step-ID": "step-forged",
+        "X-Attempt-ID": "att-1",
+        "X-Invocation-ID": "inv-forged",
+        "X-Client-Request-ID": "creq-forged",
+    }
+
+    # ---------------- Phase 0: auth boundary costs nothing -------------
+    http_json("POST", f"{ctx.sandbox_double}/__reset", {})
+    ledger_before = int(psql(ctx, "SELECT count(*) FROM map_control.sandbox_invocations"))
+    status, _ = http_json(
+        "POST", f"{algo}/sandbox/exec", {"command": "echo forged"}, forged_headers
+    )
+    expect(status == 401, f"no-Authorization sandbox exec returned {status}, want 401")
+    status, _ = http_json(
+        "POST",
+        f"{algo}/sandbox/exec",
+        {"command": "echo forged"},
+        {**forged_headers, "Authorization": "Bearer forged-token"},
+    )
+    expect(status == 401, f"forged-token sandbox exec returned {status}, want 401")
+    status, counts = http_json("GET", f"{ctx.sandbox_double}/__counts")
+    expect(status == 200, f"double counts returned {status}")
+    expect(
+        counts.get("request_bytes") == 0 and counts.get("create_actions") == 0,
+        f"forged requests reached the provider: {counts!r}",
+    )
+    expect(
+        int(psql(ctx, "SELECT count(*) FROM map_control.sandbox_invocations")) == ledger_before,
+        "forged requests wrote ledger rows",
+    )
+    detail["forged_requests_cost_zero"] = True
+
+    # ---------------- Phase 1: kill worker A after remote execute --------
+    _recreate_worker(
+        ctx,
+        {
+            "MAP_WORKER_ID": "worker-sandbox-a",
+            "MAP_E2E_SANDBOX_AFTER_CORE_BARRIER_S": "30",
+        },
+    )
+    job_id = psql(
+        ctx,
+        "INSERT INTO map_control.jobs "
+        "(workspace_id, job_type, status, priority, attempt, max_attempts, payload_json) "
+        f"VALUES ('{WORKSPACE_ID}', 'sandbox_exec', 'queued', 0, 0, 3, "
+        "'{\"command\": \"echo e2e-once\"}'::jsonb) RETURNING id",
+    )
+    expect(bool(job_id), "failed to enqueue sandbox_exec job")
+    invocation_id = f"inv-{job_id}"
+
+    # Core completes the remote create+execute inside the HTTP call; the
+    # worker A handler is then held at the barrier BEFORE the job complete.
+    def _remote_landed():
+        row = psql(
+            ctx,
+            "SELECT status FROM map_control.sandbox_invocations "
+            f"WHERE workspace_id = '{WORKSPACE_ID}' "
+            f"AND invocation_id = '{invocation_id}'",
+        )
+        return row == "succeeded"
+
+    poll_until(_remote_landed, timeout_s=90.0, what="Core settled the sandbox invocation")
+    status, attempt, owner = _job_lease_row(ctx, job_id)
+    expect(
+        status == "running" and attempt == 1 and owner == "worker-sandbox-a",
+        f"worker A did not hold the job at the barrier: {(status, attempt, owner)!r}",
+    )
+    _kill_worker(ctx)
+
+    # ---------------- Phase 2: worker B takeover, exactly once -----------
+    _recreate_worker(
+        ctx,
+        {"MAP_WORKER_ID": "worker-sandbox-b", "MAP_E2E_SANDBOX_AFTER_CORE_BARRIER_S": "0"},
+    )
+
+    def _job_done():
+        return _job_lease_row(ctx, job_id)[0] == "succeeded"
+
+    poll_until(_job_done, timeout_s=120.0, what="sandbox_exec job succeeded after takeover")
+    status, attempt, _owner = _job_lease_row(ctx, job_id)
+    expect(status == "succeeded" and attempt == 2, f"job final {(status, attempt)!r}")
+    status, counts = http_json("GET", f"{ctx.sandbox_double}/__counts")
+    expect(status == 200, f"double counts returned {status}")
+    expect(
+        counts.get("create_actions") == 1 and counts.get("execute_actions") == 1,
+        f"provider actions not exactly-once after takeover: {counts!r}",
+    )
+    expect(
+        psql(
+            ctx,
+            "SELECT status FROM map_control.sandbox_invocations "
+            f"WHERE workspace_id = '{WORKSPACE_ID}' AND invocation_id = '{invocation_id}'",
+        )
+        == "succeeded",
+        "sandbox invocation not terminal after takeover",
+    )
+    detail["provider_exactly_once"] = counts
+    detail["job_attempts"] = attempt
+    ctx.report["faults"]["sandbox_worker_exactly_once"] = detail
+
+
 # browser E2E (R3-P1-02: browser -> frontend -> BFF -> core)
 # ---------------------------------------------------------------------------
 
@@ -1054,17 +1176,44 @@ def scenario_browser(ctx: Ctx, repeat_stop: int = 1) -> dict:
     expect(parts[0] == "completed", f"browser assistant message status={parts[0]!r}")
     expect(ANSWER in (parts[1] if len(parts) > 1 else ""), f"browser answer mismatch: {msg_row!r}")
 
-    # S4-05: the browser stop scenario must have issued the server stop API,
-    # and the stopped message's terminal state must be persisted in PG.
+    # S4-05 / S6-05: the browser stop scenario must have issued the server
+    # stop API for EVERY round, and EACH round's message must be
+    # persisted as stopped in PG - cross-checked by the message_id frozen
+    # from the stop URL (never just the conversation's last row).
     stop_requests = browser_report.get("stop_requests") or []
     expect(bool(stop_requests), "browser report missing stop_requests")
-    stopped_status = psql(
-        ctx,
-        "SELECT status FROM map_control.messages "
-        f"WHERE conversation_id = '{conversation_id}' AND role = 'assistant' "
-        "ORDER BY created_at DESC LIMIT 1",
+    stop_repeat = browser_report.get("stop_repeat") or []
+    expect(bool(stop_repeat), "browser report missing stop_repeat evidence")
+    message_ids = [entry.get("message_id") for entry in stop_repeat]
+    expect(
+        all(message_ids) and len(set(message_ids)) == len(message_ids),
+        f"stop rounds must carry unique non-empty message_ids: {message_ids!r}",
     )
-    expect(stopped_status == "stopped", f"browser stop message status={stopped_status!r}")
+    for entry in stop_repeat:
+        expect(
+            entry.get("stop_http_status") == 200,
+            f"round {entry.get('iteration')} stop HTTP status "
+            f"{entry.get('stop_http_status')!r} != 200",
+        )
+        expect(
+            entry.get("sse_done") is True,
+            f"round {entry.get('iteration')} missing SSE terminal done evidence",
+        )
+        pg_status = psql(
+            ctx,
+            "SELECT status FROM map_control.messages "
+            f"WHERE id = '{entry['message_id']}'",
+        )
+        expect(
+            pg_status == "stopped",
+            f"round {entry.get('iteration')} message {entry['message_id']} "
+            f"PG status={pg_status!r}, want stopped",
+        )
+        entry["pg_status"] = pg_status
+    expect(
+        len(stop_repeat) == repeat_stop,
+        f"stop_repeat rounds {len(stop_repeat)} != requested {repeat_stop}",
+    )
 
     # Mongo cross-check: the browser's X-Session-ID reached map_core.
     mongo_doc = poll_until(
@@ -1718,6 +1867,7 @@ def start_stack(ctx: Ctx) -> None:
         "MAP_JAEGER_UI_PORT",
         "MAP_JAEGER_OTLP_GRPC_PORT",
         "E2E_FAKE_LLM_PORT",
+        "E2E_SANDBOX_DOUBLE_PORT",
     ]
     for key in port_env_keys:
         ctx.ports[key] = free_port()
@@ -1737,12 +1887,34 @@ def start_stack(ctx: Ctx) -> None:
         "MAP_POSTGRES_APP_PASSWORD": "e2e-local-only",
         "MAP_POSTGRES_MIGRATOR_PASSWORD": "e2e-local-only",
         "MAP_MONGO_ROOT_PASSWORD": "e2e-local-only",
+        # S6-02/S6-03: the sandbox execution link - one-shot credential
+        # registry for Core's /sandbox/exec and the matching worker
+        # Bearer token; the provider is the in-compose contract double.
+        "MAP_SANDBOX_SERVICE_CREDENTIALS": json.dumps(
+            [
+                {
+                    "key_id": "k-e2e-sandbox",
+                    "token": "svc-e2e-sandbox-token",
+                    "service_name": "map-worker",
+                    "audience": "map-core",
+                    "scopes": ["sandbox:execute"],
+                }
+            ]
+        ),
+        "MAP_SANDBOX_SERVICE_AUDIENCE": "map-core",
+        "MAP_SANDBOX_CORE_TOKEN": "svc-e2e-sandbox-token",
+        "MAP_OPENSANDBOX_URL": "http://opensandbox-double:8099",
+        "MAP_OPENSANDBOX_API_KEY": "e2e-sandbox-double-key",
+        "MAP_E2E_SANDBOX_AFTER_CORE_BARRIER_S": "0",
     }
     ctx.bff = f"http://127.0.0.1:{ctx.ports['MAP_BFF_PORT']}"
     ctx.frontend = f"http://127.0.0.1:{ctx.ports['MAP_FRONTEND_PORT']}"
     ctx.jaeger = f"http://127.0.0.1:{ctx.ports['MAP_JAEGER_UI_PORT']}"
     ctx.fake_llm = f"http://127.0.0.1:{ctx.ports['E2E_FAKE_LLM_PORT']}"
     ctx.fake_llm_container = f"{ctx.prefix}-fake-llm"
+    ctx.sandbox_double = (
+        f"http://127.0.0.1:{ctx.ports['E2E_SANDBOX_DOUBLE_PORT']}"
+    )
 
     log(f"project={ctx.project} bff={ctx.bff} jaeger_port={ctx.ports['MAP_JAEGER_UI_PORT']}")
     compose(ctx, ["up", "-d", "--build", *SERVICES], timeout=1800.0)
@@ -1875,6 +2047,15 @@ def run_fault_and_legacy_scenarios(ctx: Ctx, repeat_stop: int = 1) -> None:
     scenario_worker_kill_takeover(ctx, happy)
     ctx.report["scenarios"]["worker_kill_lease_takeover"] = "PASS"
     log("worker kill + lease takeover OK")
+
+    # S6-02/S6-03: real worker kill between the remote OpenSandbox execute
+    # and the job complete - the taken-over attempt must reuse the SAME
+    # invocation identity and the provider counts must stay EXACTLY one;
+    # forged requests to /sandbox/exec must cost zero provider bytes and
+    # zero ledger rows.
+    scenario_sandbox_worker_exactly_once(ctx)
+    ctx.report["scenarios"]["sandbox_worker_exactly_once"] = "PASS"
+    log("sandbox worker kill + exactly-once + auth boundary OK")
 
     restarted = scenario_core_restart(ctx)
     ctx.report["request_ids"]["restart"] = restarted["request_id"]

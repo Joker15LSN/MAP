@@ -130,6 +130,22 @@ class EffectUncertainError(Exception):
     reported as succeeded. The ledger row stays ``uncertain`` as the
     observable terminal state for operators.
     """
+class JobTerminalError(Exception):
+    """S6-02: a handler outcome that MUST terminate the job (retryable=
+    False) with a typed error code - retrying the same job can never help.
+
+    Used by handlers that receive an authoritative failure from a
+    downstream capability (e.g. an idempotency conflict on a stable
+    invocation identity, or a permanently disabled capability). The runner
+    fails the job TERMINALLY with error_code instead of returning it to
+    the queue or faking success.
+    """
+
+    def __init__(self, error_code: str, message: str) -> None:
+        self.error_code = error_code
+        super().__init__(f"{error_code}: {message}")
+
+
 
 
 @runtime_checkable
@@ -1023,6 +1039,26 @@ class JobRunner:
             await session.commit()
             logger.error(
                 "job failed with uncertain external effect",
+                extra={**self._log_fields(job, attempt), "error": str(exc)[:500]},
+            )
+            return
+        except JobTerminalError as exc:
+            # S6-02: an authoritative downstream failure (stable-invocation
+            # idempotency conflict, permanently disabled capability): the
+            # job must terminate with the typed code, never retry forever
+            # and never be faked as succeeded.
+            await session.rollback()
+            await repo.fail(
+                job.id,
+                error_code=exc.error_code,
+                error_message=str(exc)[:2000],
+                retryable=False,
+                owner=self.worker_id,
+                attempt=attempt,
+            )
+            await session.commit()
+            logger.error(
+                "job failed terminally",
                 extra={**self._log_fields(job, attempt), "error": str(exc)[:500]},
             )
             return

@@ -231,7 +231,12 @@ class Captured:
         self.create_requests: list[dict] = []
         self.stream_requests: list[dict] = []
         self.stop_requests: list[dict] = []
+        self.stop_responses: list[dict] = []
         self.create_responses: list[dict] = []
+        # S6-05: the stream RESPONSE objects (not serializable); the stop
+        # scenario reads each round's buffered SSE body to prove the
+        # terminal done event reached the browser.
+        self.stream_response_objects: list = []
         self.session_ids: set[str] = set()
         self.conversation_id: str | None = None
         self.page_errors: list[dict] = []
@@ -268,6 +273,7 @@ class Captured:
             "create_requests": self.create_requests,
             "stream_requests": self.stream_requests,
             "stop_requests": self.stop_requests,
+            "stop_responses": self.stop_responses,
         }
 
 
@@ -415,6 +421,17 @@ def wire_up(page, captured: Captured) -> None:
                     "url": request.url,
                 }
             )
+        # S6-05: record the stop API HTTP status and stash the stream
+        # response object so each stop round can prove the SSE terminal
+        # done event reached the browser.
+        if request.method == "POST" and re.search(
+            r"/api/v1/messages/[0-9a-fA-F-]{36}:stop$", request.url
+        ):
+            captured.stop_responses.append(
+                {"url": request.url, "status": response.status}
+            )
+        if ":stream" in request.url and request.method == "POST" and response.status == 200:
+            captured.stream_response_objects.append(response)
         if (
             "/api/v1/conversations" in request.url
             and request.method == "POST"
@@ -563,8 +580,11 @@ def scenario_stop_mid_stream(
         for round_num in range(1, repeat + 1):
             message = f"慢慢回答我-{round_num}-{token}"
             # captured is shared across scenarios: count this round's new
-            # stop requests by tracking the baseline before it starts.
+            # stop requests / stream responses by tracking the baselines
+            # before it starts (S6-05 per-round evidence).
             base_stop_count = len(captured.stop_requests)
+            base_stream_count = len(captured.stream_response_objects)
+            base_stop_response_count = len(captured.stop_responses)
             configure_fake_llm(fake_llm_url, 0.35)
             t0 = time.monotonic()
 
@@ -613,6 +633,41 @@ def scenario_stop_mid_stream(
             )
             expect(bool(stop_request["x_request_id"]), "stop request missing X-Request-ID")
             expect(bool(stop_request["x_session_id"]), "stop request missing X-Session-ID")
+            # S6-05: freeze THIS round's message_id from the stop URL so the
+            # outer runner can cross-check the PG row per round.
+            match = re.search(r"/api/v1/messages/([0-9a-fA-F-]{36}):stop$", stop_request["url"])
+            expect(match is not None, f"cannot parse message_id from {stop_request['url']}")
+            message_id = match.group(1)
+
+            # S6-05: the stop HTTP call must have succeeded (status 200) for
+            # THIS round.
+            expect(
+                len(captured.stop_responses) > base_stop_response_count,
+                "stop response not captured for this round",
+            )
+            stop_response = captured.stop_responses[-1]
+            stop_http_status = stop_response["status"]
+            expect(
+                stop_http_status == 200,
+                f"stop API returned HTTP {stop_http_status}",
+            )
+
+            # S6-05: the SSE stream of THIS round must have terminated with
+            # the done event (the UI stopped text alone is not enough).
+            expect(
+                len(captured.stream_response_objects) > base_stream_count,
+                "stream response not captured for this round",
+            )
+            stream_response = captured.stream_response_objects[base_stream_count]
+            try:
+                stream_body = stream_response.body() or b""
+            except Exception:  # noqa: BLE001 - buffered body unavailable
+                stream_body = b""
+            sse_done = b"event: done" in stream_body
+            expect(
+                sse_done,
+                "SSE stream did not terminate with the done event for this round",
+            )
 
             round_elapsed = time.monotonic() - t0
             expect(
@@ -624,7 +679,10 @@ def scenario_stop_mid_stream(
                 {
                     "iteration": round_num,
                     "message": message,
+                    "message_id": message_id,
                     "stop_request_url": stop_request["url"],
+                    "stop_http_status": stop_http_status,
+                    "sse_done": True,
                     "stop_to_ui_stopped_s": round(t_ui_stopped - t_stop_clicked, 3),
                     "terminal_state": "stopped",
                 }

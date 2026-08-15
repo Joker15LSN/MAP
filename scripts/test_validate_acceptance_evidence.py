@@ -43,6 +43,7 @@ FAKE_SHA_2 = "b" * 40
 TEST_REPOSITORY = "test-org/test-repo"
 TEST_GIT_REF = "refs/heads/main"
 TEST_RUN_ID = "test-run-1"
+TEST_RUN_ATTEMPT = "1"
 
 
 def _future_iso(offset_hours: float = 1.0) -> str:
@@ -157,11 +158,17 @@ class BaseValidatorTest(unittest.TestCase):
             for name in (
                 "MAP_EVIDENCE_TRUST_DIGEST",
                 "MAP_EVIDENCE_TRUST_PUBLIC_KEY",
+                # S6-04: the expected protected-CI run identity the
+                # validator must compare attestations against.
+                "MAP_EVIDENCE_EXPECTED_RUN_ID",
+                "MAP_EVIDENCE_EXPECTED_RUN_ATTEMPT",
             )
         }
         os.environ["MAP_EVIDENCE_TRUST_DIGEST"] = evidence_signing.trust_config_digest(
             self.trust_config
         )
+        os.environ["MAP_EVIDENCE_EXPECTED_RUN_ID"] = TEST_RUN_ID
+        os.environ["MAP_EVIDENCE_EXPECTED_RUN_ATTEMPT"] = TEST_RUN_ATTEMPT
 
     def tearDown(self) -> None:
         for name, value in self._prev_anchor.items():
@@ -234,16 +241,21 @@ class BaseValidatorTest(unittest.TestCase):
         f.write_text("fixture artifact", encoding="utf-8")
         return str(f.relative_to(self.root)), self._sha256(f)
 
-    def _sign(self, manifest: dict) -> dict:
-        return evidence_signing.sign_manifest(
-            manifest,
-            self.secret_hex,
+    def _sign(self, manifest: dict, **overrides) -> dict:
+        kwargs = dict(
             issuer=self.issuer,
             workflow=self.workflow,
             key_id=self.key_id,
             repository=TEST_REPOSITORY,
             git_ref=TEST_GIT_REF,
             run_id=TEST_RUN_ID,
+            run_attempt=TEST_RUN_ATTEMPT,
+        )
+        kwargs.update(overrides)
+        return evidence_signing.sign_manifest(
+            manifest,
+            self.secret_hex,
+            **kwargs,
         )
 
     def _manifest(
@@ -1134,6 +1146,78 @@ class TrustAnchorTests(BaseValidatorTest):
             )
         self.assertEqual(proc.returncode, 1)
         self.assertIn("externally injected trust anchor", proc.stderr)
+
+
+
+class RunFreshnessTests(BaseValidatorTest):
+    """S6-04: an older CI run's attestation can never be replayed past the
+    release gate - the validator compares the run identity against the
+    EXTERNALLY injected expected run and rejects stale/future issuing.
+    """
+
+    def _freeze_with_pass(self, **sign_overrides):
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = self._manifest(
+            task="P1-TEST-A", ac="AC-A-01", status="pass", implementation_sha=freeze
+        )
+        manifest = self._sign(manifest, **sign_overrides)
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+
+    def test_replay_of_old_run_id_fails(self) -> None:
+        """A manifest legitimately signed by an EARLIER protected run must
+        not validate when the gate expects the CURRENT run."""
+        self._freeze_with_pass(run_id="some-old-run")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("expected protected-CI run", proc.stderr)
+
+    def test_wrong_run_attempt_fails(self) -> None:
+        self._freeze_with_pass(run_attempt="99")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("run_attempt", proc.stderr)
+
+    def test_missing_expected_run_identity_fails(self) -> None:
+        """Without the externally injected expected run identity the
+        release validator refuses to validate at all."""
+        self._freeze_with_pass()
+        os.environ.pop("MAP_EVIDENCE_EXPECTED_RUN_ID", None)
+        os.environ.pop("MAP_EVIDENCE_EXPECTED_RUN_ATTEMPT", None)
+        try:
+            proc = self.run_validator("--require-final")
+        finally:
+            os.environ["MAP_EVIDENCE_EXPECTED_RUN_ID"] = TEST_RUN_ID
+            os.environ["MAP_EVIDENCE_EXPECTED_RUN_ATTEMPT"] = TEST_RUN_ATTEMPT
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("MAP_EVIDENCE_EXPECTED_RUN_ID", proc.stderr)
+
+    def test_future_issued_at_fails(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        future = (
+            datetime.now(timezone.utc) + timedelta(hours=2)
+        ).isoformat().replace("+00:00", "Z")
+        self._freeze_with_pass(issued_at=future)
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("in the future", proc.stderr)
+
+    def test_stale_issued_at_before_commit_fails(self) -> None:
+        """An attestation ISSUED before the implementation commit cannot
+        attest this commit (stale-signature replay)."""
+        self._freeze_with_pass(issued_at="2020-01-01T00:00:00Z")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("issued_at", proc.stderr)
+
+    def test_current_run_with_attempt_still_passes(self) -> None:
+        """The current protected run's offline verification keeps
+        passing with run_id + run_attempt + issued_at enforced."""
+        self._freeze_with_pass()
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 if __name__ == "__main__":

@@ -531,6 +531,24 @@ class PostgresSandboxInvocationLedger:
             self._pool = None
 
     @staticmethod
+    def _decode_jsonb_object(value: Any) -> dict[str, Any] | None:
+        """S6-01: decode and VALIDATE a json/jsonb field at the repository
+        boundary. asyncpg returns json/jsonb as str by default; any value
+        that is not (after decoding) a JSON object fails closed to None -
+        the reconciler then settles the row unknown instead of
+        crash-looping on a non-dict payload."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return None
+        if isinstance(value, dict):
+            return value
+        return None
+
+    @staticmethod
     def _record_from_row(row: asyncpg.Record) -> SandboxInvocationRecord:
         created_at = row["created_at"]
         completed_at = row["completed_at"]
@@ -546,8 +564,12 @@ class PostgresSandboxInvocationLedger:
             sandbox_id=row["sandbox_id"],
             output=row["output"],
             error=row["error"],
-            server_state=row["server_state"],
-            request_payload=row["request_payload"],
+            server_state=PostgresSandboxInvocationLedger._decode_jsonb_object(
+                row["server_state"]
+            ),
+            request_payload=PostgresSandboxInvocationLedger._decode_jsonb_object(
+                row["request_payload"]
+            ),
             owner_id=row["owner_id"],
             lease_expires_at=(
                 lease_expires_at.timestamp() if lease_expires_at is not None else 0.0

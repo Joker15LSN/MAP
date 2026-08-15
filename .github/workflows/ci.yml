@@ -256,12 +256,18 @@ jobs:
           MAP_EVIDENCE_REPOSITORY: ${{ github.repository }}
           MAP_EVIDENCE_GIT_REF: ${{ github.ref }}
           MAP_EVIDENCE_RUN_ID: ${{ github.run_id }}
+          MAP_EVIDENCE_RUN_ATTEMPT: ${{ github.run_attempt }}
 
       - name: Final release gate (eligibility — release evidence)
         run: RELEASE_GATE_FINAL=1 bash scripts/release_gate.sh
         env:
           GATE_BASELINE_SHA: ${{ env.GATE_BASELINE_SHA }}
           MAP_EVIDENCE_TRUST_DIGEST: ${{ vars.MAP_EVIDENCE_TRUST_DIGEST }}
+          # S6-04: the CURRENT protected-CI run identity, injected from
+          # OUTSIDE the artifacts - the validator compares attestations
+          # against it so an older run's replay can never pass.
+          MAP_EVIDENCE_EXPECTED_RUN_ID: ${{ github.run_id }}
+          MAP_EVIDENCE_EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
 
       - name: Upload gate artifacts
         if: always()

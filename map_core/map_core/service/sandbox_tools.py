@@ -941,7 +941,11 @@ class SandboxReconciler:
         if outcome.kind != "takeover" or outcome.fence is None or outcome.record is None:
             return False  # replay / still alive / gone: nothing to drive
 
-        payload = outcome.record.request_payload or {}
+        # S6-01: the ledger boundary already validates JSONB as object;
+        # this guard is defense-in-depth for any non-dict payload (malformed
+        # JSONB) so the row fails closed to unknown instead of raising.
+        raw_payload = outcome.record.request_payload
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
         command = str(payload.get("command") or "").strip()
         identity = _identity_from_payload(payload)
         if not command or identity is None:

@@ -324,3 +324,228 @@ def test_sigkill_window_converges(window: str, monkeypatch, tmp_path) -> None:
                 victim.wait(timeout=10.0)
     finally:
         double.stop()
+
+
+class RealPgReconcilerTests:
+    """S6-01: the durable reconciler converges rows on REAL PostgreSQL with
+    NO caller retry - the background scan path itself must finish the job.
+
+    Directly asserts the types decoded from PG (request_payload /
+    server_state must be dict, never str) and the malformed-JSONB
+    fail-closed path (non-object JSONB converges to unknown).
+    """
+
+    @staticmethod
+    def _claim(ledger, workspace_id, invocation_id):
+        from map_core.service.sandbox_ledger import (
+            build_create_key,
+            build_execute_key,
+            normalize_request_digest,
+        )
+
+        limits = SandboxResourceLimits().to_dict()
+        digest = normalize_request_digest(command="echo hi", limits=limits)
+        return asyncio.run(
+            ledger.claim(
+                workspace_id=workspace_id,
+                invocation_id=invocation_id,
+                request_digest=digest,
+                create_key=build_create_key(
+                    workspace_id=workspace_id,
+                    invocation_id=invocation_id,
+                    request_digest=digest,
+                ),
+                execute_key=build_execute_key(
+                    workspace_id=workspace_id,
+                    invocation_id=invocation_id,
+                    request_digest=digest,
+                ),
+                request_payload={
+                    "command": "echo hi",
+                    "limits": limits,
+                    "identity": {
+                        "workspace_id": workspace_id,
+                        "run_id": "run-1",
+                        "step_id": "step-1",
+                        "attempt_id": "att-1",
+                        "invocation_id": invocation_id,
+                        "client_request_id": "req-1",
+                    },
+                },
+                owner_id="crashed-owner",
+                lease_seconds=0.2,
+            )
+        )
+
+    def test_reconciler_only_converges_pending_row(self, monkeypatch) -> None:
+        """No caller retry: the background reconciler alone drives a crashed
+        pending row to succeeded, with provider create/execute exactly once,
+        and PG reads decode request_payload/server_state as dicts."""
+        _check_pg_available()
+        double = OpenSandboxDouble()
+        double.start()
+        try:
+            monkeypatch.setenv("MAP_OPENSANDBOX_URL", double.url)
+            monkeypatch.setenv("MAP_OPENSANDBOX_API_KEY", "key-1234567890abcdef")
+            suffix = uuid.uuid4().hex[:8]
+            workspace_id, invocation_id = f"ws-{suffix}", f"inv-{suffix}"
+            ledger = PostgresSandboxInvocationLedger(DSN)
+
+            async def run() -> None:
+                claim = self._claim(ledger, workspace_id, invocation_id)
+                assert claim.kind == "owned"
+                await asyncio.sleep(0.5)  # lease expires; owner is gone
+                from map_core.service.sandbox_tools import SandboxReconciler
+
+                driven = await SandboxReconciler(
+                    ledger, lease_seconds=5.0
+                ).reconcile_once()
+                assert driven == 1
+                record = await ledger.get(
+                    workspace_id=workspace_id, invocation_id=invocation_id
+                )
+                assert record is not None and record.terminal
+                assert record.status == STATUS_SUCCEEDED
+                assert record.output == "ok: echo hi"
+                # S6-01: the boundary decode must yield objects, never str.
+                assert isinstance(record.request_payload, dict)
+                assert record.request_payload.get("command") == "echo hi"
+                assert isinstance(record.server_state, dict)
+                await ledger.close()
+
+            asyncio.run(run())
+            with double.server.lock:
+                assert double.server_state["create_actions"] == 1
+                assert double.server_state["execute_actions"] == 1
+        finally:
+            double.stop()
+
+    def test_reconciler_only_reuses_prior_execution(self, monkeypatch) -> None:
+        """Created row whose execute already landed server-side: the
+        reconciler completes it WITHOUT a second execute (no caller retry)."""
+        _check_pg_available()
+        double = OpenSandboxDouble()
+        double.start()
+        try:
+            monkeypatch.setenv("MAP_OPENSANDBOX_URL", double.url)
+            monkeypatch.setenv("MAP_OPENSANDBOX_API_KEY", "key-1234567890abcdef")
+            suffix = uuid.uuid4().hex[:8]
+            workspace_id, invocation_id = f"ws-{suffix}", f"inv-{suffix}"
+            ledger = PostgresSandboxInvocationLedger(DSN)
+
+            async def run() -> None:
+                claim = self._claim(ledger, workspace_id, invocation_id)
+                client = OpenSandboxClient.from_env()
+                identity = SandboxIdentity(
+                    workspace_id=workspace_id,
+                    run_id="run-1",
+                    step_id="step-1",
+                    attempt_id="att-1",
+                    invocation_id=invocation_id,
+                    client_request_id="req-1",
+                )
+                created = await client.create_sandbox(
+                    identity, idempotency_key=claim.record.create_key
+                )
+                await ledger.record_created(
+                    workspace_id=workspace_id,
+                    invocation_id=invocation_id,
+                    sandbox_id=created["sandbox_id"],
+                    fence=claim.fence,
+                )
+                await client.execute(
+                    created["sandbox_id"],
+                    identity,
+                    "echo hi",
+                    idempotency_key=claim.record.execute_key,
+                )
+                await client.aclose()
+                # Force the lease into the past (owner died before complete).
+                import asyncpg
+
+                conn = await asyncpg.connect(DSN)
+                await conn.execute(
+                    "UPDATE map_control.sandbox_invocations "
+                    "SET lease_expires_at = now() - interval '1 second' "
+                    "WHERE workspace_id = $1 AND invocation_id = $2",
+                    workspace_id,
+                    invocation_id,
+                )
+                await conn.close()
+                from map_core.service.sandbox_tools import SandboxReconciler
+
+                driven = await SandboxReconciler(
+                    ledger, lease_seconds=5.0
+                ).reconcile_once()
+                assert driven == 1
+                record = await ledger.get(
+                    workspace_id=workspace_id, invocation_id=invocation_id
+                )
+                assert record is not None and record.terminal
+                assert record.status == STATUS_SUCCEEDED
+                await ledger.close()
+
+            asyncio.run(run())
+            with double.server.lock:
+                assert double.server_state["create_actions"] == 1
+                assert (
+                    double.server_state["execute_actions"] == 1
+                ), "prior server execution must be reused, never re-issued"
+        finally:
+            double.stop()
+
+    def test_malformed_jsonb_converges_unknown(self, monkeypatch) -> None:
+        """Valid-JSON-but-not-an-object payloads fail closed to unknown
+        instead of crash-looping on a str payload (S6-01 counter-example)."""
+        _check_pg_available()
+        double = OpenSandboxDouble()
+        double.start()
+        try:
+            monkeypatch.setenv("MAP_OPENSANDBOX_URL", double.url)
+            monkeypatch.setenv("MAP_OPENSANDBOX_API_KEY", "key-1234567890abcdef")
+            suffix = uuid.uuid4().hex[:8]
+            workspace_id, invocation_id = f"ws-{suffix}", f"inv-{suffix}"
+            ledger = PostgresSandboxInvocationLedger(DSN)
+
+            async def run() -> None:
+                claim = self._claim(ledger, workspace_id, invocation_id)
+                assert claim.kind == "owned"
+                import asyncpg
+
+                conn = await asyncpg.connect(DSN)
+                # A JSON string is valid JSONB but NOT an object.
+                await conn.execute(
+                    "UPDATE map_control.sandbox_invocations "
+                    "SET request_payload = '\"corrupt\"'::jsonb, "
+                    "lease_expires_at = now() - interval '1 second' "
+                    "WHERE workspace_id = $1 AND invocation_id = $2",
+                    workspace_id,
+                    invocation_id,
+                )
+                await conn.close()
+                # The boundary decode must yield None for the non-object.
+                record = await ledger.get(
+                    workspace_id=workspace_id, invocation_id=invocation_id
+                )
+                assert record is not None and record.request_payload is None
+
+                from map_core.service.sandbox_tools import SandboxReconciler
+
+                driven = await SandboxReconciler(
+                    ledger, lease_seconds=5.0
+                ).reconcile_once()
+                assert driven == 1
+                final = await ledger.get(
+                    workspace_id=workspace_id, invocation_id=invocation_id
+                )
+                assert final is not None and final.terminal
+                assert final.status == "unknown", final.status
+                await ledger.close()
+
+            asyncio.run(run())
+            with double.server.lock:
+                # Never blind-replayed: no remote mutation for a corrupt row.
+                assert double.server_state["create_actions"] == 0
+                assert double.server_state["execute_actions"] == 0
+        finally:
+            double.stop()

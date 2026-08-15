@@ -18,6 +18,11 @@
 # inherit the base dev wildcard + credentials combination.
 services:
   algorithm-service:
+    # S6-03: production publishes NO host port for map_core at all - the
+    # privileged /sandbox/exec surface stays on the private compose network
+    # only. (The base file binds the dev port to 127.0.0.1 as defense in
+    # depth; this override removes it entirely.)
+    ports: !reset []
     environment:
       # S3-04: one frozen environment signal. ENV is the legacy reader
       # inside map_core; both resolve to prod here.
@@ -28,6 +33,9 @@ services:
       # dev default (* + true).
       MAP_CORS_ORIGINS: ${MAP_CORS_ORIGINS:?MAP_CORS_ORIGINS is required for production deployments}
       MAP_CORS_ALLOW_CREDENTIALS: ${MAP_CORS_ALLOW_CREDENTIALS:-false}
+      # S6-03: production REQUIRES the sandbox service credential registry;
+      # an empty registry rejects every caller (fail-closed).
+      MAP_SANDBOX_SERVICE_CREDENTIALS: ${MAP_SANDBOX_SERVICE_CREDENTIALS:?MAP_SANDBOX_SERVICE_CREDENTIALS is required for production deployments}
 
   backend-service:
     environment:

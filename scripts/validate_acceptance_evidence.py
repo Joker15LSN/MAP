@@ -223,6 +223,20 @@ def _check_attestation_after_implementation(
                 f"commit time {commit_ts.isoformat()}; the attestation must "
                 "be produced post-commit by the protected CI workflow"
             )
+        # S6-04: the SIGNING time (issued_at) must also be post-commit - a
+        # stale attestation issued before the implementation cannot attest
+        # this commit.
+        attestation = data.get("attestation")
+        issued_raw = attestation.get("issued_at") if isinstance(attestation, dict) else None
+        if issued_raw:
+            issued = parse_ts(str(issued_raw))
+            if issued is not None and issued <= commit_ts:
+                problems.append(
+                    f"{manifest.relative_to(root)}: attestation issued_at "
+                    f"{issued_raw} is not after the implementation commit "
+                    f"time {commit_ts.isoformat()}; a stale attestation "
+                    "cannot attest this commit"
+                )
     return problems
 
 
@@ -502,6 +516,9 @@ def validate_manifest(
     root: Path,
     trust_config: dict,
     require_final: bool,
+    expected_run_id: str | None = None,
+    expected_run_attempt: str | None = None,
+    now=None,
 ) -> list[str]:
     problems: list[str] = []
     rel = str(manifest.relative_to(root))
@@ -587,6 +604,9 @@ def validate_manifest(
                     expected_workflow=trust_config["expected_workflow"],
                     expected_repository=trust_config["expected_repository"],
                     allowed_refs=trust_config["allowed_refs"],
+                    expected_run_id=expected_run_id,
+                    expected_run_attempt=expected_run_attempt,
+                    now=now,
                 )
             )
     if status == "blocked":
@@ -772,6 +792,15 @@ def main(argv: list[str] | None = None) -> int:
                         f"{sha_dir[:12]}) not marked superseded/failed"
                     )
 
+    # S6-04: the expected protected-CI run identity comes ONLY from the
+    # environment (injected by the protected workflow itself) - never
+    # derived from the artifacts under validation.
+    expected_run_id = os.getenv("MAP_EVIDENCE_EXPECTED_RUN_ID", "").strip() or None
+    expected_run_attempt = (
+        os.getenv("MAP_EVIDENCE_EXPECTED_RUN_ATTEMPT", "").strip() or None
+    )
+    validation_now = datetime.now(timezone.utc)
+
     if args.require_final:
         if freeze_sha is None:
             problems.append("--require-final: no current (non-superseded) evidence exists")
@@ -798,6 +827,15 @@ def main(argv: list[str] | None = None) -> int:
         # commit can never self-establish trust.
         anchor_problems = _check_external_trust_anchor(root, trust_config)
         problems.extend(anchor_problems)
+        # S6-04: the release validator must compare attestations against the
+        # CURRENT protected-CI run identity - injected from outside, never
+        # derived from the artifacts. Missing = fail closed.
+        if expected_run_id is None:
+            problems.append(
+                "--require-final: the externally injected expected CI run "
+                "identity (MAP_EVIDENCE_EXPECTED_RUN_ID) is required; a "
+                "stale attestation replay can never be detected without it"
+            )
         if freeze_sha and anchor_problems:
             # S5-02: when the external anchor does NOT validate the mirror,
             # a reviewed range that rewrote the trust root is reported as
@@ -903,6 +941,11 @@ def main(argv: list[str] | None = None) -> int:
                     root=root,
                     trust_config=trust_config,
                     require_final=args.require_final,
+                    expected_run_id=expected_run_id if args.require_final else None,
+                    expected_run_attempt=(
+                        expected_run_attempt if args.require_final else None
+                    ),
+                    now=validation_now if args.require_final else None,
                 )
             )
         # every other manifest for this AC is historical: structure only
@@ -918,6 +961,11 @@ def main(argv: list[str] | None = None) -> int:
                     root=root,
                     trust_config=trust_config,
                     require_final=args.require_final,
+                    expected_run_id=expected_run_id if args.require_final else None,
+                    expected_run_attempt=(
+                        expected_run_attempt if args.require_final else None
+                    ),
+                    now=validation_now if args.require_final else None,
                 )
             )
         # S2-01 eligibility accounting: only the current manifest decides.
