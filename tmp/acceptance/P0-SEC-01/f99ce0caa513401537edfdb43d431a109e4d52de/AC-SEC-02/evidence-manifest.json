@@ -58,22 +58,11 @@
   "not_applicable_reason": null,
   "blocked_reason": null,
   "blocker_owner": null,
-  "superseded_by": "tmp/acceptance/P0-SEC-01/03ad82a69d70540bb868ceeb644a52e4caed4338/AC-SEC-02/evidence-manifest.json",
-  "superseded_reason": "superseded by evidence at freeze sha 03ad82a69d70540bb868ceeb644a52e4caed4338",
+  "superseded_by": "tmp/acceptance/P0-SEC-01/30d04e5faa621c7ca15e724e6a1c767741f01ad9/AC-SEC-02/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha 30d04e5faa621c7ca15e724e6a1c767741f01ad9",
   "producer": {
     "agent": "map-acceptance-evidence",
     "version": "2.0.0"
   },
-  "attestation": {
-    "type": "map-acceptance-evidence/v1",
-    "issuer": "map-release-evidence-ci",
-    "workflow": "release-gate/gate-final",
-    "signatures": [
-      {
-        "key_id": "map-acceptance-evidence-2026-08",
-        "algorithm": "ed25519",
-        "signature": "2ab05a45abe23c3136601055a1825dd0d42ff4189efce2b0c2432ebce2daf324f5ffc2621db44f60c0576badf0dfe27429e0f76ca7a53b845c0e04dd5ee4a705"
-      }
-    ]
-  }
+  "attestation": null
 }

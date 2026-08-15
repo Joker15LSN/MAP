@@ -64,22 +64,11 @@
   "not_applicable_reason": null,
   "blocked_reason": null,
   "blocker_owner": null,
-  "superseded_by": "tmp/acceptance/P0-CONTRACT-01/03ad82a69d70540bb868ceeb644a52e4caed4338/AC-CONTRACT-05/evidence-manifest.json",
-  "superseded_reason": "superseded by evidence at freeze sha 03ad82a69d70540bb868ceeb644a52e4caed4338",
+  "superseded_by": "tmp/acceptance/P0-CONTRACT-01/30d04e5faa621c7ca15e724e6a1c767741f01ad9/AC-CONTRACT-05/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha 30d04e5faa621c7ca15e724e6a1c767741f01ad9",
   "producer": {
     "agent": "map-acceptance-evidence",
     "version": "2.0.0"
   },
-  "attestation": {
-    "type": "map-acceptance-evidence/v1",
-    "issuer": "map-release-evidence-ci",
-    "workflow": "release-gate/gate-final",
-    "signatures": [
-      {
-        "key_id": "map-acceptance-evidence-2026-08",
-        "algorithm": "ed25519",
-        "signature": "2aa44c3ee4c853c8b160283f985e25cde4bfacbb75eff9b47e35808cd8f36e2374b7f8b022a9a17e0edc68355479bdafe050bdcb400d48b7c831c9846550f903"
-      }
-    ]
-  }
+  "attestation": null
 }

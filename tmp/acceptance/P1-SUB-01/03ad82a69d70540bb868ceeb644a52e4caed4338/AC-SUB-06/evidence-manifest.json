@@ -2,7 +2,7 @@
   "schema_version": "1.2.0",
   "task_id": "P1-SUB-01",
   "ac_id": "AC-SUB-06",
-  "status": "blocked",
+  "status": "superseded",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
   "implementation_sha": "03ad82a69d70540bb868ceeb644a52e4caed4338",
   "environment_digest": "5873b05cfeba46f0dbb947b8dc307ef53618a70f0d2d5fe1e3b34f7a2a193199",
@@ -50,12 +50,13 @@
   "waiver_owner": null,
   "waiver_expires_at": null,
   "not_applicable_reason": null,
-  "blocked_reason": "durable child-agent/handoff not implemented in this change set",
-  "blocker_owner": "development owner (golden-taskbook implementation)",
-  "superseded_by": null,
-  "superseded_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P1-SUB-01/30d04e5faa621c7ca15e724e6a1c767741f01ad9/AC-SUB-06/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha 30d04e5faa621c7ca15e724e6a1c767741f01ad9",
   "producer": {
     "agent": "map-acceptance-evidence",
     "version": "2.0.0"
-  }
+  },
+  "attestation": null
 }

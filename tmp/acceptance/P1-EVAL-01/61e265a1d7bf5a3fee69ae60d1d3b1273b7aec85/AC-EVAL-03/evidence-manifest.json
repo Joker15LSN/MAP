@@ -52,10 +52,11 @@
   "not_applicable_reason": null,
   "blocked_reason": null,
   "blocker_owner": null,
-  "superseded_by": "tmp/acceptance/P1-EVAL-01/03ad82a69d70540bb868ceeb644a52e4caed4338/AC-EVAL-03/evidence-manifest.json",
-  "superseded_reason": "superseded by evidence at freeze sha 03ad82a69d70540bb868ceeb644a52e4caed4338",
+  "superseded_by": "tmp/acceptance/P1-EVAL-01/30d04e5faa621c7ca15e724e6a1c767741f01ad9/AC-EVAL-03/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha 30d04e5faa621c7ca15e724e6a1c767741f01ad9",
   "producer": {
     "agent": "developer-agent",
     "version": "1.0.0"
-  }
+  },
+  "attestation": null
 }
