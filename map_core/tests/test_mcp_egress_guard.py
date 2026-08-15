@@ -17,6 +17,7 @@ import asyncio
 import os
 from unittest import mock
 
+import httpcore
 import pytest
 
 from map_core.service.agent.base import AgentRequest, ToolResult
@@ -24,10 +25,12 @@ from map_core.service.dynamic_tools import _call_http_mcp_tool
 from map_core.service.mcp_egress import (
     ALLOW_INSECURE_LOCAL_ENV,
     ALLOWED_HOSTS_ENV,
+    EGRESS_DENIED,
     MAX_RESPONSE_BYTES_ENV,
     EgressPolicy,
     MCPEgressError,
     ResolvedHeaders,
+    post_json_stream_guarded,
     validate_mcp_url,
 )
 
@@ -405,76 +408,275 @@ class TestDnsRebindingDefense:
         assert exc_info.value.code == EGRESS_DENIED
         assert "rebinding" in str(exc_info.value)
 
-    def test_peer_address_must_be_in_validated_set(self) -> None:
-        """The ACTUAL peer of the established connection must be one of the
-        validated addresses (post-connect check)."""
-        import asyncio
+    def test_connect_is_pinned_to_verified_ip_and_preserves_host_sni(
+        self, monkeypatch
+    ) -> None:
+        """The transport dials the verified IP directly while keeping the
+        original Host header and TLS SNI."""
+        import map_core.service.mcp_egress as mcp_egress
 
-        import httpx as httpx_module
-
-        from map_core.service.mcp_egress import (
-            EGRESS_DENIED,
-            MCPEgressError,
-            post_json_stream_guarded,
+        recorder = {"dialed": [], "sni": None, "request": []}
+        peer = ("93.184.216.34", 443)
+        response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Length: 2\r\n"
+            b"Content-Type: application/json\r\n"
+            b"\r\n"
+            b"{}"
         )
 
-        class _FakeStream:
-            def get_extra_info(self, name: str):
-                if name == "peername":
-                    return ("10.0.0.5", 443)
-                return None
+        class _RecordingStream(httpcore.AsyncMockStream):
+            def __init__(self, buffer, peer, recorder):
+                super().__init__(buffer, http2=False)
+                self._peer = peer
+                self._recorder = recorder
 
-        class _FakeResponseCtx:
-            status_code = 200
-            headers = httpx_module.Headers()
-            extensions = {"network_stream": _FakeStream()}
+            async def write(self, buffer, timeout=None):
+                self._recorder["request"].append(buffer)
 
-            def __init__(self, body: bytes) -> None:
-                self._body = body
-
-            async def __aenter__(self):
+            async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+                self._recorder["sni"] = server_hostname
                 return self
 
-            async def __aexit__(self, *args) -> None:
-                return None
+            def get_extra_info(self, info):
+                if info == "server_addr":
+                    return self._peer
+                return super().get_extra_info(info)
 
-            async def aiter_bytes(self):
-                yield self._body
+        class _RecordingBackend(httpcore.AsyncNetworkBackend):
+            async def connect_tcp(
+                self, host, port, timeout=None, local_address=None, socket_options=None
+            ):
+                recorder["dialed"].append((host, port))
+                return _RecordingStream([response], peer, recorder)
 
-        class _FakeClient:
-            def __init__(self, response_ctx: _FakeResponseCtx) -> None:
-                self._ctx = response_ctx
+            async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+                raise httpcore.ConnectError("unix sockets are not allowed")
 
-            async def __aenter__(self):
-                return self
+            async def sleep(self, seconds):
+                await asyncio.sleep(0)
 
-            async def __aexit__(self, *args) -> None:
-                return None
+        original_backend = mcp_egress._PinnedNetworkBackend
 
-            def stream(self, *args, **kwargs):
-                return self._ctx
+        def factory(expected_host, allowed_ips):
+            return original_backend(
+                expected_host, allowed_ips, inner=_RecordingBackend()
+            )
+
+        monkeypatch.setattr(mcp_egress, "_PinnedNetworkBackend", factory)
+        monkeypatch.setattr(
+            mcp_egress, "resolve_ips", lambda host: ["93.184.216.34"]
+        )
+
+        result = asyncio.run(
+            post_json_stream_guarded(
+                url="https://api.example.com/mcp",
+                json_payload={"k": "v"},
+                headers={"Authorization": "Bearer s3cr3t"},
+                timeout_s=5,
+                max_response_bytes=1024 * 1024,
+                allowed_ips=frozenset({"93.184.216.34"}),
+            )
+        )
+
+        assert result.status_code == 200
+        assert result.body == b"{}"
+        # The OS resolver never sees the hostname again: only the IP is dialed.
+        assert recorder["dialed"] == [("93.184.216.34", 443)]
+        # TLS SNI and the Host header keep the original hostname.
+        assert recorder["sni"] == "api.example.com"
+        request_bytes = b"".join(recorder["request"]).lower()
+        assert b"host: api.example.com" in request_bytes
+        assert b"authorization: bearer s3cr3t" in request_bytes
+
+    def test_peer_mismatch_aborts_before_any_request_bytes(self) -> None:
+        """A connect that lands on an unverified private address reaches the
+        target handler zero times and sends zero bytes."""
+        import map_core.service.mcp_egress as mcp_egress
+
+        received = {"bytes": 0, "requests": 0}
+        listener_port = {}
+
+        async def _serve(reader, writer):
+            try:
+                while True:
+                    data = await reader.read(65536)
+                    if not data:
+                        break
+                    received["bytes"] += len(data)
+                    if b"\r\n\r\n" in data:
+                        received["requests"] += 1
+            finally:
+                writer.close()
 
         async def _scenario() -> None:
-            fake_client = _FakeClient(_FakeResponseCtx(b'{"ok": true}'))
-            with mock.patch(
-                "map_core.service.mcp_egress.httpx.AsyncClient",
-                return_value=fake_client,
-            ), mock.patch(
-                "map_core.service.mcp_egress.resolve_ips",
-                return_value=["93.184.216.34"],
+            server = await asyncio.start_server(_serve, "127.0.0.1", 0)
+            listener_port["port"] = server.sockets[0].getsockname()[1]
+
+            class _LyingInner(httpcore.AsyncNetworkBackend):
+                async def connect_tcp(
+                    self, host, port, timeout=None, local_address=None, socket_options=None
+                ):
+                    # Ignore the pinned IP and land on the private listener.
+                    return await httpcore.AnyIOBackend().connect_tcp(
+                        "127.0.0.1",
+                        listener_port["port"],
+                        timeout=timeout,
+                        local_address=local_address,
+                        socket_options=socket_options,
+                    )
+
+                async def connect_unix_socket(
+                    self, path, timeout=None, socket_options=None
+                ):
+                    raise httpcore.ConnectError("unix sockets are not allowed")
+
+                async def sleep(self, seconds):
+                    await asyncio.sleep(0)
+
+            original_backend = mcp_egress._PinnedNetworkBackend
+
+            def factory(expected_host, allowed_ips):
+                return original_backend(
+                    expected_host, allowed_ips, inner=_LyingInner()
+                )
+
+            with mock.patch.object(
+                mcp_egress, "_PinnedNetworkBackend", factory
+            ), mock.patch.object(
+                mcp_egress, "resolve_ips", return_value=["93.184.216.34"]
             ):
                 with pytest.raises(MCPEgressError) as exc_info:
                     await post_json_stream_guarded(
                         url="https://api.example.com/mcp",
-                        json_payload={},
-                        headers={},
+                        json_payload={"secret": CANARY},
+                        headers={"Authorization": "Bearer " + CANARY},
                         timeout_s=5,
                         max_response_bytes=1024 * 1024,
                         allowed_ips=frozenset({"93.184.216.34"}),
                     )
-                assert exc_info.value.code == EGRESS_DENIED
-                assert "peer" in str(exc_info.value)
+
+            server.close()
+            await server.wait_closed()
+
+            assert exc_info.value.code == EGRESS_DENIED
+            assert "127.0.0.1" in str(exc_info.value)
+            assert received["requests"] == 0
+            assert received["bytes"] == 0
+
         asyncio.run(_scenario())
+
+    def test_empty_allowed_ips_is_denied(self) -> None:
+        with pytest.raises(MCPEgressError) as exc_info:
+            asyncio.run(
+                post_json_stream_guarded(
+                    url="https://api.example.com/mcp",
+                    json_payload={},
+                    headers={},
+                    timeout_s=5,
+                    max_response_bytes=1024 * 1024,
+                    allowed_ips=frozenset(),
+                )
+            )
+        assert exc_info.value.code == EGRESS_DENIED
+        assert "no verified addresses" in str(exc_info.value)
+
+    def test_transport_rejects_dial_for_unexpected_host(self) -> None:
+        """A pooled connection can never be reused for a different host."""
+        from map_core.service.mcp_egress import _PinnedNetworkBackend
+
+        class _ExplodingBackend(httpcore.AsyncNetworkBackend):
+            async def connect_tcp(self, *args, **kwargs):
+                raise AssertionError("must not dial an unexpected host")
+
+            async def connect_unix_socket(self, *args, **kwargs):
+                raise AssertionError("must not dial an unexpected host")
+
+            async def sleep(self, seconds):
+                await asyncio.sleep(0)
+
+        backend = _PinnedNetworkBackend(
+            "api.example.com",
+            frozenset({"93.184.216.34"}),
+            inner=_ExplodingBackend(),
+        )
+        with pytest.raises(MCPEgressError) as exc_info:
+            asyncio.run(backend.connect_tcp("evil.example.com", 443))
+        assert exc_info.value.code == EGRESS_DENIED
+        assert "expected" in str(exc_info.value)
+
+    def test_invalid_port_is_a_typed_error_in_post(self) -> None:
+        with pytest.raises(MCPEgressError) as exc_info:
+            asyncio.run(
+                post_json_stream_guarded(
+                    url="https://example.com:notaport/mcp",
+                    json_payload={},
+                    headers={},
+                    timeout_s=5,
+                    max_response_bytes=1024 * 1024,
+                    allowed_ips=frozenset({"93.184.216.34"}),
+                )
+            )
+        assert exc_info.value.code == EGRESS_DENIED
+        assert "port" in str(exc_info.value)
+
+    def test_proxy_env_is_ignored_and_host_is_preserved(self, monkeypatch) -> None:
+        """A local HTTP server is reached directly with the original Host
+        header even when proxy environment variables point elsewhere."""
+        import map_core.service.mcp_egress as mcp_egress
+
+        captured = {"request_line": "", "headers": ""}
+        port_holder = {}
+
+        async def _serve(reader, writer):
+            try:
+                data = await reader.readuntil(b"\r\n\r\n")
+                head = data.decode("latin-1")
+                captured["request_line"], _, captured["headers"] = head.partition(
+                    "\r\n"
+                )
+            except (asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+                pass
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Length: 2\r\n"
+                b"Content-Type: application/json\r\n"
+                b"\r\n"
+                b"{}"
+            )
+            await writer.drain()
+            writer.close()
+
+        async def _scenario() -> None:
+            server = await asyncio.start_server(_serve, "127.0.0.1", 0)
+            port_holder["port"] = server.sockets[0].getsockname()[1]
+            monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+            monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+            monkeypatch.delenv("NO_PROXY", raising=False)
+            monkeypatch.setattr(
+                mcp_egress, "resolve_ips", lambda host: ["127.0.0.1"]
+            )
+
+            result = await post_json_stream_guarded(
+                url="http://localhost:{}/mcp".format(port_holder["port"]),
+                json_payload={"x": 1},
+                headers={"X-Secret": "topsecret"},
+                timeout_s=5,
+                max_response_bytes=1024 * 1024,
+                allowed_ips=frozenset({"127.0.0.1"}),
+            )
+
+            server.close()
+            await server.wait_closed()
+            return result
+
+        result = asyncio.run(_scenario())
+        assert result.status_code == 200
+        assert result.body == b"{}"
+        assert captured["request_line"].startswith("POST /mcp HTTP/1.1")
+        assert "host: localhost:{}".format(port_holder["port"]) in captured[
+            "headers"
+        ].lower()
 
     def test_unparseable_port_is_a_typed_error_not_a_traceback(self) -> None:
         """https://example.com:notaport must produce a typed policy denial."""

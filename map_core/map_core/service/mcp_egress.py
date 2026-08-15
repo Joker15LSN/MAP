@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 from urllib.parse import urlsplit
 
+import anyio
+import httpcore
 import httpx
 
 EGRESS_DENIED: Final[str] = "MCP_EGRESS_POLICY_DENIED"
@@ -331,6 +333,146 @@ class GuardedResponse:
         return json.loads(self.body)
 
 
+def _normalize_host(host: str) -> str:
+    """Lowercase a dial host and strip IPv6 brackets for comparison."""
+    return host.strip().strip("[]").lower()
+
+
+def _stream_peer_ip(stream: httpcore.AsyncNetworkStream) -> str | None:
+    """Return the remote IP of a freshly-connected stream, if determinable."""
+    server_addr = stream.get_extra_info("server_addr")
+    if server_addr is not None:
+        try:
+            return str(server_addr[0])
+        except (IndexError, TypeError):
+            pass
+    sock = stream.get_extra_info("socket")
+    if sock is not None:
+        try:
+            return str(sock.getpeername()[0])
+        except (OSError, IndexError, TypeError):
+            return None
+    return None
+
+
+class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Dial ONLY the verified addresses for the validated host.
+
+    connect_tcp is the only way httpcore reaches the network. It verifies
+    that httpcore is dialing the host we validated, then connects DIRECTLY to
+    each candidate IP (the OS resolver never sees the hostname again). Before
+    the stream is returned - i.e. before any TLS handshake or HTTP byte - the
+    actual peer address is confirmed to be in allowed_ips; a mismatch is a
+    typed denial and closes the socket.
+    """
+
+    def __init__(
+        self,
+        expected_host: str,
+        allowed_ips: frozenset[str],
+        inner: httpcore.AsyncNetworkBackend | None = None,
+    ) -> None:
+        self._expected_host = _normalize_host(expected_host)
+        self._allowed_ips = frozenset(allowed_ips)
+        self._candidate_ips = sorted(self._allowed_ips)
+        self._inner = inner if inner is not None else httpcore.AnyIOBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> httpcore.AsyncNetworkStream:
+        if _normalize_host(host) != self._expected_host:
+            raise MCPEgressError(
+                EGRESS_DENIED,
+                f"transport dialed {host!r}, expected {self._expected_host!r}",
+            )
+        if not self._candidate_ips:
+            raise MCPEgressError(EGRESS_DENIED, "no verified addresses to dial")
+
+        last_error: Exception | None = None
+        for ip in self._candidate_ips:
+            try:
+                stream = await self._inner.connect_tcp(
+                    host=ip,
+                    port=port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                last_error = exc
+                continue
+
+            peer_ip = _stream_peer_ip(stream)
+            if peer_ip is None:
+                await stream.aclose()
+                raise MCPEgressError(
+                    EGRESS_DENIED, "could not confirm the connection peer address"
+                )
+            if peer_ip not in self._allowed_ips:
+                await stream.aclose()
+                raise MCPEgressError(
+                    EGRESS_DENIED,
+                    f"connection bound to {peer_ip}, which is not in the "
+                    f"verified address set {sorted(self._allowed_ips)}",
+                )
+            return stream
+
+        if last_error is not None:
+            raise last_error
+        raise httpcore.ConnectError("no verified addresses to dial")
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Any = None,
+    ) -> httpcore.AsyncNetworkStream:
+        raise httpcore.ConnectError("unix sockets are not allowed for MCP egress")
+
+    async def sleep(self, seconds: float) -> None:
+        await anyio.sleep(seconds)
+
+
+class _PinnedEgressTransport(httpx.AsyncHTTPTransport):
+    """httpx transport whose pool dials the pinned backend directly.
+
+    Inherits httpx.AsyncHTTPTransport's request/response conversion and
+    httpcore-exception mapping, but replaces the pool with one that never
+    performs DNS resolution (the _PinnedNetworkBackend) and never keeps a
+    connection alive for reuse across calls.
+    """
+
+    def __init__(
+        self,
+        *,
+        expected_host: str,
+        allowed_ips: frozenset[str],
+        network_backend: httpcore.AsyncNetworkBackend | None = None,
+    ) -> None:
+        backend = (
+            network_backend
+            if network_backend is not None
+            else _PinnedNetworkBackend(expected_host, allowed_ips)
+        )
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=httpx.create_ssl_context(
+                verify=True, cert=None, trust_env=True
+            ),
+            max_connections=10,
+            max_keepalive_connections=0,
+            keepalive_expiry=5.0,
+            http1=True,
+            http2=False,
+            retries=0,
+            network_backend=backend,
+        )
+
+
 async def post_json_stream_guarded(
     *,
     url: str,
@@ -338,43 +480,58 @@ async def post_json_stream_guarded(
     headers: dict[str, str],
     timeout_s: int,
     max_response_bytes: int,
-    allowed_ips: frozenset[str] | None = None,
+    allowed_ips: frozenset[str],
 ) -> GuardedResponse:
     """POST with no redirects, a hard streaming response-size cap and
-    DNS-rebinding protection (S3-02).
+    DNS-rebinding protection.
 
-    ``allowed_ips`` is the address set the URL was validated against
-    (validate_mcp_url). Immediately BEFORE dialing, the hostname is
-    re-resolved and must be a subset of that set - a hostname that resolved
-    to a public address during validation but to a private/metadata address
-    at dial time is rejected before any bytes leave. After the response is
-    fully read, the peer address of the established connection is checked
-    against the same set.
+    allowed_ips is mandatory and is the address set the URL was validated
+    against (validate_mcp_url). The hostname is re-resolved immediately
+    before dialing and must still be a subset of that set; the transport then
+    connects DIRECTLY to those verified IPs (never handing the hostname back
+    to the OS resolver) while preserving the original Host header and TLS SNI.
+    The peer address is confirmed against the verified set before any TLS or
+    HTTP bytes are written, so a connect that lands on a different
+    link-local/private address is aborted with zero bytes on the wire.
 
     Raises MCPEgressError(RESPONSE_TOO_LARGE) the moment the body exceeds
-    max_response_bytes - the connection is aborted before the full payload
-    is ever buffered.
+    max_response_bytes - the connection is aborted before the full payload is
+    ever buffered.
     """
     try:
-        host = (urlsplit(url).hostname or "").lower()
-        if allowed_ips is not None and host:
-            # pre-dial re-resolution: the OS would resolve AGAIN inside
-            # httpx; compare the fresh answer against the validated set
-            # before anything is sent (S3-02 sequential-DNS defense).
-            try:
-                fresh_ips = resolve_ips(host)
-            except MCPEgressError as exc:
-                raise MCPEgressError(EGRESS_DENIED, str(exc)) from exc
-            if not set(fresh_ips) <= set(allowed_ips):
-                raise MCPEgressError(
-                    EGRESS_DENIED,
-                    f"host {host!r} changed its DNS answer between "
-                    "validation and dial (possible rebinding): "
-                    f"validated {sorted(allowed_ips)}, now {sorted(fresh_ips)}",
-                )
+        parts = urlsplit(url)
+        parts.port  # noqa: B018 - parse and validate the port
+    except ValueError as exc:
+        raise MCPEgressError(
+            EGRESS_DENIED, f"unparseable URL/port: {exc}"
+        ) from exc
+
+    host = (parts.hostname or "").lower()
+    if not host:
+        raise MCPEgressError(EGRESS_DENIED, "URL has no hostname")
+    if not allowed_ips:
+        raise MCPEgressError(EGRESS_DENIED, "no verified addresses to dial")
+
+    # Pre-dial re-resolution: compare the fresh DNS answer against the
+    # validated set before anything is sent. Because the transport below pins
+    # the dial to allowed_ips, a rebinding answer that introduces a new
+    # address is rejected here and never reaches a socket.
+    fresh_ips = resolve_ips(host)
+    if not set(fresh_ips) <= set(allowed_ips):
+        raise MCPEgressError(
+            EGRESS_DENIED,
+            f"host {host!r} changed its DNS answer between validation and dial "
+            f"(possible rebinding): validated {sorted(allowed_ips)}, "
+            f"now {sorted(fresh_ips)}",
+        )
+
+    transport = _PinnedEgressTransport(expected_host=host, allowed_ips=allowed_ips)
+    try:
         async with httpx.AsyncClient(
+            transport=transport,
             timeout=httpx.Timeout(timeout_s, connect=5.0),
             follow_redirects=False,
+            trust_env=False,
         ) as client:
             async with client.stream(
                 "POST", url, json=json_payload, headers=headers
@@ -389,19 +546,6 @@ async def post_json_stream_guarded(
                             f"MCP response exceeded {max_response_bytes} bytes",
                         )
                     chunks.append(chunk)
-                # post-connect peer check: the ACTUAL peer of the established
-                # connection must be one of the validated addresses.
-                network_stream = response.extensions.get("network_stream")
-                if network_stream is not None and allowed_ips is not None:
-                    peer = network_stream.get_extra_info("peername")
-                    if peer is not None:
-                        peer_ip = str(peer[0])
-                        if peer_ip not in allowed_ips:
-                            raise MCPEgressError(
-                                EGRESS_DENIED,
-                                f"connection peer {peer_ip} is not in the "
-                                "validated address set",
-                            )
                 return GuardedResponse(
                     status_code=response.status_code,
                     headers=response.headers,
