@@ -246,3 +246,30 @@ async def test_stop_marks_streaming_message(app_and_core, session) -> None:
         response = await client.post(f"/api/v1/messages/{assistant.id}:stop")
         assert response.status_code == 200
         assert response.json()["status"] == "stopped"
+
+
+async def test_stop_after_completed_keeps_completed(app_and_core, session) -> None:
+    """S4-05: 终态不可回退 —— done 先赢后,stop 的条件更新不得覆盖 completed。
+
+    流式正常完成后,消息已是 completed;此时再发 stop 请求,服务端条件更新
+    不会把终态回退成 stopped,而是显式返回 completed 终态与 abort=False。
+    """
+    app, _ = app_and_core
+    async with await _client(app) as client:
+        created = (await client.post("/api/v1/conversations", json={"mode": "global"})).json()
+        conversation_id = created["id"]
+
+        response = await client.post(
+            f"/api/v1/conversations/{conversation_id}/messages:stream",
+            json={"query": "hi", "request_id": "req-complete-first"},
+        )
+        assert response.status_code == 200
+
+        detail = (await client.get(f"/api/v1/conversations/{conversation_id}")).json()
+        assistant = next(m for m in detail["messages"] if m["role"] == "assistant")
+        assert assistant["status"] == "completed"
+
+        stop = await client.post(f"/api/v1/messages/{assistant['id']}:stop")
+        assert stop.status_code == 200
+        assert stop.json()["status"] == "completed"
+        assert stop.json()["abort"] is False

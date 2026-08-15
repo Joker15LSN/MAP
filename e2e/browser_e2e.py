@@ -140,7 +140,11 @@ EXPECTED_ABORTS: list[dict] = [
         "method": "POST",
         "route": re.compile(CONVERSATION_ROUTE + r"/messages:stream$"),
         "failure": "net::ERR_ABORTED",
-        "reason": "the UI stop button aborts the in-flight SSE stream",
+        "reason": (
+            "the UI stop button's local-abort fallback (timeout/network) "
+            "aborts the in-flight SSE stream; the normal path calls the "
+            "server stop API and lets the server close the stream"
+        ),
     },
     {
         "scenario": "browser_reload_feedback",
@@ -224,6 +228,7 @@ class Captured:
         self.scenario = "setup"
         self.create_requests: list[dict] = []
         self.stream_requests: list[dict] = []
+        self.stop_requests: list[dict] = []
         self.create_responses: list[dict] = []
         self.session_ids: set[str] = set()
         self.conversation_id: str | None = None
@@ -260,6 +265,7 @@ class Captured:
             "session_ids": sorted(self.session_ids),
             "create_requests": self.create_requests,
             "stream_requests": self.stream_requests,
+            "stop_requests": self.stop_requests,
         }
 
 
@@ -391,6 +397,10 @@ def wire_up(page, captured: Captured) -> None:
             captured.create_requests.append({"url": url, **headers})
         elif ":stream" in url and request.method == "POST":
             captured.stream_requests.append({"url": url, **headers})
+        elif request.method == "POST" and re.search(
+            r"/api/v1/messages/[0-9a-fA-F-]{36}:stop$", url
+        ):
+            captured.stop_requests.append({"url": url, **headers})
 
     def on_response(response) -> None:
         request = response.request
@@ -561,6 +571,21 @@ def scenario_stop_mid_stream(page, captured: Captured, fake_llm_url: str) -> Non
             }""",
             timeout=NAV_TIMEOUT_MS,
         )
+
+        # S4-05: the UI stop button must FIRST issue the server stop API
+        # (POST /api/v1/messages/{id}:stop), not merely abort the local SSE.
+        expect(
+            bool(captured.stop_requests),
+            "stop click never issued the server stop API request "
+            "(POST /api/v1/messages/{id}:stop)",
+        )
+        stop_request = captured.stop_requests[-1]
+        expect(
+            stop_request["url"].endswith(":stop"),
+            f"unexpected stop request url: {stop_request['url']}",
+        )
+        expect(bool(stop_request["x_request_id"]), "stop request missing X-Request-ID")
+        expect(bool(stop_request["x_session_id"]), "stop request missing X-Session-ID")
     finally:
         configure_fake_llm(fake_llm_url, 0.0)
 

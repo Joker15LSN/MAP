@@ -977,6 +977,18 @@ def scenario_browser(ctx: Ctx) -> dict:
     expect(parts[0] == "completed", f"browser assistant message status={parts[0]!r}")
     expect(ANSWER in (parts[1] if len(parts) > 1 else ""), f"browser answer mismatch: {msg_row!r}")
 
+    # S4-05: the browser stop scenario must have issued the server stop API,
+    # and the stopped message's terminal state must be persisted in PG.
+    stop_requests = browser_report.get("stop_requests") or []
+    expect(bool(stop_requests), "browser report missing stop_requests")
+    stopped_status = psql(
+        ctx,
+        "SELECT status FROM map_control.messages "
+        f"WHERE conversation_id = '{conversation_id}' AND role = 'assistant' "
+        "ORDER BY created_at DESC LIMIT 1",
+    )
+    expect(stopped_status == "stopped", f"browser stop message status={stopped_status!r}")
+
     # Mongo cross-check: the browser's X-Session-ID reached map_core.
     mongo_doc = poll_until(
         lambda: mongosh_eval(
