@@ -35,7 +35,14 @@ by itself:
 4. local evidence generation NEVER attests a pass (attestation=None): the
    structure validator tolerates it, the release validator rejects it. Only
    the protected CI workflow (MAP_EVIDENCE_CI=1 + EVIDENCE_SIGNING_KEY +
-   repository/git_ref/run_id) attests/re-attests pass manifests.
+   repository/git_ref/run_id) attests/re-attests pass manifests;
+5. S6-04 run freshness: the attestation signs run_attempt and issued_at
+   (the signing time). The release validator compares run_id/run_attempt
+   against the EXTERNALLY injected expected CI run
+   (MAP_EVIDENCE_EXPECTED_RUN_ID / MAP_EVIDENCE_EXPECTED_RUN_ATTEMPT) and
+   rejects stale (issued before the implementation commit), future or
+   replayed attestations - an older run's evidence can never pass a later
+   gate.
 
 The current pinned digest (mirroring this file's committed content):
 
