@@ -796,13 +796,16 @@ def main(argv: list[str] | None = None) -> int:
         # (protected CI secret/variable) that the mirror has to match - a
         # developer replacing the trust root inside the same implementation
         # commit can never self-establish trust.
-        problems.extend(
-            _check_external_trust_anchor(root, trust_config)
-        )
-        if freeze_sha:
-            # S5-02: the reviewed range may not rewrite the trust root and
-            # then establish trust from itself. baseline comes from the CI
-            # env (GATE_BASELINE_SHA) or the manifests' recorded baseline.
+        anchor_problems = _check_external_trust_anchor(root, trust_config)
+        problems.extend(anchor_problems)
+        if freeze_sha and anchor_problems:
+            # S5-02: when the external anchor does NOT validate the mirror,
+            # a reviewed range that rewrote the trust root is reported as
+            # the self-established-trust attack it is. When the protected
+            # CI anchor DOES match, an in-range rotation was externally
+            # sanctioned (trust is not self-established) and passes.
+            # baseline comes from the CI env (GATE_BASELINE_SHA) or the
+            # manifests' recorded baseline.
             baseline = os.getenv("GATE_BASELINE_SHA") or _baseline_from_manifests(
                 manifests
             )
@@ -818,10 +821,12 @@ def main(argv: list[str] | None = None) -> int:
                         "--require-final: the reviewed range "
                         f"{baseline[:12]}..{freeze_sha[:12]} modified the "
                         "evidence trust root "
-                        f"({trust_root_touched[:3]}); trust cannot be "
-                        "established from a range that rewrites its own "
+                        f"({trust_root_touched[:3]}) AND the external trust "
+                        "anchor does not validate the mirror; trust cannot "
+                        "be established from a range that rewrites its own "
                         "trust anchor"
                     )
+        if freeze_sha:
             # S5-02: the attestation must have been produced AFTER the
             # implementation commit it covers (the protected CI workflow
             # runs post-commit). started_at before the freeze commit time
