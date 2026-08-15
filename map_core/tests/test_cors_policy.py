@@ -127,3 +127,40 @@ class TestPreflight:
         assert response.status_code == 200
         assert response.headers["access-control-allow-origin"] == "*"
         assert "access-control-allow-credentials" not in response.headers
+
+
+# ---- S3-04: the frozen MAP_ENV signal ---------------------------------------
+
+
+class TestMapEnvSignal:
+    def test_map_env_takes_priority_over_legacy_env(self, monkeypatch) -> None:
+        import os
+
+        from map_core.main import _resolve_env
+
+        monkeypatch.setenv("MAP_ENV", "prod")
+        monkeypatch.setenv("ENV", "dev")
+        assert _resolve_env() == "prod"
+        # both names stay in sync for legacy readers
+        assert os.environ["ENV"] == "prod"
+
+    def test_legacy_env_is_a_fallback(self, monkeypatch) -> None:
+        from map_core.main import _resolve_env
+
+        monkeypatch.delenv("MAP_ENV", raising=False)
+        monkeypatch.setenv("ENV", "pre")
+        assert _resolve_env() == "pre"
+
+    def test_production_signal_fails_unsafe_cors(self, monkeypatch) -> None:
+        """MAP_ENV=prod + wildcard + credentials -> policy load fails."""
+        monkeypatch.setenv("MAP_ENV", "prod")
+        monkeypatch.delenv("MAP_CORS_ORIGINS", raising=False)
+        monkeypatch.delenv("MAP_CORS_ALLOW_CREDENTIALS", raising=False)
+        with pytest.raises(RuntimeError, match="wildcard CORS"):
+            load_cors_policy("prod")
+
+    def test_production_signal_accepts_explicit_origins(self, monkeypatch) -> None:
+        monkeypatch.setenv("MAP_ENV", "prod")
+        monkeypatch.setenv("MAP_CORS_ORIGINS", "https://app.example.com")
+        policy = load_cors_policy("prod")
+        assert policy.origins == ("https://app.example.com",)

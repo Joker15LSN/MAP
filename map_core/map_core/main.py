@@ -55,17 +55,26 @@ for _path in (_PACKAGE_DIR, _PROJECT_ROOT):
         sys.path.insert(0, _path)
 
 
-def _ensure_env() -> str:
-    env = os.environ.get("ENV")
-    if env:
-        return env
+def _resolve_env() -> str:
+    """S3-04: ONE frozen environment variable across services - MAP_ENV.
 
-    env = "dev"
+    ENV is accepted as a fallback for pre-unification deployments, then
+    both names are kept in sync so legacy readers (config, routers) see
+    the same value.
+    """
+    env = os.environ.get("MAP_ENV") or os.environ.get("ENV") or "dev"
+    os.environ["MAP_ENV"] = env
     os.environ["ENV"] = env
-    print(
-        "[main] ENV 未设置，默认使用 'dev'。如需指定环境: `ENV=prod`",
-        file=sys.stderr,
-    )
+    return env
+
+
+def _ensure_env() -> str:
+    env = _resolve_env()
+    if not os.environ.get("MAP_ENV"):
+        print(
+            "[main] MAP_ENV 未设置，默认使用 'dev'。如需指定环境: `MAP_ENV=prod`",
+            file=sys.stderr,
+        )
     return env
 
 
@@ -494,6 +503,7 @@ def cli_main(argv: list[str] | None) -> None:
     args = parser.parse_args(argv)
 
     if args.env:
+        os.environ["MAP_ENV"] = args.env
         os.environ["ENV"] = args.env
 
     default_workers = _resolve_default_workers()

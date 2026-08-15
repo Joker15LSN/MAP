@@ -14,6 +14,7 @@ re-exports for existing tests and uvicorn entry points.
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -60,16 +61,30 @@ def validate_settings(settings: Settings) -> None:
                 "MAP_TRUSTED_PROXY_SECRET is required when "
                 "MAP_AUTH_MODE=trusted_header (fail-closed)"
             )
-    # AC-SEC-11 / R-10: wildcard CORS combined with credentials is refused
-    # in production (fail-closed at startup).
-    if settings.env in {"prod", "production"}:
-        origins = {origin.strip() for origin in settings.cors_origins.split(",")}
-        if "*" in origins and settings.cors_allow_credentials:
+    # AC-SEC-11 / R-10 / S3-04: shared CORS policy with map_core
+    # (map_core/utils/cors_policy.py). Every origin must be '*' or a
+    # well-formed http(s)://host[:port] - malformed entries fail at
+    # startup in EVERY environment, and wildcard CORS combined with
+    # credentials is refused in production (fail-closed at startup).
+    origins = {origin.strip() for origin in settings.cors_origins.split(",")}
+    for origin in origins:
+        if origin == "*":
+            continue
+        if not re.fullmatch(r"^https?://[A-Za-z0-9.-]+(?::\d{1,5})?$", origin):
             raise RuntimeError(
-                "wildcard CORS with credentials is forbidden in production; "
-                "set MAP_CORS_ORIGINS to explicit origins or "
-                "MAP_CORS_ALLOW_CREDENTIALS=false (fail-closed)"
+                f"invalid MAP_CORS_ORIGINS entry {origin!r}: each origin must "
+                "be '*' or http(s)://host[:port] (fail-closed)"
             )
+    if (
+        settings.env in {"prod", "production"}
+        and "*" in origins
+        and settings.cors_allow_credentials
+    ):
+        raise RuntimeError(
+            "wildcard CORS with credentials is forbidden in production; "
+            "set MAP_CORS_ORIGINS to explicit origins or "
+            "MAP_CORS_ALLOW_CREDENTIALS=false (fail-closed)"
+        )
 
 
 def create_app(

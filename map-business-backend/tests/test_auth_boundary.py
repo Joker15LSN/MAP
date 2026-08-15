@@ -605,3 +605,21 @@ def test_repository_sql_carries_workspace_and_owner_predicate() -> None:
     assert "workspace_id" in sql and "owner_user_id" in sql
     assert "00000000000000000000000000000099" in sql  # foreign workspace bound
     assert "other-user" in sql
+
+
+# --- S3-04: shared CORS policy (same rules as map_core) -----------------------
+
+
+def test_malformed_cors_origin_fails_startup_in_every_env() -> None:
+    """S3-04: an origin that is neither '*' nor http(s)://host[:port] fails
+    at startup in ANY environment (not only production)."""
+    for bad in ("http://", "example.com", "https://host/path"):
+        with pytest.raises(RuntimeError, match="invalid MAP_CORS_ORIGINS"):
+            create_app(
+                settings=Settings(
+                    auth_mode=AuthMode.DEV,
+                    env="dev",
+                    cors_origins=bad,
+                    cors_allow_credentials=False,
+                )
+            )

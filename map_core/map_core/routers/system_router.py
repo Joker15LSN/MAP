@@ -11,7 +11,7 @@ from fastapi import APIRouter
 system_router = APIRouter()
 _STARTED_AT = datetime.now(timezone.utc)
 _START_MONOTONIC = time.monotonic()
-_ENV = os.environ.get("ENV", "dev")
+_ENV = os.environ.get("MAP_ENV") or os.environ.get("ENV", "dev")
 
 # P0-SEC-01 (review R-02): no host subprocess in production code. The
 # version is injected by the deployment (MAP_CORE_VERSION) - the container
