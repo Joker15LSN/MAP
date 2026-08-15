@@ -183,23 +183,24 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         "test canary fixture (fake token)", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:3ffa01e518c4680f",
     ),
+    # S4-02 rewrite shifted these canary lines; the exemptions follow.
     Exemption(
-        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 34,
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 37,
         "test canary fixture (fake token)", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:3ffa01e518c4680f",
     ),
     Exemption(
-        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 179,
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 182,
         "test fixture value (fake token)", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
     ),
     Exemption(
-        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 183,
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 186,
         "test fixture value (fake token)", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
     ),
     Exemption(
-        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 184,
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 187,
         "test fixture value (fake token)", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
     ),
@@ -258,6 +259,47 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         "documented dev DSN placeholder (P0-SEC-01 injection example)",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:90f504e0156a0007",
+    ),
+    # S4 round canary fixtures: the new tests intentionally contain the exact
+    # counterexamples the scanner must catch, so they are exempted by exact
+    # line + fingerprint (any value change invalidates the exemption).
+    Exemption(
+        "map_core/tests/test_cors_schema.py", "uri_embedded_password", 57,
+        "S4-06 counterexample matrix: userinfo origin must be rejected",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:fbddae166ead16d1",
+    ),
+    Exemption(
+        "map-business-backend/tests/test_cors_schema.py",
+        "uri_embedded_password", 75,
+        "S4-06 counterexample matrix: userinfo origin must be rejected",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:fbddae166ead16d1",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_integration.py",
+        "literal_secret_assignment", 102,
+        "S4-01 integration fixture: fake api_key proving identity chain",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:5ee001bc1d740c5c",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_ledger.py", "uri_embedded_password", 113,
+        "S4-01 local dev DSN default (map:map), never a real credential",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:f384c1854ca16e74",
+    ),
+    Exemption(
+        "scripts/test_security_scan.py", "literal_secret_assignment", 354,
+        "S4-04 counterexample matrix: unregistered placeholder must hit",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:971bca7ecd0e3e0e",
+    ),
+    Exemption(
+        "scripts/test_security_scan.py", "literal_password_assignment", 355,
+        "S4-04 counterexample matrix: unregistered placeholder must hit",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:1829e9620b17def0",
     ),
 )
 
@@ -432,8 +474,8 @@ def _allowed_hit(value: str) -> bool:
     """S4-04: ONLY code-reviewed exact values are exempt.
 
     There is no placeholder SHAPE anymore: an unregistered whole '<...>'
-    value (api_key = '<production-primary-secret-value>') is reported,
-    exactly like any other literal credential.
+    value (an api_key literal like <production-primary-secret-value>) is
+    reported, exactly like any other literal credential.
     """
     return value in _ALLOWED_EXACT_VALUES
 
