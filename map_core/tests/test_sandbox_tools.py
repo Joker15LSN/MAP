@@ -36,8 +36,28 @@ from map_core.service.sandbox_tools import (
 AUTH_HEADER = "OPEN-SANDBOX-API-KEY"
 
 
+FULL_IDENTITY = {
+    "workspace_id": "ws-1",
+    "run_id": "run-1",
+    "step_id": "step-1",
+    "attempt_id": "att-1",
+    "invocation_id": "inv-1",
+    "client_request_id": "req-1",
+}
+
+
 def _request(**extra) -> AgentRequest:
-    return AgentRequest(query="run it", staff_code="pytest", extra=extra)
+    payload = dict(FULL_IDENTITY)
+    payload.update(extra)
+    return AgentRequest(query="run it", staff_code="pytest", extra=payload)
+
+
+@pytest.fixture(autouse=True)
+def _clean_state(monkeypatch):
+    from map_core.service.sandbox_tools import reset_sandbox_ledger
+
+    reset_sandbox_ledger()
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -76,11 +96,21 @@ class FakeSandboxServer:
         if request.method == "POST" and path == "/api/v1/sandboxes":
             payload = json_loads(request)
             if key and key in self._idempotent_creates:
+                # idempotent replay: return the EXISTING sandbox verbatim
+                # (a real server never resets state on a duplicate create)
                 sandbox_id = self._idempotent_creates[key]
-            else:
-                sandbox_id = f"sb-{len(self.sandboxes) + 1}"
-                if key:
-                    self._idempotent_creates[key] = sandbox_id
+                self.create_calls.append(
+                    {"key": key, "workspace_id": payload.get("workspace_id"),
+                     "limits": payload.get("limits"), "sandbox_id": sandbox_id}
+                )
+                existing = self.sandboxes.get(payload.get("workspace_id"))
+                status = existing["status"] if existing else "ready"
+                return httpx.Response(
+                    201, json={"sandbox_id": sandbox_id, "status": status}
+                )
+            sandbox_id = f"sb-{len(self.sandboxes) + 1}"
+            if key:
+                self._idempotent_creates[key] = sandbox_id
             self.create_calls.append(
                 {"key": key, "workspace_id": payload.get("workspace_id"),
                  "limits": payload.get("limits"), "sandbox_id": sandbox_id}
@@ -100,7 +130,11 @@ class FakeSandboxServer:
             sandbox = self.sandboxes.get(workspace_id)
             if sandbox is None or sandbox["sandbox_id"] != sandbox_id:
                 return httpx.Response(404, json={"error": "unknown sandbox"})
-            executed = {"key": key, "command": payload.get("command")}
+            executed = {
+                "key": key,
+                "command": payload.get("command"),
+                "output": f"ok: {payload.get('command')}",
+            }
             self.execute_calls.append(executed)
             sandbox["executions"].append(executed)
             return httpx.Response(
@@ -109,7 +143,7 @@ class FakeSandboxServer:
                     "sandbox_id": sandbox_id,
                     "status": "completed",
                     "exit_code": 0,
-                    "output": f"ok: {payload.get('command')}",
+                    "output": executed["output"],
                 },
             )
         if request.method == "GET" and "/api/v1/sandboxes/" in path:
@@ -302,3 +336,113 @@ class TestFailureMatrix:
             ))
         serialized = result.model_dump_json()
         assert "key-1234567890abcdef" not in serialized
+
+
+# ---------------------------------------------------------------------------
+# S3-01: identity fail-closed, ledger replay and worker-restart reconciliation
+# ---------------------------------------------------------------------------
+
+
+class TestS3IdentityContract:
+    def test_missing_identity_field_fails_closed_without_network(self, monkeypatch) -> None:
+        _configure(monkeypatch)
+        server = FakeSandboxServer()
+        with mock.patch.object(
+            OpenSandboxClient, "from_env", lambda: _client(server)
+        ):
+            for missing_field in (
+                "workspace_id", "run_id", "step_id", "attempt_id",
+                "invocation_id", "client_request_id",
+            ):
+                bad_extra = dict(FULL_IDENTITY)
+                bad_extra[missing_field] = None
+                result = asyncio.run(
+                    _sandbox_execute_handler(
+                        {"command": "echo hi"}, _request(**bad_extra), "parid"
+                    )
+                )
+                assert result.success is False
+                assert "OPENSANDBOX_IDENTITY_INCOMPLETE" in result.error
+                assert missing_field in result.error
+        # nothing was ever dialed
+        assert server.create_calls == []
+        assert server.execute_calls == []
+
+    def test_sandbox_tool_is_in_the_single_tool_schema(self) -> None:
+        from map_core.service.agent.tool_registry import find_invalid_tool_names
+
+        assert find_invalid_tool_names(["sandbox_exec_tool"]) == []
+        assert "sandbox_exec_tool" not in find_invalid_tool_names(
+            ["sandbox_exec_tool", "no_such_tool"]
+        )
+
+
+class TestS3LedgerReplay:
+    def _run_invocation(self, server: FakeSandboxServer, invocation_id: str):
+        return asyncio.run(
+            _sandbox_execute_handler(
+                {"command": "echo hi"},
+                _request(invocation_id=invocation_id),
+                "parid",
+            )
+        )
+
+    def test_same_invocation_executes_exactly_once(self, monkeypatch) -> None:
+        """S3-01 acceptance: two handler calls for ONE invocation_id must
+        produce exactly ONE remote execute (the ledger replays)."""
+        _configure(monkeypatch)
+        server = FakeSandboxServer()
+        with mock.patch.object(
+            OpenSandboxClient, "from_env", lambda: _client(server)
+        ):
+            first = self._run_invocation(server, "inv-once")
+            second = self._run_invocation(server, "inv-once")
+        assert first.success is True
+        assert second.success is True
+        assert len(server.execute_calls) == 1, server.execute_calls
+
+    def test_distinct_create_and_execute_idempotency_keys(self, monkeypatch) -> None:
+        _configure(monkeypatch)
+        server = FakeSandboxServer()
+        with mock.patch.object(
+            OpenSandboxClient, "from_env", lambda: _client(server)
+        ):
+            self._run_invocation(server, "inv-keys")
+        create_key = server.create_calls[0]["key"]
+        execute_key = server.execute_calls[0]["key"]
+        assert create_key.startswith("create:")
+        assert execute_key.startswith("execute:")
+        assert create_key != execute_key
+
+    def test_worker_restart_reconciles_server_execution_without_replay(
+        self, monkeypatch
+    ) -> None:
+        """S3-01: ledger lost (worker restart) but the SERVER already ran
+        our execute key -> the handler takes the server result and never
+        re-issues the command."""
+        _configure(monkeypatch)
+        from map_core.service.sandbox_tools import reset_sandbox_ledger
+
+        server = FakeSandboxServer()
+        with mock.patch.object(
+            OpenSandboxClient, "from_env", lambda: _client(server)
+        ):
+            first = self._run_invocation(server, "inv-restart")
+            assert first.success is True
+            assert len(server.execute_calls) == 1
+            # simulate a worker restart: in-process ledger gone; the server
+            # (durable) still knows the sandbox + its execution list
+            reset_sandbox_ledger()
+            second = self._run_invocation(server, "inv-restart")
+        assert second.success is True
+        assert second.content == first.content
+        assert len(server.execute_calls) == 1, "must not re-issue the command"
+
+
+
+def client_client(server: FakeSandboxServer) -> OpenSandboxClient:
+    return OpenSandboxClient(
+        base_url="https://sandbox.test",
+        api_key="key-1234567890abcdef",
+        transport=server.transport(),
+    )

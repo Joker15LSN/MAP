@@ -126,10 +126,17 @@ class OpenSandboxClient:
         """Headers as they may be recorded in logs/traces (key redacted)."""
         return {AUTH_HEADER: "<redacted>", "Authorization": "<redacted>"}
 
-    def _headers(self, identity: SandboxIdentity | None = None) -> dict[str, str]:
+    def _headers(
+        self,
+        identity: SandboxIdentity | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, str]:
         headers = {AUTH_HEADER: self._api_key, "Accept": "application/json"}
+        # S3-01: create/execute use DISTINCT idempotency keys so a retried
+        # execute can never dedupe against a create and vice versa; the key
+        # falls back to client_request_id for backwards compatibility.
         if identity is not None:
-            headers[IDEMPOTENCY_HEADER] = identity.client_request_id
+            headers[IDEMPOTENCY_HEADER] = idempotency_key or identity.client_request_id
         return headers
 
     async def aclose(self) -> None:
@@ -154,6 +161,7 @@ class OpenSandboxClient:
         self,
         identity: SandboxIdentity,
         limits: SandboxResourceLimits | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """Create a sandbox bound to the identity chain (idempotent).
 
@@ -170,7 +178,7 @@ class OpenSandboxClient:
             response = await self._client.post(
                 "/api/v1/sandboxes",
                 json=payload,
-                headers=self._headers(identity),
+                headers=self._headers(identity, idempotency_key),
                 timeout=CREATE_TIMEOUT_S,
             )
         except httpx.TimeoutException as exc:
@@ -219,6 +227,7 @@ class OpenSandboxClient:
         identity: SandboxIdentity,
         command: str,
         timeout_seconds: int = 30,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "sandbox_id": sandbox_id,
@@ -230,7 +239,7 @@ class OpenSandboxClient:
             response = await self._client.post(
                 f"/api/v1/sandboxes/{sandbox_id}/execute",
                 json=payload,
-                headers=self._headers(identity),
+                headers=self._headers(identity, idempotency_key),
                 timeout=max(CONTROL_TIMEOUT_S, timeout_seconds + 5),
             )
         except httpx.TimeoutException as exc:

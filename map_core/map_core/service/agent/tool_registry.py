@@ -115,6 +115,12 @@ def list_registered_tool_agent_names() -> list[str]:
 def list_registered_tool_names() -> list[str]:
     names = list_registered_tool_agent_names()
     names.extend(_standalone_tools().keys())
+    # S3-01: the sandbox execution capability is part of the single
+    # capability/tool schema - scenario configs may legally declare it
+    # (lazy import avoids a registry <-> sandbox_tools import cycle).
+    from ...service.sandbox_tools import SANDBOX_TOOL_NAME
+
+    names.append(SANDBOX_TOOL_NAME)
     return names
 
 
