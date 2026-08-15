@@ -2,7 +2,7 @@
   "schema_version": "1.2.0",
   "task_id": "P1-CONFIG-01",
   "ac_id": "AC-CONFIG-08",
-  "status": "blocked",
+  "status": "superseded",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
   "implementation_sha": "d7b71d3dfdfbed6c394ede07506b34f9ed62a041",
   "environment_digest": "93d971913a8cdf9cd8ef4babcbe1d43c672e38f1950d57c9dfd2a0cbc4fe79a1",
@@ -50,12 +50,13 @@
   "waiver_owner": null,
   "waiver_expires_at": null,
   "not_applicable_reason": null,
-  "blocked_reason": "PG versioned configuration not implemented in this change set",
-  "blocker_owner": "development owner (golden-taskbook implementation)",
-  "superseded_by": null,
-  "superseded_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P1-CONFIG-01/d7a1c346be890aae9418ef248c0b0675bd80b6c2/AC-CONFIG-08/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha d7a1c346be890aae9418ef248c0b0675bd80b6c2",
   "producer": {
     "agent": "map-acceptance-evidence",
     "version": "2.0.0"
-  }
+  },
+  "attestation": null
 }
