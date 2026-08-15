@@ -214,6 +214,9 @@ def test_event_envelope_seq_must_be_positive() -> None:
 
 
 # --- AC-CONTRACT-05: REAL envelope 64KiB boundary ----------------------------
+# S3-06: the frozen budget applies to the WHOLE standardized envelope
+# (data + extra_fields + metadata <= 64 KiB), identical on construction,
+# DB-row recovery and SSE outbound.
 
 def _build_with_data(data: dict) -> EventEnvelope:
     return EventEnvelope.build(
@@ -225,19 +228,29 @@ def _build_with_data(data: dict) -> EventEnvelope:
     )
 
 
+def _envelope_total_bytes(data: dict) -> int:
+    return len(_build_with_data(data).to_json().encode("utf-8"))
+
+
 @pytest.mark.parametrize(
-    ("extra_bytes", "allowed"),
+    ("total_bytes", "allowed"),
     [
-        (65527, True),  # compact json.dumps({"x": s}) == 8 + len(s) == 65535
-        (65528, True),  # 65536 == the inline limit, allowed
-        (65529, False),  # 65537 -> ARTIFACT_PAYLOAD_TOO_LARGE
+        (65535, True),  # whole envelope == 65535 -> inline
+        (65536, True),  # 65536 == the frozen limit, allowed
+        (65537, False),  # 65537 -> ARTIFACT_PAYLOAD_TOO_LARGE
     ],
 )
-def test_real_envelope_64k_boundary(extra_bytes: int, allowed: bool) -> None:
-    data = {"x": "a" * extra_bytes}
+def test_real_envelope_64k_boundary(total_bytes: int, allowed: bool) -> None:
+    # data = {"x": "a"*N} serializes compactly as 8 + N bytes; the empty
+    # envelope (data={}) is base_bytes, so the offset from data={} to
+    # data={"x":""} is 6 bytes.
+    base_bytes = _envelope_total_bytes({})
+    extra = total_bytes - base_bytes - 6
+    data = {"x": "a" * extra}
     if allowed:
         envelope = _build_with_data(data)  # must not raise
-        assert validate_payload_size(envelope.data) <= 65536
+        assert len(envelope.to_json().encode("utf-8")) == total_bytes
+        assert validate_payload_size(envelope.to_dict()) == total_bytes
         # serialization (DB write / SSE outbound) succeeds too
         assert len(envelope.to_json()) > 0
     else:
@@ -247,13 +260,16 @@ def test_real_envelope_64k_boundary(extra_bytes: int, allowed: bool) -> None:
 
 
 def test_real_envelope_multibyte_boundary() -> None:
-    # Byte count, not character count: 21845 x 3-byte chars + 1 = 65536.
-    # "界" is 3 UTF-8 bytes; compact json.dumps({"x": s}) is 8 + 3n bytes.
-    data = {"x": "界" * 21842}  # 8 + 65526 = 65534 -> inline
-    envelope = _build_with_data(data)
-    assert len(envelope.to_json().encode("utf-8")) > 0
+    # Byte count, not character count: "界" is 3 UTF-8 bytes. The whole
+    # envelope must stay within the frozen budget.
+    base_bytes = _envelope_total_bytes({})
+    assert _envelope_total_bytes({"x": "界" * 100}) < 65536
+    # find the exact cut: total = base + 6 + 3n
+    max_chars = (65536 - base_bytes - 6) // 3
+    envelope = _build_with_data({"x": "界" * max_chars})
+    assert len(envelope.to_json().encode("utf-8")) <= 65536
     with pytest.raises(EventEnvelopeError) as exc_info:
-        _build_with_data({"x": "界" * 21843})  # 65537 -> too large
+        _build_with_data({"x": "界" * (max_chars + 1)})  # > 65536 -> too large
     assert exc_info.value.code == ARTIFACT_PAYLOAD_TOO_LARGE
 
 

@@ -208,6 +208,13 @@ def validate_event_type(event_type: str) -> None:
 
 
 def validate_schema_version(version: int) -> None:
+    # S3-06: bool is an int subclass and True == 1 - reject it explicitly.
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise EventEnvelopeError(
+            UNKNOWN_EVENT_VERSION,
+            f"unsupported schema major version {version!r}; "
+            f"supported: {EVENT_SCHEMA_VERSION}",
+        )
     if version != EVENT_SCHEMA_VERSION:
         raise EventEnvelopeError(
             UNKNOWN_EVENT_VERSION,
@@ -432,6 +439,11 @@ class EventEnvelope:
         # R-04: the 64KiB inline limit runs at construction
         validate_payload_size(self.data)
         validate_payload_size(self.extra_fields)
+        # S3-06: the FROZEN size budget also applies to the WHOLE
+        # standardized envelope (the persistable / SSE-frame form): data +
+        # extra_fields + metadata must stay within 64 KiB, so a ~130 KiB
+        # split across data and extra_fields can never exist.
+        validate_payload_size(self.to_dict())
         # S2-02: deep immutable snapshot - post-construction mutation of
         # data/extra_fields (the review's 70KB inflation bypass) is
         # impossible: MappingProxyType raises TypeError on any write.
@@ -450,6 +462,11 @@ class EventEnvelope:
         schema_minor: int = 0,
         occurred_at: str | None = None,
     ) -> EventEnvelope:
+        # S3-06: only None becomes {} - a falsey non-dict ([] / "" / 0)
+        # must reach __post_init__ and fail the data type check instead of
+        # being silently coerced into an empty dict.
+        if data is None:
+            data = {}
         return cls(
             schema_version=EVENT_SCHEMA_VERSION,
             schema_minor=schema_minor,
@@ -459,7 +476,7 @@ class EventEnvelope:
             type=event_type,
             occurred_at=occurred_at or datetime.now(UTC).isoformat(),
             workspace_id=workspace_id,
-            data=data or {},
+            data=data,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -492,6 +509,9 @@ class EventEnvelope:
         _canonical_json_bytes(payload)
         validate_payload_size(_deep_thaw(self.data))
         validate_payload_size(_deep_thaw(self.extra_fields))
+        # S3-06: the frozen whole-envelope budget re-runs on every
+        # serialization (DB writes and SSE frames share the same boundary).
+        validate_payload_size(payload)
         return json.dumps(
             payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")
         )

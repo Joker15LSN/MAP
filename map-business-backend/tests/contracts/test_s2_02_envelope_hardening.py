@@ -102,6 +102,35 @@ class TestReservedFieldBypass:
 
 
 class TestTypeBypass:
+    def test_bool_schema_version_rejected(self) -> None:
+        """S3-06: True == 1 in Python - a bool schema_version must fail."""
+        with pytest.raises(EventEnvelopeError) as exc_info:
+            _envelope(schema_version=True)
+        assert exc_info.value.code == "UNKNOWN_EVENT_VERSION"
+
+    def test_falsey_list_data_rejected_by_build(self) -> None:
+        """S3-06: build() coerces ONLY None to {}; a falsey list reaches the
+        type check and fails instead of becoming an empty dict."""
+        with pytest.raises(EventEnvelopeError) as exc_info:
+            EventEnvelope.build(
+                run_id=RUN_ID,
+                seq=1,
+                event_type="run.started",
+                workspace_id=WORKSPACE,
+                data=[],  # type: ignore[arg-type]
+            )
+        assert exc_info.value.code == EVENT_ENVELOPE_INVALID
+
+    def test_none_data_still_defaults_to_empty_dict(self) -> None:
+        envelope = EventEnvelope.build(
+            run_id=RUN_ID,
+            seq=1,
+            event_type="run.started",
+            workspace_id=WORKSPACE,
+            data=None,
+        )
+        assert dict(envelope.data) == {}
+
     def test_seq_true_rejected(self) -> None:
         with pytest.raises(EventEnvelopeError) as exc_info:
             _envelope(seq=True)
@@ -148,18 +177,25 @@ class TestTypeBypass:
 
 
 class Test64kBoundaryAcrossPaths:
-    """data = {"k": "a"*N} serializes to N+8 compact UTF-8 bytes.
+    """S3-06: the FROZEN budget is the WHOLE standardized envelope
+    (data + extra_fields + metadata, compact JSON).
 
-    N=65527 -> 65535 (inline), N=65528 -> 65536 (inline, at the limit),
-    N=65529 -> 65537 (rejected). The boundary must behave IDENTICALLY on
-    construction, DB-row recovery and SSE outbound.
+    to_json must be 65535/65536 bytes at the inline limit and 65537 must be
+    rejected - identically on construction, DB-row recovery and SSE
+    outbound. Splitting ~64KiB across data AND extra_fields cannot sneak
+    through as a ~130KiB event.
     """
+
+    def _total(self, data: dict, **overrides) -> int:
+        return len(_envelope(data=data, **overrides).to_json().encode("utf-8"))
 
     @pytest.mark.parametrize("size", [65535, 65536])
     def test_inline_boundary_all_paths(self, size: int) -> None:
-        payload_size = size - 8
+        base = self._total({})
+        payload_size = size - base - 6  # {"k":"..."} adds 8 bytes; {} is 2
         envelope = _envelope(data={"k": "a" * payload_size})
-        assert validate_payload_size(dict(envelope.data)) == size
+        assert len(envelope.to_json().encode("utf-8")) == size
+        assert validate_payload_size(envelope.to_dict()) == size
         # construction path passed; SSE outbound shares the same serializer
         frame = envelope.sse_frame()
         assert frame.startswith("id: 1\nevent: run.started\ndata: ")
@@ -171,7 +207,8 @@ class Test64kBoundaryAcrossPaths:
         assert len(restored.to_json()) == len(envelope.to_json())
 
     def test_oversized_rejected_on_all_paths(self) -> None:
-        payload_size = 65537 - 8
+        base = self._total({})
+        payload_size = 65537 - base - 6
         with pytest.raises(EventEnvelopeError) as exc_info:
             _envelope(data={"k": "a" * payload_size})
         assert exc_info.value.code == ARTIFACT_PAYLOAD_TOO_LARGE
@@ -207,6 +244,17 @@ class Test64kBoundaryAcrossPaths:
             row_to_envelope(poisoned_row)
         assert exc_info.value.code == ARTIFACT_PAYLOAD_TOO_LARGE
 
+    def test_split_across_data_and_extra_fields_is_budgeted_together(self) -> None:
+        """S3-06: ~64KiB of data PLUS ~64KiB of extra_fields cannot sneak
+        through as a ~130KiB event - the whole envelope is budgeted."""
+        base = self._total({})
+        half = (65536 - base - 12) // 2
+        with pytest.raises(EventEnvelopeError) as exc_info:
+            _envelope(
+                data={"k": "a" * half},
+                extra_fields={"future_field": "b" * half},
+            )
+        assert exc_info.value.code == ARTIFACT_PAYLOAD_TOO_LARGE
 
 class TestRunEventCodec:
     def test_parse_valid_run_event(self) -> None:
