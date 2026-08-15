@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from .core.identity import AuthMode
 from .core.service_identity import ServiceCredential, parse_service_credentials
+from .cors_policy import parse_bool
 
 # Stable default workspace UUID shared by seed/migration/API/tests/Compose.
 # Business code for this workspace stays "default" (workspaces.code).
@@ -44,9 +45,7 @@ class Settings:
         default_factory=lambda: _env_or("MAP_TRUSTED_PROXY_SECRET", "")
     )
     trusted_proxy_required: bool = field(
-        default_factory=lambda: (
-            _env_or("MAP_TRUSTED_PROXY_REQUIRED", "true").lower() in {"1", "true", "yes"}
-        )
+        default_factory=lambda: parse_bool(_env_or("MAP_TRUSTED_PROXY_REQUIRED", "true"))
     )
     # Service-to-service credentials: a token reference -> metadata
     # registry (R2-P0-02). Each entry binds one bearer token to its
@@ -71,10 +70,7 @@ class Settings:
         default_factory=lambda: _env_or("MAP_CORS_ORIGINS", "*")
     )
     cors_allow_credentials: bool = field(
-        default_factory=lambda: (
-            _env_or("MAP_CORS_ALLOW_CREDENTIALS", "true").lower()
-            in {"1", "true", "yes"}
-        )
+        default_factory=lambda: parse_bool(_env_or("MAP_CORS_ALLOW_CREDENTIALS", "true"))
     )
 
 
@@ -87,14 +83,16 @@ def load_settings() -> Settings:
         env=_env_or("MAP_ENV", "dev").strip().lower(),
         default_workspace_id=_env_or("MAP_DEFAULT_WORKSPACE_ID", DEFAULT_WORKSPACE_ID),
         trusted_proxy_secret=_env_or("MAP_TRUSTED_PROXY_SECRET", ""),
-        trusted_proxy_required=_env_or("MAP_TRUSTED_PROXY_REQUIRED", "true").lower()
-        in {"1", "true", "yes"},
+        trusted_proxy_required=parse_bool(
+            _env_or("MAP_TRUSTED_PROXY_REQUIRED", "true")
+        ),
         service_credentials=parse_service_credentials(
             _env_or("MAP_SERVICE_CREDENTIALS", ""),
             default_audience=_env_or("MAP_SERVICE_AUDIENCE", "map-bff"),
         ),
         service_audience=_env_or("MAP_SERVICE_AUDIENCE", "map-bff"),
         cors_origins=_env_or("MAP_CORS_ORIGINS", "*"),
-        cors_allow_credentials=_env_or("MAP_CORS_ALLOW_CREDENTIALS", "true").lower()
-        in {"1", "true", "yes"},
+        cors_allow_credentials=parse_bool(
+            _env_or("MAP_CORS_ALLOW_CREDENTIALS", "true")
+        ),
     )

@@ -1,0 +1,31 @@
+# S4-06: production Compose override. Merge on top of docker-compose.yml:
+#
+#   MAP_ENV=prod scripts/compose-prod.sh up -d
+#
+# The base file defaults MAP_ENV to "dev" (${MAP_ENV:-dev}) for local dev.
+# This override is the single place that removes that dev fallback:
+# MAP_ENV becomes :?required (compose fails non-zero when it is unset), and
+# the production entrypoint scripts/compose-prod.sh additionally refuses any
+# value other than "prod" (dev/unknown -> non-zero). The three application
+# services (algorithm-service / backend-service / worker-service) therefore
+# can never silently boot in dev during a production deploy.
+#
+# CORS: the base compose defaults MAP_CORS_ORIGINS to "*" with credentials
+# on. In production that combination is refused at startup by BOTH services
+# (shared schema, fail-closed), so a production deploy MUST set explicit
+# origins (MAP_CORS_ORIGINS) or MAP_CORS_ALLOW_CREDENTIALS=false.
+services:
+  algorithm-service:
+    environment:
+      # S3-04: one frozen environment signal. ENV is the legacy reader
+      # inside map_core; both resolve to prod here.
+      ENV: prod
+      MAP_ENV: ${MAP_ENV:?MAP_ENV is required for production deployments (must be "prod")}
+
+  backend-service:
+    environment:
+      MAP_ENV: ${MAP_ENV:?MAP_ENV is required for production deployments (must be "prod")}
+
+  worker-service:
+    environment:
+      MAP_ENV: ${MAP_ENV:?MAP_ENV is required for production deployments (must be "prod")}
