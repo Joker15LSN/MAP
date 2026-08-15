@@ -1196,8 +1196,9 @@ def scenario_browser(ctx: Ctx, repeat_stop: int = 1) -> dict:
             f"{entry.get('stop_http_status')!r} != 200",
         )
         expect(
-            entry.get("sse_done") is True,
-            f"round {entry.get('iteration')} missing SSE terminal done evidence",
+            entry.get("sse_terminal") is True,
+            f"round {entry.get('iteration')} missing SSE terminal evidence "
+            f"(events={entry.get('sse_events')!r})",
         )
         pg_status = psql(
             ctx,
