@@ -2,7 +2,7 @@
   "schema_version": "1.2.0",
   "task_id": "P0-SEC-01",
   "ac_id": "AC-SEC-10",
-  "status": "blocked",
+  "status": "superseded",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
   "implementation_sha": "f99ce0caa513401537edfdb43d431a109e4d52de",
   "environment_digest": "f23a72b4d678aa45257e6b00afe2149fdcd50d2665c36c3a3bce1dc7b8a823a3",
@@ -50,10 +50,10 @@
   "waiver_owner": null,
   "waiver_expires_at": null,
   "not_applicable_reason": null,
-  "blocked_reason": "OpenSandbox server deployment and MCP egress hardening not implemented in this change set",
-  "blocker_owner": "development owner (golden-taskbook implementation)",
-  "superseded_by": null,
-  "superseded_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P0-SEC-01/03ad82a69d70540bb868ceeb644a52e4caed4338/AC-SEC-10/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha 03ad82a69d70540bb868ceeb644a52e4caed4338",
   "producer": {
     "agent": "map-acceptance-evidence",
     "version": "2.0.0"
