@@ -2,7 +2,7 @@
   "schema_version": "1.2.0",
   "task_id": "P1-EVAL-01",
   "ac_id": "AC-EVAL-05",
-  "status": "blocked",
+  "status": "superseded",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
   "implementation_sha": "30d04e5faa621c7ca15e724e6a1c767741f01ad9",
   "environment_digest": "7494de9590f23e999df79316e70d1f5dc6de39dd2282fabc3c78453fd983dc60",
@@ -50,12 +50,13 @@
   "waiver_owner": null,
   "waiver_expires_at": null,
   "not_applicable_reason": null,
-  "blocked_reason": "evaluation platform not implemented in this change set",
-  "blocker_owner": "development owner (golden-taskbook implementation)",
-  "superseded_by": null,
-  "superseded_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P1-EVAL-01/d7b71d3dfdfbed6c394ede07506b34f9ed62a041/AC-EVAL-05/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha d7b71d3dfdfbed6c394ede07506b34f9ed62a041",
   "producer": {
     "agent": "map-acceptance-evidence",
     "version": "2.0.0"
-  }
+  },
+  "attestation": null
 }
