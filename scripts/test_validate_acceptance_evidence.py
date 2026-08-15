@@ -95,8 +95,11 @@ class BaseValidatorTest(unittest.TestCase):
         (self.root / "TODO" / "evidence-manifest.schema.json").write_text(
             REPO_SCHEMA.read_text(encoding="utf-8"), encoding="utf-8"
         )
-        (self.root / "artifact.txt").write_text("fixture artifact\n", encoding="utf-8")
-        self.artifact_sha = self._sha256(self.root / "artifact.txt")
+        # artifacts must live inside the evidence tree (S3-05 rule)
+        shared = self.root / "tmp" / "acceptance" / "_shared"
+        shared.mkdir(parents=True, exist_ok=True)
+        (shared / "artifact.txt").write_text("fixture artifact\n", encoding="utf-8")
+        self.artifact_sha = self._sha256(shared / "artifact.txt")
         self.profile = self.root / "TODO" / "acceptance-profile.yaml"
 
     def tearDown(self) -> None:
@@ -177,7 +180,7 @@ class BaseValidatorTest(unittest.TestCase):
                         ac=ac,
                         status="pass",
                         implementation_sha=freeze,
-                        artifact_path="artifact.txt",
+                        artifact_path="tmp/acceptance/_shared/artifact.txt",
                         artifact_sha=self.artifact_sha,
                     ),
                 )
@@ -210,7 +213,7 @@ class StructureAndEligibilityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="blocked",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -244,7 +247,7 @@ class StructureAndEligibilityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status=status,
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -274,7 +277,7 @@ class StructureAndEligibilityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="superseded",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -296,7 +299,7 @@ class StructureAndEligibilityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="not-applicable-approved",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
                 waiver_expires_at="2099-01-01T00:00:00Z",
             ),
@@ -317,7 +320,7 @@ class StructureAndEligibilityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="not-applicable-approved",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
                 waiver_expires_at="2020-01-01T00:00:00Z",
             ),
@@ -329,6 +332,90 @@ class StructureAndEligibilityTests(BaseValidatorTest):
 
 
 class IntegrityTests(BaseValidatorTest):
+    def test_current_evidence_in_wrong_task_directory_fails(self) -> None:
+        """S3-05: evidence for AC-A-01 (task P1-TEST-A) placed under the
+        VALID task directory P1-TEST-B with a self-consistent manifest must
+        fail final validation (registry task must match the directory)."""
+        self.write_profile(
+            {
+                "P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]},
+                "P1-TEST-B": {"depends_on": [], "acceptance_ids": ["AC-B-01"]},
+            }
+        )
+        freeze = self.commit_all("freeze")
+        # manifest is self-consistent with the P1-TEST-B directory, but
+        # AC-A-01 belongs to P1-TEST-A in the registry
+        self.write_evidence(
+            "P1-TEST-B",
+            freeze,
+            "AC-A-01",
+            make_manifest(
+                task="P1-TEST-B",
+                ac="AC-A-01",
+                status="pass",
+                implementation_sha=freeze,
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
+                artifact_sha=self.artifact_sha,
+            ),
+        )
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("misplaced", proc.stderr)
+
+    def test_artifact_path_escape_is_rejected(self) -> None:
+        """S3-05: an artifact path escaping the evidence scope (../) fails."""
+        self.write_profile(
+            {"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}}
+        )
+        freeze = self.commit_all("freeze")
+        manifest = make_manifest(
+            task="P1-TEST-A",
+            ac="AC-A-01",
+            status="pass",
+            implementation_sha=freeze,
+            artifact_path="tmp/acceptance/_shared/artifact.txt",
+            artifact_sha=self.artifact_sha,
+        )
+        manifest["artifacts"] = [
+            {
+                "path": "../outside.txt",
+                "sha256": self.artifact_sha,
+                "media_type": "text/plain",
+            }
+        ]
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator()
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("artifact", proc.stderr)
+
+    def test_absolute_artifact_path_is_rejected(self) -> None:
+        self.write_profile(
+            {"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}}
+        )
+        freeze = self.commit_all("freeze")
+        manifest = make_manifest(
+            task="P1-TEST-A",
+            ac="AC-A-01",
+            status="pass",
+            implementation_sha=freeze,
+            artifact_path="tmp/acceptance/_shared/artifact.txt",
+            artifact_sha=self.artifact_sha,
+        )
+        manifest["artifacts"] = [
+            {
+                "path": "/etc/passwd",
+                "sha256": self.artifact_sha,
+                "media_type": "text/plain",
+            }
+        ]
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator()
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("relative path", proc.stderr)
+
     def test_stale_sha_not_marked_superseded_fails(self) -> None:
         self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
         freeze = self.commit_all("freeze")
@@ -341,7 +428,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -356,7 +443,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -377,7 +464,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -390,7 +477,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="superseded",
                 implementation_sha=FAKE_SHA_2,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -411,7 +498,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -438,7 +525,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -460,7 +547,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=FAKE_SHA_2,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -481,7 +568,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
                 extra_fields={"surprise_field": "x"},
             ),
@@ -503,7 +590,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha="f" * 64,
             ),
         )
@@ -550,7 +637,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=orphan,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -571,7 +658,7 @@ class IntegrityTests(BaseValidatorTest):
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="artifact.txt",
+                artifact_path="tmp/acceptance/_shared/artifact.txt",
                 artifact_sha=self.artifact_sha,
             ),
         )
@@ -599,7 +686,7 @@ class IntegrityTests(BaseValidatorTest):
                     ac=ac,
                     status="pass",
                     implementation_sha=freeze,
-                    artifact_path="artifact.txt",
+                    artifact_path="tmp/acceptance/_shared/artifact.txt",
                     artifact_sha=self.artifact_sha,
                 ),
             )

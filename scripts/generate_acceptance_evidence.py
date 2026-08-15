@@ -200,7 +200,12 @@ def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def run_command(command: str) -> int:
+def run_command(command: str) -> tuple[int, str, str]:
+    """Run a shell command and return (exit_code, stdout, stderr).
+
+    The captured streams become hash-pinned evidence artifacts (S3-05), so
+    an independent reviewer can replay and diff the exact output.
+    """
     proc = subprocess.run(
         command,
         shell=True,
@@ -208,7 +213,54 @@ def run_command(command: str) -> int:
         capture_output=True,
         text=True,
     )
-    return proc.returncode
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def write_execution_logs(
+    target_dir: Path, exit_code: int, stdout: str, stderr: str
+) -> list[dict]:
+    """Write stdout/stderr/exit code into hash-pinned log artifacts.
+
+    Returns artifact entries (path/sha256/media_type) for the manifest.
+    """
+    logs_dir = target_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    artifacts: list[dict] = []
+    for name, content, media_type in (
+        ("stdout.txt", stdout, "text/plain"),
+        ("stderr.txt", stderr, "text/plain"),
+    ):
+        path = logs_dir / name
+        path.write_text(content or "", encoding="utf-8")
+        artifacts.append(
+            {
+                "path": str(path.relative_to(ROOT)),
+                "sha256": sha256_file(path),
+                "media_type": media_type,
+            }
+        )
+    exit_path = logs_dir / "exit-code.txt"
+    exit_path.write_text(str(exit_code) + "\n", encoding="utf-8")
+    artifacts.append(
+        {
+            "path": str(exit_path.relative_to(ROOT)),
+            "sha256": sha256_file(exit_path),
+            "media_type": "text/plain",
+        }
+    )
+    return artifacts
+
+
+def run_with_logs(command: str, target_dir: Path) -> tuple[int, list[dict]]:
+    """S3-05: record started_at BEFORE the command and finished_at AFTER it,
+    capture the streams and pin them as hash-verified log artifacts."""
+    started_at = now_iso()
+    exit_code, stdout, stderr = run_command(command)
+    finished_at = now_iso()
+    log_artifacts = write_execution_logs(
+        target_dir, exit_code, stdout, stderr
+    )
+    return exit_code, log_artifacts, started_at, finished_at
 
 
 def now_iso() -> str:
@@ -269,7 +321,13 @@ def build_blocked_manifest(
     exit_code: int,
     artifacts: list[dict],
     assertions: list[dict],
+    started_at: str | None = None,
+    finished_at: str | None = None,
 ) -> dict:
+    # S3-05: timestamps come from the actual execution window
+    # (started BEFORE the command, finished AFTER it).
+    started = started_at or now_iso()
+    finished = finished_at or started
     return {
         "schema_version": SCHEMA_VERSION,
         "task_id": task,
@@ -278,8 +336,8 @@ def build_blocked_manifest(
         "baseline_sha": BASELINE_SHA,
         "implementation_sha": freeze_sha,
         "environment_digest": env_digest(freeze_sha),
-        "started_at": now_iso(),
-        "finished_at": now_iso(),
+        "started_at": started,
+        "finished_at": finished,
         "command": command,
         "exit_code": exit_code,
         "artifacts": artifacts,
@@ -337,7 +395,9 @@ def main(argv: list[str] | None = None) -> int:
 
             if (task, ac) in PASS_COMMANDS:
                 command = PASS_COMMANDS[(task, ac)]
-                exit_code = run_command(command)
+                exit_code, log_artifacts, started_at, finished_at = run_with_logs(
+                    command, target_dir
+                )
                 status = "pass" if exit_code == 0 else "fail"
                 manifest = {
                     "schema_version": SCHEMA_VERSION,
@@ -347,11 +407,11 @@ def main(argv: list[str] | None = None) -> int:
                     "baseline_sha": BASELINE_SHA,
                     "implementation_sha": freeze_sha,
                     "environment_digest": env_digest(freeze_sha),
-                    "started_at": now_iso(),
-                    "finished_at": now_iso(),
+                    "started_at": started_at,
+                    "finished_at": finished_at,
                     "command": command,
                     "exit_code": exit_code,
-                    "artifacts": artifacts,
+                    "artifacts": artifacts + log_artifacts,
                     "assertions": PASS_ASSERTIONS[(task, ac)],
                     "finding_ids": [],
                     "waiver_id": None,
@@ -365,11 +425,15 @@ def main(argv: list[str] | None = None) -> int:
                     "producer": PRODUCER,
                 }
             elif (task, ac) == ("P0-SEC-01", "AC-SEC-01"):
-                scan_rc = run_command(SEC_01_COMMAND)
+                scan_rc, log_artifacts, started_at, finished_at = run_with_logs(
+                    SEC_01_COMMAND, target_dir
+                )
                 manifest = build_blocked_manifest(
                     task,
                     ac,
                     freeze_sha,
+                    started_at=started_at,
+                    finished_at=finished_at,
                     reason=(
                         "tree/index/build-context scan is green (0 hits) but "
                         "revocation of the leaked credentials in the external "
@@ -379,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                     command=SEC_01_COMMAND,
                     exit_code=scan_rc,
-                    artifacts=artifacts,
+                    artifacts=artifacts + log_artifacts,
                     assertions=[
                         {
                             "name": "tree_index_build_context_zero_hits",
@@ -407,17 +471,21 @@ def main(argv: list[str] | None = None) -> int:
                     "--profile TODO/acceptance-profile.yaml "
                     "--task " + task + " --ac " + ac + " --require-final"
                 )
-                exit_code = run_command(command)
+                exit_code, log_artifacts, started_at, finished_at = run_with_logs(
+                    command, target_dir
+                )
                 manifest = build_blocked_manifest(
                     task,
                     ac,
                     freeze_sha,
+                    started_at=started_at,
+                    finished_at=finished_at,
                     reason=BLOCKED_REASON_BY_TASK.get(
                         task, task + " not implemented in this change set"
                     ),
                     command=command,
                     exit_code=exit_code,
-                    artifacts=artifacts,
+                    artifacts=artifacts + log_artifacts,
                     assertions=[
                         {
                             "name": "implementation_complete",

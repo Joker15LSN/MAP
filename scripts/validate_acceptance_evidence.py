@@ -491,21 +491,50 @@ def validate_manifest(
     if data["implementation_sha"] == freeze_sha:
         # artifact hashes are re-verified only for CURRENT manifests
         # (historical manifests reference files that intentionally changed).
+        # S3-05: artifacts must live inside the repository evidence scope -
+        # either the normative documents pinned in the profile, or the
+        # evidence tree (tmp/acceptance/**). Absolute paths, ../ escapes
+        # beyond the repo root, and symlinks are all rejected.
+        evidence_root = (root / "tmp" / "acceptance").resolve()
+        repo_root = root.resolve()
+        normative_docs = {"TODO/acceptance-profile.yaml", "SPEC/contracts/run.md"}
         for artifact in data["artifacts"]:
             if not isinstance(artifact, dict):
                 problems.append(f"{rel}: artifact entry is not an object")
                 continue
-            path = root / str(artifact.get("path") or "")
-            if not path.is_file():
-                problems.append(f"{rel}: artifact {artifact.get('path')} missing at HEAD")
+            raw_path = str(artifact.get("path") or "")
+            if raw_path.startswith("/") or raw_path.startswith("~"):
+                problems.append(f"{rel}: artifact {raw_path} must be a relative path")
+                continue
+            candidate = root / raw_path
+            try:
+                resolved = candidate.resolve()
+            except OSError as exc:
+                problems.append(f"{rel}: artifact {raw_path} unresolvable: {exc}")
+                continue
+            if candidate.is_symlink() or resolved.is_symlink():
+                problems.append(f"{rel}: artifact {raw_path} must not be a symlink")
+                continue
+            if not resolved.is_relative_to(repo_root):
+                problems.append(f"{rel}: artifact {raw_path} escapes the repository")
+                continue
+            in_evidence_tree = resolved.is_relative_to(evidence_root)
+            if not in_evidence_tree and raw_path not in normative_docs:
+                problems.append(
+                    f"{rel}: artifact {raw_path} is neither a normative doc "
+                    "nor inside tmp/acceptance/"
+                )
+                continue
+            if not resolved.is_file():
+                problems.append(f"{rel}: artifact {raw_path} missing at HEAD")
                 continue
             if not SHA256.fullmatch(str(artifact.get("sha256") or "")):
-                problems.append(f"{rel}: artifact {artifact.get('path')} sha256 malformed")
+                problems.append(f"{rel}: artifact {raw_path} sha256 malformed")
                 continue
-            actual = sha256_file(path)
+            actual = sha256_file(resolved)
             if actual != artifact["sha256"]:
                 problems.append(
-                    f"{rel}: artifact {artifact.get('path')} hash mismatch "
+                    f"{rel}: artifact {raw_path} hash mismatch "
                     f"(recorded {str(artifact['sha256'])[:12]}..., actual {actual[:12]}...)"
                 )
     return problems
@@ -642,10 +671,23 @@ def main(argv: list[str] | None = None) -> int:
                 f"AC {ac} (task {task}): no current evidence (no freeze sha)"
             )
             continue
+        # S3-05: current evidence must sit under the REGISTRY task directory
+        # (tmp/acceptance/<registry-task>/<freeze>/<ac>/). Evidence placed in
+        # a different-but-valid task directory is misplaced and fails.
         current = [
             item for item in by_ac.get(ac, [])
             if item[2] == freeze_sha and item[3] == ac
         ]
+        misplaced = [
+            item for item in by_ac.get(ac, [])
+            if item[2] == freeze_sha and item[3] == ac and item[1] != task
+        ]
+        if misplaced:
+            for manifest, task_dir, sha_dir, ac_dir in misplaced:
+                problems.append(
+                    f"AC {ac} belongs to task {task} but current evidence "
+                    f"sits under tmp/acceptance/{task_dir}/... (misplaced)"
+                )
         if not current:
             problems.append(
                 f"AC {ac} (task {task}): no current evidence at "
