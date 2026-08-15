@@ -37,8 +37,8 @@
   "not_applicable_reason": null,
   "blocked_reason": null,
   "blocker_owner": null,
-  "superseded_by": "tmp/acceptance/P0-SEC-01/98937df8a0aac7b42ea6fababa988978f4892d01/AC-SEC-04/evidence-manifest.json",
-  "superseded_reason": "superseded by evidence at freeze sha 98937df8a0aac7b42ea6fababa988978f4892d01",
+  "superseded_by": "tmp/acceptance/P0-SEC-01/f99ce0caa513401537edfdb43d431a109e4d52de/AC-SEC-04/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha f99ce0caa513401537edfdb43d431a109e4d52de",
   "producer": {
     "agent": "developer-agent",
     "version": "1.0.0"
