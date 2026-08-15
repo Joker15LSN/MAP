@@ -51,7 +51,15 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from evidence_signing import (  # noqa: E402
+    TRUST_CONFIG_DEFAULT,
+    load_trust_config,
+    verify_attestation,
+)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 PROFILE_DEFAULT = "TODO/acceptance-profile.yaml"
@@ -401,6 +409,7 @@ def validate_manifest(
     freeze_sha: str,
     verify_artifacts: bool,
     root: Path,
+    trust_config: dict,
 ) -> list[str]:
     problems: list[str] = []
     rel = str(manifest.relative_to(root))
@@ -452,6 +461,27 @@ def validate_manifest(
         problems.append(f"{rel}: producer must be an object")
 
     status = data["status"]
+
+    # S4-03: releasable evidence (pass / not-applicable-approved) must carry a
+    # valid attestation signed by a TRUSTED CI key. The signature covers the
+    # whole manifest (commit, command, environment, artifacts, assertions,
+    # producer, ...) plus the attestation's issuer/workflow, so forging the
+    # producer, command, exit code, commit or any artifact breaks verification.
+    # Free-text producer is never itself a source of trust.
+    if status in RELEASABLE_STATUSES:
+        trusted_keys = {
+            str(kid): str(key.get("public_key"))
+            for kid, key in trust_config["keys"].items()
+            if isinstance(key, dict) and isinstance(key.get("public_key"), str)
+        }
+        problems.extend(
+            verify_attestation(
+                data,
+                trusted_keys=trusted_keys,
+                expected_issuer=trust_config["expected_issuer"],
+                expected_workflow=trust_config["expected_workflow"],
+            )
+        )
     if status == "blocked":
         if not (data["blocked_reason"] and data["blocker_owner"]):
             problems.append(f"{rel}: blocked requires blocked_reason and blocker_owner")
@@ -491,18 +521,25 @@ def validate_manifest(
     if data["implementation_sha"] == freeze_sha:
         # artifact hashes are re-verified only for CURRENT manifests
         # (historical manifests reference files that intentionally changed).
-        # S3-05: artifacts must live inside the repository evidence scope -
-        # either the normative documents pinned in the profile, or the
-        # evidence tree (tmp/acceptance/**). Absolute paths, ../ escapes
-        # beyond the repo root, and symlinks are all rejected.
-        evidence_root = (root / "tmp" / "acceptance").resolve()
+        # S4-03: artifacts may only live inside THIS manifest's own
+        # task/sha/ac directory (tmp/acceptance/<task>/<sha>/<ac>/**) or be an
+        # explicit read-only canonical doc. Any path whose ANY component is
+        # '..' is rejected BEFORE resolution - a '..' that resolve() collapses
+        # back inside the tree must never be accepted.
         repo_root = root.resolve()
+        manifest_dir = manifest.parent.resolve()
         normative_docs = {"TODO/acceptance-profile.yaml", "SPEC/contracts/run.md"}
         for artifact in data["artifacts"]:
             if not isinstance(artifact, dict):
                 problems.append(f"{rel}: artifact entry is not an object")
                 continue
             raw_path = str(artifact.get("path") or "")
+            if not raw_path or ".." in PurePosixPath(raw_path).parts:
+                problems.append(
+                    f"{rel}: artifact {raw_path!r} must be a relative path "
+                    "with no '..' component"
+                )
+                continue
             if raw_path.startswith("/") or raw_path.startswith("~"):
                 problems.append(f"{rel}: artifact {raw_path} must be a relative path")
                 continue
@@ -518,11 +555,11 @@ def validate_manifest(
             if not resolved.is_relative_to(repo_root):
                 problems.append(f"{rel}: artifact {raw_path} escapes the repository")
                 continue
-            in_evidence_tree = resolved.is_relative_to(evidence_root)
-            if not in_evidence_tree and raw_path not in normative_docs:
+            in_own_dir = resolved.is_relative_to(manifest_dir)
+            if raw_path not in normative_docs and not in_own_dir:
                 problems.append(
                     f"{rel}: artifact {raw_path} is neither a normative doc "
-                    "nor inside tmp/acceptance/"
+                    "nor inside its own task/sha/ac directory"
                 )
                 continue
             if not resolved.is_file():
@@ -566,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
         profile = load_profile(root, root / args.profile)
         ac_by_task = required_ac_by_task(profile)
         schema = load_schema(root, root / SCHEMA_DEFAULT)
+        trust_config = load_trust_config(root, root / TRUST_CONFIG_DEFAULT)
     except (SystemExit, ValueError, subprocess.CalledProcessError) as exc:
         print(f"evidence validator error: {exc}", file=sys.stderr)
         return 2
@@ -704,6 +742,7 @@ def main(argv: list[str] | None = None) -> int:
                     freeze_sha=freeze_sha,
                     verify_artifacts=True,
                     root=root,
+                    trust_config=trust_config,
                 )
             )
         # every other manifest for this AC is historical: structure only
@@ -717,6 +756,7 @@ def main(argv: list[str] | None = None) -> int:
                     freeze_sha=freeze_sha,
                     verify_artifacts=False,
                     root=root,
+                    trust_config=trust_config,
                 )
             )
         # S2-01 eligibility accounting: only the current manifest decides.

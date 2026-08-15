@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Self-test for scripts/validate_acceptance_evidence.py (S2-01).
+"""Self-test for scripts/validate_acceptance_evidence.py (S2-01 / S4-03).
 
 Pure-stdlib unittest, no third-party dependencies, runnable anywhere the
 gate runs (system python3 + git). Each test builds a throwaway git
 repository in a temp dir and drives the validator with --root/--profile,
-covering the S2-01 failure matrix: blocked evidence, stale sha, wrong
-directory layout, wrong task/ac ids, extra (schema-rejected) fields,
-expired waivers, artifact hash tampering, dependency cycles, freeze sha
-ancestry and the evidence-only-tail rule.
+covering:
+
+- the S2-01 failure matrix: blocked evidence, stale sha, wrong directory
+  layout, wrong task/ac ids, extra (schema-rejected) fields, expired waivers,
+  artifact hash tampering, dependency cycles, freeze sha ancestry and the
+  evidence-only-tail rule;
+- the S4-03 trusted-source matrix: unsigned pass/waiver evidence, forged
+  producer, forged command + exit_code=0, copied/out-of-dir artifacts,
+  modified commit/command/artifact, wrong issuer, wrong workflow, unknown key
+  id, and the reject-any-../ artifact path rule.
 
 Run:  python3 scripts/test_validate_acceptance_evidence.py
 Exit: 0 = all tests pass; 1 = at least one failure.
@@ -24,6 +30,10 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "validate_acceptance_evidence.py"
 REPO_SCHEMA = Path(__file__).resolve().parents[1] / "TODO" / "evidence-manifest.schema.json"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import evidence_signing  # noqa: E402
 
 FAKE_SHA_1 = "a" * 40
 FAKE_SHA_2 = "b" * 40
@@ -95,11 +105,30 @@ class BaseValidatorTest(unittest.TestCase):
         (self.root / "TODO" / "evidence-manifest.schema.json").write_text(
             REPO_SCHEMA.read_text(encoding="utf-8"), encoding="utf-8"
         )
-        # artifacts must live inside the evidence tree (S3-05 rule)
-        shared = self.root / "tmp" / "acceptance" / "_shared"
-        shared.mkdir(parents=True, exist_ok=True)
-        (shared / "artifact.txt").write_text("fixture artifact\n", encoding="utf-8")
-        self.artifact_sha = self._sha256(shared / "artifact.txt")
+        # S4-03: a test signing key + pinned trust config, so the validator can
+        # verify attestations offline. The private key exists only in memory.
+        self.secret_hex, self.public_hex = evidence_signing.generate_keypair()
+        self.issuer = "test-ci"
+        self.workflow = "test-workflow/gate-final"
+        self.key_id = "test-key"
+        trust_dir = self.root / "TODO" / "evidence-trust"
+        trust_dir.mkdir(parents=True, exist_ok=True)
+        (trust_dir / "trusted_keys.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0.0",
+                    "expected_issuer": self.issuer,
+                    "expected_workflow": self.workflow,
+                    "keys": {
+                        self.key_id: {
+                            "algorithm": "ed25519",
+                            "public_key": self.public_hex,
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         self.profile = self.root / "TODO" / "acceptance-profile.yaml"
 
     def tearDown(self) -> None:
@@ -160,30 +189,69 @@ class BaseValidatorTest(unittest.TestCase):
             text=True,
         )
 
-    def freeze_repo(self, registry: dict) -> tuple[str, str]:
-        """Commit the profile + artifact, then also commit evidence tree.
+    def _artifact(self, task: str, sha: str, ac: str, name: str = "artifact.txt") -> tuple[str, str]:
+        """Write a fixture artifact INSIDE the AC's own dir and return (path, sha)."""
+        d = self.root / "tmp" / "acceptance" / task / sha / ac / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / name
+        f.write_text("fixture artifact", encoding="utf-8")
+        return str(f.relative_to(self.root)), self._sha256(f)
 
-        Returns (freeze_sha, head_after_evidence). The evidence commit
-        touches only tmp/acceptance/** so --require-final passes the
-        evidence-only-tail rule.
+    def _sign(self, manifest: dict) -> dict:
+        return evidence_signing.sign_manifest(
+            manifest,
+            self.secret_hex,
+            issuer=self.issuer,
+            workflow=self.workflow,
+            key_id=self.key_id,
+        )
+
+    def _manifest(
+        self,
+        *,
+        task: str,
+        ac: str,
+        status: str,
+        implementation_sha: str,
+        extra_fields: dict | None = None,
+        waiver_expires_at: str | None = None,
+        sign: bool | None = None,
+        artifact_path: str | None = None,
+        artifact_sha: str | None = None,
+    ) -> dict:
+        if artifact_path is None:
+            artifact_path, artifact_sha = self._artifact(task, implementation_sha, ac)
+        manifest = make_manifest(
+            task=task,
+            ac=ac,
+            status=status,
+            implementation_sha=implementation_sha,
+            artifact_path=artifact_path,
+            artifact_sha=artifact_sha,
+            extra_fields=extra_fields,
+            waiver_expires_at=waiver_expires_at,
+        )
+        if sign is None:
+            sign = status in ("pass", "not-applicable-approved")
+        if sign:
+            manifest = self._sign(manifest)
+        return manifest
+
+    def freeze_repo(self, registry: dict) -> tuple[str, str]:
+        """Commit profile + trust config, then signed pass evidence for each AC.
+
+        Returns (freeze_sha, head_after_evidence). The evidence commit touches
+        only tmp/acceptance/** so --require-final passes the evidence-only-tail
+        rule.
         """
         self.write_profile(registry)
         freeze = self.commit_all("freeze")
         for task, spec in registry.items():
             for ac in spec.get("acceptance_ids", []):
-                self.write_evidence(
-                    task,
-                    freeze,
-                    ac,
-                    make_manifest(
-                        task=task,
-                        ac=ac,
-                        status="pass",
-                        implementation_sha=freeze,
-                        artifact_path="tmp/acceptance/_shared/artifact.txt",
-                        artifact_sha=self.artifact_sha,
-                    ),
+                manifest = self._manifest(
+                    task=task, ac=ac, status="pass", implementation_sha=freeze
                 )
+                self.write_evidence(task, freeze, ac, manifest)
         head = self.commit_all("evidence at freeze")
         return freeze, head
 
@@ -208,13 +276,11 @@ class StructureAndEligibilityTests(BaseValidatorTest):
             "P1-TEST-A",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="blocked",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
@@ -242,13 +308,11 @@ class StructureAndEligibilityTests(BaseValidatorTest):
             "P1-TEST-A",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status=status,
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
@@ -272,13 +336,11 @@ class StructureAndEligibilityTests(BaseValidatorTest):
             "P1-TEST-A",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="superseded",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
@@ -294,13 +356,11 @@ class StructureAndEligibilityTests(BaseValidatorTest):
             "P1-TEST-A",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="not-applicable-approved",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
                 waiver_expires_at="2099-01-01T00:00:00Z",
             ),
         )
@@ -315,13 +375,11 @@ class StructureAndEligibilityTests(BaseValidatorTest):
             "P1-TEST-A",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="not-applicable-approved",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
                 waiver_expires_at="2020-01-01T00:00:00Z",
             ),
         )
@@ -343,19 +401,15 @@ class IntegrityTests(BaseValidatorTest):
             }
         )
         freeze = self.commit_all("freeze")
-        # manifest is self-consistent with the P1-TEST-B directory, but
-        # AC-A-01 belongs to P1-TEST-A in the registry
         self.write_evidence(
             "P1-TEST-B",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-B",
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
@@ -364,23 +418,18 @@ class IntegrityTests(BaseValidatorTest):
         self.assertIn("misplaced", proc.stderr)
 
     def test_artifact_path_escape_is_rejected(self) -> None:
-        """S3-05: an artifact path escaping the evidence scope (../) fails."""
+        """S4-03: an artifact path with a '..' component (../) fails."""
         self.write_profile(
             {"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}}
         )
         freeze = self.commit_all("freeze")
-        manifest = make_manifest(
-            task="P1-TEST-A",
-            ac="AC-A-01",
-            status="pass",
-            implementation_sha=freeze,
-            artifact_path="tmp/acceptance/_shared/artifact.txt",
-            artifact_sha=self.artifact_sha,
+        manifest = self._manifest(
+            task="P1-TEST-A", ac="AC-A-01", status="blocked", implementation_sha=freeze
         )
         manifest["artifacts"] = [
             {
                 "path": "../outside.txt",
-                "sha256": self.artifact_sha,
+                "sha256": "f" * 64,
                 "media_type": "text/plain",
             }
         ]
@@ -395,18 +444,13 @@ class IntegrityTests(BaseValidatorTest):
             {"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}}
         )
         freeze = self.commit_all("freeze")
-        manifest = make_manifest(
-            task="P1-TEST-A",
-            ac="AC-A-01",
-            status="pass",
-            implementation_sha=freeze,
-            artifact_path="tmp/acceptance/_shared/artifact.txt",
-            artifact_sha=self.artifact_sha,
+        manifest = self._manifest(
+            task="P1-TEST-A", ac="AC-A-01", status="blocked", implementation_sha=freeze
         )
         manifest["artifacts"] = [
             {
                 "path": "/etc/passwd",
-                "sha256": self.artifact_sha,
+                "sha256": "f" * 64,
                 "media_type": "text/plain",
             }
         ]
@@ -416,6 +460,53 @@ class IntegrityTests(BaseValidatorTest):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("relative path", proc.stderr)
 
+    def test_artifact_path_with_dotdot_component_fails(self) -> None:
+        """S4-03: a '..' component INSIDE the evidence tree is rejected even
+        when resolve() would collapse it back inside the tree."""
+        self.write_profile(
+            {"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}}
+        )
+        freeze = self.commit_all("freeze")
+        art_path, art_sha = self._artifact("P1-TEST-A", freeze, "AC-A-01")
+        manifest = self._manifest(
+            task="P1-TEST-A", ac="AC-A-01", status="blocked", implementation_sha=freeze
+        )
+        manifest["artifacts"] = [
+            {
+                "path": "tmp/acceptance/P1-TEST-A/" + freeze + "/AC-A-01/logs/../artifact.txt",
+                "sha256": art_sha,
+                "media_type": "text/plain",
+            }
+        ]
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator()
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("no '..' component", proc.stderr)
+
+    def test_artifact_outside_own_dir_fails(self) -> None:
+        """S4-03: an artifact in a sibling AC directory (not this manifest's
+        own task/sha/ac dir) is rejected."""
+        self.write_profile(
+            {
+                "P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01", "AC-A-99"]},
+            }
+        )
+        freeze = self.commit_all("freeze")
+        # a real file under a DIFFERENT AC's dir (the "copied old log" shape)
+        copied_rel, copied_sha = self._artifact("P1-TEST-A", freeze, "AC-A-99")
+        manifest = self._manifest(
+            task="P1-TEST-A", ac="AC-A-01", status="blocked", implementation_sha=freeze
+        )
+        manifest["artifacts"] = [
+            {"path": copied_rel, "sha256": copied_sha, "media_type": "text/plain"}
+        ]
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator()
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("task/sha/ac directory", proc.stderr)
+
     def test_stale_sha_not_marked_superseded_fails(self) -> None:
         self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
         freeze = self.commit_all("freeze")
@@ -423,28 +514,22 @@ class IntegrityTests(BaseValidatorTest):
             "P1-TEST-A",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
-        # a SECOND manifest under a different sha dir that is not superseded
-        # but claims the freeze implementation_sha
         self.write_evidence(
             "P1-TEST-A",
             FAKE_SHA_2,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
@@ -459,26 +544,22 @@ class IntegrityTests(BaseValidatorTest):
             "P1-TEST-A",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.write_evidence(
             "P1-TEST-A",
             FAKE_SHA_2,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="superseded",
                 implementation_sha=FAKE_SHA_2,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
@@ -488,18 +569,15 @@ class IntegrityTests(BaseValidatorTest):
     def test_ac_id_directory_mismatch_fails(self) -> None:
         self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
         freeze = self.commit_all("freeze")
-        # manifest claims AC-A-01 but sits in a directory named AC-A-99
         self.write_evidence(
             "P1-TEST-A",
             freeze,
             "AC-A-99",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
@@ -515,18 +593,15 @@ class IntegrityTests(BaseValidatorTest):
             }
         )
         freeze = self.commit_all("freeze")
-        # manifest claims task P1-TEST-A but sits in the P1-TEST-B directory
         self.write_evidence(
             "P1-TEST-B",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
@@ -542,13 +617,11 @@ class IntegrityTests(BaseValidatorTest):
             "P1-TEST-A",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=FAKE_SHA_2,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
@@ -563,13 +636,11 @@ class IntegrityTests(BaseValidatorTest):
             "P1-TEST-A",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
                 extra_fields={"surprise_field": "x"},
             ),
         )
@@ -581,19 +652,11 @@ class IntegrityTests(BaseValidatorTest):
     def test_artifact_hash_tampering_fails(self) -> None:
         self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
         freeze = self.commit_all("freeze")
-        self.write_evidence(
-            "P1-TEST-A",
-            freeze,
-            "AC-A-01",
-            make_manifest(
-                task="P1-TEST-A",
-                ac="AC-A-01",
-                status="pass",
-                implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha="f" * 64,
-            ),
+        manifest = self._manifest(
+            task="P1-TEST-A", ac="AC-A-01", status="blocked", implementation_sha=freeze
         )
+        manifest["artifacts"][0]["sha256"] = "f" * 64
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
         self.commit_all("evidence")
         proc = self.run_validator()
         self.assertEqual(proc.returncode, 1)
@@ -614,15 +677,30 @@ class IntegrityTests(BaseValidatorTest):
     def test_freeze_sha_not_ancestor_fails_final(self) -> None:
         self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
         orphan = self.commit_all("freeze")
-        # replace HEAD with an unrelated root commit -> freeze is no longer
-        # an ancestor of HEAD
         self._git("checkout", "-q", "--orphan", "detached")
         self._git("rm", "-q", "-rf", ".")
-        (self.root / "other.txt").write_text("unrelated\n", encoding="utf-8")
-        (self.root / "artifact.txt").write_text("fixture artifact\n", encoding="utf-8")
+        (self.root / "other.txt").write_text("unrelated" + chr(10), encoding="utf-8")
         (self.root / "TODO").mkdir(parents=True, exist_ok=True)
         (self.root / "TODO" / "evidence-manifest.schema.json").write_text(
             REPO_SCHEMA.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        trust_dir = self.root / "TODO" / "evidence-trust"
+        trust_dir.mkdir(parents=True, exist_ok=True)
+        (trust_dir / "trusted_keys.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0.0",
+                    "expected_issuer": self.issuer,
+                    "expected_workflow": self.workflow,
+                    "keys": {
+                        self.key_id: {
+                            "algorithm": "ed25519",
+                            "public_key": self.public_hex,
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
         )
         self.write_profile(
             {"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}}
@@ -632,13 +710,11 @@ class IntegrityTests(BaseValidatorTest):
             "P1-TEST-A",
             orphan,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=orphan,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
@@ -653,19 +729,16 @@ class IntegrityTests(BaseValidatorTest):
             "P1-TEST-A",
             freeze,
             "AC-A-01",
-            make_manifest(
+            self._manifest(
                 task="P1-TEST-A",
                 ac="AC-A-01",
                 status="pass",
                 implementation_sha=freeze,
-                artifact_path="tmp/acceptance/_shared/artifact.txt",
-                artifact_sha=self.artifact_sha,
             ),
         )
         self.commit_all("evidence")
-        # a PRODUCT change lands after the freeze sha
         (self.root / "src").mkdir(parents=True)
-        (self.root / "src" / "app.py").write_text("print('x')\n", encoding="utf-8")
+        (self.root / "src" / "app.py").write_text("print('x')" + chr(10), encoding="utf-8")
         self.commit_all("product change after freeze")
         proc = self.run_validator("--require-final")
         self.assertEqual(proc.returncode, 1)
@@ -681,18 +754,177 @@ class IntegrityTests(BaseValidatorTest):
                 "P1-TEST-A",
                 freeze,
                 ac,
-                make_manifest(
+                self._manifest(
                     task="P1-TEST-A",
                     ac=ac,
                     status="pass",
                     implementation_sha=freeze,
-                    artifact_path="tmp/acceptance/_shared/artifact.txt",
-                    artifact_sha=self.artifact_sha,
                 ),
             )
         self.commit_all("evidence at freeze")
         proc = self.run_validator("--require-final")
         self.assertEqual(proc.returncode, 0, proc.stderr)
+
+
+class AttestationTests(BaseValidatorTest):
+    """S4-03: pass evidence must have a trusted, signature-verifiable source."""
+
+    def _signed_pass(self, task: str, ac: str, sha: str) -> dict:
+        return self._manifest(task=task, ac=ac, status="pass", implementation_sha=sha)
+
+    def test_unsigned_pass_manifest_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        self.write_evidence(
+            "P1-TEST-A",
+            freeze,
+            "AC-A-01",
+            self._manifest(
+                task="P1-TEST-A",
+                ac="AC-A-01",
+                status="pass",
+                implementation_sha=freeze,
+                sign=False,
+            ),
+        )
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("attestation", proc.stderr)
+
+    def test_forged_producer_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = self._signed_pass("P1-TEST-A", "AC-A-01", freeze)
+        manifest["producer"] = {"agent": "attacker", "version": "9.9.9"}
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("signature", proc.stderr)
+
+    def test_command_false_exit_zero_unsigned_fails(self) -> None:
+        """A forged pass manifest (command=false, exit_code=0, arbitrary
+        producer) is unsigned and must never reach a releasable state."""
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = self._manifest(
+            task="P1-TEST-A",
+            ac="AC-A-01",
+            status="pass",
+            implementation_sha=freeze,
+            sign=False,
+        )
+        manifest["command"] = "false"
+        manifest["exit_code"] = 0
+        manifest["producer"] = {"agent": "attacker", "version": "9.9.9"}
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("attestation", proc.stderr)
+
+    def test_command_tamper_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = self._signed_pass("P1-TEST-A", "AC-A-01", freeze)
+        manifest["command"] = "false"
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("signature", proc.stderr)
+
+    def test_artifact_tamper_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = self._signed_pass("P1-TEST-A", "AC-A-01", freeze)
+        manifest["artifacts"][0]["sha256"] = "f" * 64
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("signature", proc.stderr)
+
+    def test_modified_commit_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = self._signed_pass("P1-TEST-A", "AC-A-01", freeze)
+        manifest["baseline_sha"] = "c" * 40
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("signature", proc.stderr)
+
+    def test_wrong_issuer_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = evidence_signing.sign_manifest(
+            make_manifest(
+                task="P1-TEST-A",
+                ac="AC-A-01",
+                status="pass",
+                implementation_sha=freeze,
+                artifact_path=self._artifact("P1-TEST-A", freeze, "AC-A-01")[0],
+                artifact_sha=self._artifact("P1-TEST-A", freeze, "AC-A-01")[1],
+            ),
+            self.secret_hex,
+            issuer="evil-issuer",
+            workflow=self.workflow,
+            key_id=self.key_id,
+        )
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("issuer", proc.stderr)
+
+    def test_wrong_workflow_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = evidence_signing.sign_manifest(
+            make_manifest(
+                task="P1-TEST-A",
+                ac="AC-A-01",
+                status="pass",
+                implementation_sha=freeze,
+                artifact_path=self._artifact("P1-TEST-A", freeze, "AC-A-01")[0],
+                artifact_sha=self._artifact("P1-TEST-A", freeze, "AC-A-01")[1],
+            ),
+            self.secret_hex,
+            issuer=self.issuer,
+            workflow="evil-workflow/deploy",
+            key_id=self.key_id,
+        )
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("workflow", proc.stderr)
+
+    def test_unknown_key_id_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = evidence_signing.sign_manifest(
+            make_manifest(
+                task="P1-TEST-A",
+                ac="AC-A-01",
+                status="pass",
+                implementation_sha=freeze,
+                artifact_path=self._artifact("P1-TEST-A", freeze, "AC-A-01")[0],
+                artifact_sha=self._artifact("P1-TEST-A", freeze, "AC-A-01")[1],
+            ),
+            self.secret_hex,
+            issuer=self.issuer,
+            workflow=self.workflow,
+            key_id="untrusted-key",
+        )
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("not a trusted key", proc.stderr)
 
 
 if __name__ == "__main__":

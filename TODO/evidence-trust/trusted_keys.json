@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "expected_issuer": "map-release-evidence-ci",
+  "expected_workflow": "release-gate/gate-final",
+  "keys": {
+    "map-acceptance-evidence-2026-08": {
+      "algorithm": "ed25519",
+      "public_key": "fcf79dbd59d7c1109d712e08d10295447ff23eca08fb71a67b4c3f85707c5077"
+    }
+  }
+}

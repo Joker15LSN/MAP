@@ -42,10 +42,20 @@ from validate_acceptance_evidence import (  # noqa: E402
     load_profile,
     required_ac_by_task,
 )
+from evidence_signing import load_secret, sign_manifest  # noqa: E402
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 BASELINE_SHA = "e019059c2c8499454ecddc9eb63655aeadb0bd90"
-PRODUCER = {"agent": "developer-agent", "version": "1.0.0"}
+# S4-03: producer is descriptive metadata only - it is NOT a trust source.
+# Release trust comes from the attestation signed by the pinned CI key.
+PRODUCER = {"agent": "map-acceptance-evidence", "version": "2.0.0"}
+
+# S4-03: signing identity. These values MUST match the pinned expectations in
+# TODO/evidence-trust/trusted_keys.json (expected_issuer / expected_workflow /
+# key id). CI holds the private key in EVIDENCE_SIGNING_KEY.
+TRUSTED_ISSUER = "map-release-evidence-ci"
+TRUSTED_WORKFLOW = "release-gate/gate-final"
+TRUSTED_KEY_ID = "map-acceptance-evidence-2026-08"
 
 # Honest per-task blocked reasons for scope not implemented in this round.
 BLOCKED_REASON_BY_TASK = {
@@ -358,6 +368,15 @@ def build_blocked_manifest(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="TODO/acceptance-profile.yaml")
+    parser.add_argument(
+        "--signing-key",
+        default="tmp/evidence-signing-key/ed25519.key",
+        help="path (repo-relative) to the Ed25519 signing key "
+        "(git-ignored; CI injects it from a secret)",
+    )
+    parser.add_argument("--issuer", default=TRUSTED_ISSUER)
+    parser.add_argument("--workflow", default=TRUSTED_WORKFLOW)
+    parser.add_argument("--key-id", default=TRUSTED_KEY_ID)
     args = parser.parse_args(argv)
 
     profile = load_profile(ROOT, ROOT / args.profile)
@@ -502,6 +521,17 @@ def main(argv: list[str] | None = None) -> int:
                     ],
                 )
 
+            # S4-03: pass evidence must be signed by the trusted CI key so it
+            # has a verifiable source; blocked/fail evidence stays unsigned
+            # (it is not releasable regardless).
+            if manifest["status"] == "pass":
+                manifest = sign_manifest(
+                    manifest,
+                    load_secret(ROOT / args.signing_key),
+                    issuer=args.issuer,
+                    workflow=args.workflow,
+                    key_id=args.key_id,
+                )
             target.write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
