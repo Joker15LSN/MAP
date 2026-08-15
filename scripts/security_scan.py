@@ -145,7 +145,11 @@ class Exemption:
 
     Only the registered line of the registered file is exempt for the
     registered rule. A line shift or a rule drift invalidates the exemption
-    and the scan fails closed.
+    and the scan fails closed. S3-03: ``expected_fingerprint`` pins the
+    EXPECTED matched value (sha256, same hash as Hit.fingerprint) - if the
+    value on that line changes (someone swaps a real credential into an
+    exempt line), the exemption stops applying and the hit is reported as
+    an EXEMPTION DRIFT.
     """
 
     path: str
@@ -154,6 +158,7 @@ class Exemption:
     reason: str
     owner: str
     expires_at: str  # ISO date YYYY-MM-DD
+    expected_fingerprint: str | None = None
 
 
 EXEMPTIONS: tuple[Exemption, ...] = (
@@ -162,37 +167,45 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         ".env.example", "env_password_literal", 34,
         "dev-only local placeholder, never a real credential",
         "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:74b2ed30f9b371e0",
     ),
     Exemption(
         ".env.example", "env_password_literal", 38,
         "dev-only local placeholder, never a real credential",
         "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:374941dff629ce3f",
     ),
     # Test canary fixtures: purpose-built fake tokens used to prove the
     # sanitizers/egress wipe secrets. They are never real credentials.
     Exemption(
         "map_core/tests/test_sensitive_data.py", "openai_key", 9,
         "test canary fixture (fake token)", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:3ffa01e518c4680f",
     ),
     Exemption(
         "map_core/tests/test_mcp_egress_guard.py", "openai_key", 34,
         "test canary fixture (fake token)", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:3ffa01e518c4680f",
     ),
     Exemption(
         "map_core/tests/test_mcp_egress_guard.py", "openai_key", 179,
         "test fixture value (fake token)", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
     ),
     Exemption(
         "map_core/tests/test_mcp_egress_guard.py", "openai_key", 183,
         "test fixture value (fake token)", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
     ),
     Exemption(
         "map_core/tests/test_mcp_egress_guard.py", "openai_key", 184,
         "test fixture value (fake token)", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
     ),
     Exemption(
         "map_core/tests/test_industry_chat_canary.py", "openai_key", 14,
         "test canary fixture (fake token)", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:73581a736bb0307c",
     ),
     # Auth-boundary fixtures: purpose-built fake bearer tokens proving the
     # identity gates; never real credentials.
@@ -200,26 +213,50 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         "map-business-backend/tests/integration/test_config_audit.py",
         "literal_secret_assignment", 42,
         "test fixture: fake bearer token", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:b51dbcb5689cdc37",
     ),
     Exemption(
         "map-business-backend/tests/integration/test_feedback.py",
         "literal_secret_assignment", 34,
         "test fixture: fake bearer token", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:df943f1ffb699d19",
     ),
     Exemption(
         "map-business-backend/tests/integration/test_v1_error_matrix.py",
         "literal_secret_assignment", 39,
         "test fixture: fake matrix secret", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:89298538bf28486d",
     ),
     Exemption(
         "map-business-backend/tests/test_auth_boundary.py",
         "literal_secret_assignment", 28,
         "test fixture: fake boundary secret", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:cc489fa5f758c598",
     ),
     Exemption(
         "map_core/tests/test_sensitive_data.py", "uri_embedded_password", 32,
         "test fixture: fake DSN with placeholder password",
         "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:04f2177864a1ace4",
+    ),
+    # README quickstart DSNs: documented dev placeholders, never secrets.
+    Exemption(
+        "README.md", "uri_embedded_password", 335,
+        "documented dev DSN placeholder (P0-SEC-01 injection example)",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:8aac73349fc3c064",
+    ),
+    Exemption(
+        "README.md", "uri_embedded_password", 336,
+        "documented dev DSN placeholder (P0-SEC-01 injection example)",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:90f504e0156a0007",
+    ),
+    Exemption(
+        "README.md", "uri_embedded_password", 352,
+        "documented dev DSN placeholder (P0-SEC-01 injection example)",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:90f504e0156a0007",
     ),
 )
 
@@ -299,8 +336,15 @@ def _hit_relpath(hit: Hit) -> str:
     return hit.location.split(":", 1)[1] if ":" in hit.location else hit.location
 
 
-def exempted_exemption(relpath: str, line: int, pattern: str) -> Exemption | None:
-    """Return the unexpired exemption covering (relpath, line, pattern)."""
+def exempted_exemption(
+    relpath: str, line: int, pattern: str, value: str
+) -> tuple[Exemption | None, bool]:
+    """Return (exemption, drifted) for (relpath, line, pattern, value).
+
+    S3-03: an exemption whose expected fingerprint does not match the
+    value actually found on that line has DRIFTED - it no longer applies
+    and the caller reports the hit (fail closed).
+    """
     for exemption in EXEMPTIONS:
         if exemption.path != relpath:
             continue
@@ -310,8 +354,13 @@ def exempted_exemption(relpath: str, line: int, pattern: str) -> Exemption | Non
             continue
         if _exemption_expired(exemption):
             continue
-        return exemption
-    return None
+        if (
+            exemption.expected_fingerprint is not None
+            and exemption.expected_fingerprint != fingerprint(value)
+        ):
+            return None, True
+        return exemption, False
+    return None, False
 
 
 _ASSIGNMENT_PATTERNS: frozenset[str] = frozenset(
@@ -340,9 +389,14 @@ def _extract_assigned_value(value: str) -> str:
     return extracted
 
 
+_PLACEHOLDER_RE = re.compile(r"^<[A-Za-z0-9_ ./-]{1,64}>$")
+
+
 def _allowed_hit(value: str) -> bool:
-    if "<" in value and ">" in value:
-        # Documentation placeholders like <local-dev-password> are not secrets.
+    # S3-03: placeholders must be a WHOLE value matching the strict
+    # placeholder shape - an arbitrary "<...>" substring inside a real
+    # formatted token is NOT exempt.
+    if _PLACEHOLDER_RE.fullmatch(value):
         return True
     return value in _ALLOWED_EXACT_VALUES
 
@@ -354,6 +408,7 @@ def scan_text(
     *,
     relpath: str | None = None,
     exemptions_used: list[Exemption] | None = None,
+    drifted_exemptions: list[str] | None = None,
 ) -> None:
     """Scan a text block line by line; exact exemptions are honored."""
     effective_relpath = relpath if relpath is not None else _hit_relpath_of(location)
@@ -368,11 +423,21 @@ def scan_text(
                 )
                 if _allowed_hit(check_value):
                     continue
-                exemption = exempted_exemption(effective_relpath, line_no, pattern_name)
+                exemption, drifted = exempted_exemption(
+                    effective_relpath, line_no, pattern_name, value
+                )
                 if exemption is not None:
                     if exemptions_used is not None:
                         exemptions_used.append(exemption)
                     continue
+                if drifted:
+                    # S3-03: the exempt line's value changed - report the hit
+                    # AND the drift so the failure is self-explanatory.
+                    if drifted_exemptions is not None:
+                        drifted_exemptions.append(
+                            "%s:%d: exempted value drifted for rule %s"
+                            % (effective_relpath, line_no, pattern_name)
+                        )
                 hits.append(Hit(location, line_no, pattern_name, value))
 
 
@@ -423,6 +488,7 @@ def scan_bytes_stream(
     unscanned: list[dict[str, str]],
     *,
     strict: bool,
+    drifted_exemptions: list[str] | None = None,
 ) -> bool:
     """Streaming scan of a byte source; returns False when unscannable.
 
@@ -451,9 +517,16 @@ def scan_bytes_stream(
                 )
                 if _allowed_hit(check_value):
                     continue
-                exemption = exempted_exemption(relpath, line_no, pattern_name)
+                exemption, drifted = exempted_exemption(
+                    relpath, line_no, pattern_name, value
+                )
                 if exemption is not None:
                     continue
+                if drifted and drifted_exemptions is not None:
+                    drifted_exemptions.append(
+                        "%s:%d: exempted value drifted for rule %s"
+                        % (relpath, line_no, pattern_name)
+                    )
                 hits.append(Hit(location, line_no, pattern_name, value))
     return True
 
@@ -465,6 +538,7 @@ def scan_file_bytes(
     *,
     relpath: str | None = None,
     unscanned: list[dict[str, str]] | None = None,
+    drifted_exemptions: list[str] | None = None,
 ) -> bool:
     """Scan an in-memory byte buffer (whole file). Returns True when scanned.
 
@@ -480,6 +554,7 @@ def scan_file_bytes(
         hits,
         unscan_list,
         strict=True,
+        drifted_exemptions=drifted_exemptions,
     )
     return scanned
 
@@ -501,6 +576,7 @@ def scope_tree(
     unscanned: list[dict[str, str]],
     *,
     commit: str | None = None,
+    drifted_exemptions: list[str] | None = None,
 ) -> None:
     """Scan every tracked file AT the given commit (default HEAD).
 
@@ -520,10 +596,17 @@ def scope_tree(
                 {"location": location, "reason": f"git blob unreadable at {tree_commit}"}
             )
             continue
-        scan_file_bytes(blob, location, hits, relpath=rel, unscanned=unscanned)
+        scan_file_bytes(
+            blob, location, hits, relpath=rel, unscanned=unscanned,
+            drifted_exemptions=drifted_exemptions,
+        )
 
 
-def scope_index(hits: list[Hit], unscanned: list[dict[str, str]]) -> None:
+def scope_index(
+    hits: list[Hit],
+    unscanned: list[dict[str, str]],
+    drifted_exemptions: list[str] | None = None,
+) -> None:
     proc = _git("ls-files", "-z")
     for raw in proc.stdout.split(b"\x00"):
         rel = raw.decode("utf-8", "replace").strip()
@@ -536,7 +619,10 @@ def scope_index(hits: list[Hit], unscanned: list[dict[str, str]]) -> None:
                 {"location": location, "reason": "index blob unreadable"}
             )
             continue
-        scan_file_bytes(blob.stdout, location, hits, relpath=rel, unscanned=unscanned)
+        scan_file_bytes(
+            blob.stdout, location, hits, relpath=rel, unscanned=unscanned,
+            drifted_exemptions=drifted_exemptions,
+        )
 
 
 def _dockerignore_patterns(context: Path) -> list[str]:
@@ -596,7 +682,9 @@ def _dockerignore_denies(patterns: list[str], rel: str) -> bool:
 
 
 def scope_build_context(
-    hits: list[Hit], unscanned: list[dict[str, str]]
+    hits: list[Hit],
+    unscanned: list[dict[str, str]],
+    drifted_exemptions: list[str] | None = None,
 ) -> None:
     for name, rel in BUILD_CONTEXTS.items():
         context = ROOT / rel
@@ -618,6 +706,7 @@ def scope_build_context(
                         hits,
                         unscanned,
                         strict=True,
+                        drifted_exemptions=drifted_exemptions,
                     )
             except OSError as exc:
                 unscanned.append(
@@ -754,6 +843,8 @@ def scope_image(
     build: bool,
     skip_unavailable: bool,
     image_tags: dict[str, str] | None,
+    drifted_exemptions: list[str] | None = None,
+    image_digests: dict[str, str] | None = None,
 ) -> None:
     if not _docker_available():
         if skip_unavailable:
@@ -777,10 +868,25 @@ def scope_image(
                     "pass --build-image to build it (or --skip-unavailable)"
                     % (tag, name)
                 )
+        # S3-03: record the actual immutable image digest of what was
+        # scanned (SBOM/attribution evidence in the report). Pushed images
+        # carry a registry digest; locally built ones fall back to their
+        # content-addressed image ID.
+        digest_probe = subprocess.run(
+            ["docker", "image", "inspect", tag, "--format",
+             "{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}"],
+            capture_output=True,
+            text=True,
+        )
+        digest = digest_probe.stdout.strip() or tag
+        if image_digests is not None:
+            image_digests[name] = digest
         save = subprocess.run(["docker", "save", tag], capture_output=True)
         if save.returncode != 0:
             raise RuntimeError("docker save %s failed" % tag)
-        _scan_image_tarball(name, save.stdout, hits, third_party_hits, unscanned)
+        _scan_image_tarball(
+            name, save.stdout, hits, third_party_hits, unscanned
+        )
 
 
 def build_report(
@@ -792,14 +898,21 @@ def build_report(
     exemptions_used: list[Exemption] | None = None,
     commit: str | None = None,
     third_party_hits: list[Hit] | None = None,
+    drifted_exemptions: list[str] | None = None,
+    image_digests: dict[str, str] | None = None,
+    scanner_version: str | None = None,
 ) -> dict[str, Any]:
     return {
         "scopes": scopes,
         "commit": commit,
+        "scanner_version": scanner_version,
+        "image_digests": dict(image_digests or {}),
         "hits": [hit.to_dict() for hit in hits],
         "hit_count": len(hits),
         "third_party_hits": [hit.to_dict() for hit in (third_party_hits or [])],
         "third_party_hit_count": len(third_party_hits or []),
+        "drifted_exemptions": list(drifted_exemptions or []),
+        "drifted_exemption_count": len(drifted_exemptions or []),
         "unscanned": list(unscanned or []),
         "unscanned_count": len(unscanned or []),
         "exempt_files": {
@@ -851,14 +964,19 @@ def main(argv: list[str] | None = None) -> int:
     hits: list[Hit] = []
     third_party_hits: list[Hit] = []
     unscanned: list[dict[str, str]] = []
+    drifted_exemptions: list[str] = []
+    image_digests: dict[str, str] = {}
     try:
         for scope in scopes:
             if scope == "tree":
-                scope_tree(hits, unscanned, commit=args.commit)
+                scope_tree(
+                    hits, unscanned, commit=args.commit,
+                    drifted_exemptions=drifted_exemptions,
+                )
             elif scope == "index":
-                scope_index(hits, unscanned)
+                scope_index(hits, unscanned, drifted_exemptions)
             elif scope == "build-context":
-                scope_build_context(hits, unscanned)
+                scope_build_context(hits, unscanned, drifted_exemptions)
             elif scope == "image":
                 scope_image(
                     hits,
@@ -867,6 +985,7 @@ def main(argv: list[str] | None = None) -> int:
                     build=args.build_image,
                     skip_unavailable=args.skip_unavailable,
                     image_tags=None,
+                    image_digests=image_digests,
                 )
     except RuntimeError as exc:
         print("security scan error: %s" % exc, file=sys.stderr)
@@ -879,6 +998,9 @@ def main(argv: list[str] | None = None) -> int:
         if item["location"].split(":", 1)[0] in STRICT_UNSCANNED_SCOPES
     ]
 
+    scanner_version = hashlib.sha256(
+        Path(__file__).read_bytes()
+    ).hexdigest()[:16]
     report = build_report(
         hits,
         scopes,
@@ -886,6 +1008,9 @@ def main(argv: list[str] | None = None) -> int:
         unscanned=unscanned,
         commit=args.commit,
         third_party_hits=third_party_hits,
+        drifted_exemptions=drifted_exemptions,
+        image_digests=image_digests,
+        scanner_version=scanner_version,
     )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -899,6 +1024,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         for item in unscanned:
             print("security scan: unscanned %s (%s)" % (item["location"], item["reason"]))
+        for drift in drifted_exemptions:
+            print("security scan: EXEMPTION DRIFT %s" % drift)
         for exemption in EXEMPTIONS:
             state = "EXPIRED" if _exemption_expired(exemption) else "active"
             print(

@@ -135,7 +135,7 @@ class ScanUnitTests(unittest.TestCase):
             with mock.patch("scripts.security_scan.ROOT", repo):
                 with mock.patch.object(
                     scan, "scope_tree",
-                    side_effect=lambda hits, unscanned, *, commit=None: unscanned.append(
+                    side_effect=lambda hits, unscanned, *, commit=None, drifted_exemptions=None: unscanned.append(
                         {"location": "tree:missing.txt", "reason": "unreadable"}
                     ),
                 ):
@@ -163,6 +163,49 @@ class ScanUnitTests(unittest.TestCase):
                 scan.scope_tree(hits, unscanned, commit=commit)
             self.assertTrue(hits, "committed canary must be found at that commit")
             self.assertEqual(hits[0].pattern, "openai_key")
+
+    def test_angle_bracket_substring_is_not_a_placeholder(self) -> None:
+        """S3-03: a '<...>' SUBSTRING inside a real formatted token must hit;
+        only a whole-value strict placeholder is exempt."""
+        hits = self._hits('api_key = "real' + '<secret>' + 'credential-value"')
+        self.assertTrue(hits, "angle-bracket substring must not be exempt")
+        # a whole-value strict placeholder stays exempt
+        self.assertEqual(self._hits('api_key = "<local-dev-password>"'), [])
+
+    def test_exemption_value_drift_is_reported(self) -> None:
+        """S3-03: replacing the value on an exempt line with a different
+        (possibly real) credential must fail the scan with a drift note."""
+        hits: list[scan.Hit] = []
+        drifted: list[str] = []
+        scan.scan_text(
+            "MAP_POSTGRES_ADMIN_PASSWORD=map-admin-local\n",
+            "tree:.env.example",
+            hits,
+            relpath=".env.example",
+            drifted_exemptions=drifted,
+        )
+        self.assertTrue(hits, "line 1 is NOT the exempt line 34, so it must hit")
+        # line 34 with the ORIGINAL value is exempt...
+        lines = ["\n"] * 33 + ["MAP_POSTGRES_ADMIN_PASSWORD=map-admin-local\n"]
+        hits2: list[scan.Hit] = []
+        scan.scan_text(
+            "".join(lines), "tree:.env.example", hits2, relpath=".env.example"
+        )
+        self.assertEqual(hits2, [])
+        # ...but a DIFFERENT value on line 34 is a drifted exemption: the
+        # hit is reported and the drift is annotated.
+        lines = ["\n"] * 33 + ["MAP_POSTGRES_ADMIN_PASSWORD=real-password-value-77\n"]
+        hits3: list[scan.Hit] = []
+        drifted3: list[str] = []
+        scan.scan_text(
+            "".join(lines),
+            "tree:.env.example",
+            hits3,
+            relpath=".env.example",
+            drifted_exemptions=drifted3,
+        )
+        self.assertTrue(hits3, "drifted exempt line must hit")
+        self.assertTrue(drifted3, "drift must be annotated")
 
     def test_oci_layout_image_tarball_is_scanned(self) -> None:
         """Docker Desktop saves OCI layouts (blobs/sha256/<digest>): a
