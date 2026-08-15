@@ -87,6 +87,7 @@ class ScanUnitTests(unittest.TestCase):
         expired = scan.Exemption(
             "probe.txt", "env_password_literal", 1,
             "expired", "platform-security", past,
+            expected_fingerprint="sha256:0000000000000000",
         )
         self.assertTrue(scan._exemption_expired(expired))
         with mock.patch("scripts.security_scan.EXEMPTIONS", (expired,)):
@@ -166,11 +167,40 @@ class ScanUnitTests(unittest.TestCase):
 
     def test_angle_bracket_substring_is_not_a_placeholder(self) -> None:
         """S3-03: a '<...>' SUBSTRING inside a real formatted token must hit;
-        only a whole-value strict placeholder is exempt."""
+        only a code-reviewed exact value is exempt."""
         hits = self._hits('api_key = "real' + '<secret>' + 'credential-value"')
         self.assertTrue(hits, "angle-bracket substring must not be exempt")
-        # a whole-value strict placeholder stays exempt
+        # a REGISTERED exact value stays exempt
         self.assertEqual(self._hits('api_key = "<local-dev-password>"'), [])
+
+    def test_unregistered_angle_bracket_whole_values_hit(self) -> None:
+        """S4-04: ANY unregistered whole '<...>' value must hit - there is no
+        placeholder shape exemption anymore."""
+        for value in (
+            "<production-primary-secret-value>",
+            "<database-root-password>",
+            "<any-unregistered-placeholder>",
+            "<totally-made-up>",
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(
+                    self._hits('api_key = "%s"' % value),
+                    "unregistered %s must hit" % value,
+                )
+                self.assertTrue(
+                    self._hits('password = "%s"' % value),
+                    "unregistered %s must hit" % value,
+                )
+
+    def test_registered_exact_values_still_pass(self) -> None:
+        """S4-04: only the code-reviewed exact values are exempt."""
+        for value in sorted(scan._ALLOWED_EXACT_VALUES):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    self._hits('api_key = "%s"' % value),
+                    [],
+                    "registered %r must stay exempt" % value,
+                )
 
     def test_exemption_value_drift_is_reported(self) -> None:
         """S3-03: replacing the value on an exempt line with a different
@@ -257,6 +287,135 @@ class ScanUnitTests(unittest.TestCase):
         serialized = json.dumps(report, ensure_ascii=False)
         self.assertNotIn(token, serialized)
         self.assertIn("sha256:", serialized)
+
+    # ---- S4-04: exemption-table integrity (fail closed at startup) ----
+
+    @staticmethod
+    def _exemption(**overrides) -> scan.Exemption:
+        base = dict(
+            path="probe.txt", rule="env_password_literal", line=1,
+            reason="probe", owner="platform-security",
+            expires_at=(date.today() + timedelta(days=30)).isoformat(),
+            expected_fingerprint="sha256:0000000000000000",
+        )
+        base.update(overrides)
+        return scan.Exemption(**base)
+
+    def test_validate_exemptions_accepts_registered_table(self) -> None:
+        self.assertEqual(scan.validate_exemptions(), [])
+
+    def test_validate_exemptions_rejects_missing_fingerprint(self) -> None:
+        problems = scan.validate_exemptions(
+            (self._exemption(expected_fingerprint=""),)
+        )
+        self.assertTrue(problems, "empty fingerprint must be rejected")
+        self.assertIn("no expected_fingerprint", problems[0])
+
+    def test_validate_exemptions_rejects_duplicate(self) -> None:
+        problems = scan.validate_exemptions(
+            (self._exemption(), self._exemption())
+        )
+        self.assertTrue(problems, "duplicate exemption must be rejected")
+        self.assertIn("duplicate", problems[0])
+
+    def test_validate_exemptions_rejects_expired(self) -> None:
+        past = (date.today() - timedelta(days=1)).isoformat()
+        problems = scan.validate_exemptions(
+            (self._exemption(expires_at=past),)
+        )
+        self.assertTrue(problems, "expired exemption must be rejected")
+        self.assertIn("expired", problems[0])
+
+    def test_main_fails_closed_on_invalid_exemption_table(self) -> None:
+        """S4-04: an unhealthy exemption table makes main() exit non-zero
+        BEFORE any scope runs."""
+        with mock.patch(
+            "scripts.security_scan.validate_exemptions",
+            return_value=["duplicate exemption probe.txt:1"],
+        ):
+            rc = scan.main(["--scope", "tree", "--json"])
+        self.assertEqual(rc, 2)
+
+    def test_main_drift_exits_nonzero_without_fail_on_hit(self) -> None:
+        """S4-04: exemption value drift is a config-integrity failure; the
+        scan exits 1 even when --fail-on-hit is absent."""
+        def fake_scope_tree(hits, unscanned, *, commit=None, drifted_exemptions=None):
+            if drifted_exemptions is not None:
+                drifted_exemptions.append("probe.txt:1: exempted value drifted")
+        with mock.patch("scripts.security_scan.scope_tree", side_effect=fake_scope_tree):
+            rc = scan.main(["--scope", "tree"])
+        self.assertEqual(rc, 1)
+
+    def test_counterexample_matrix_shared_across_scopes(self) -> None:
+        """S4-04: the same unregistered-'<...>' counterexample matrix must
+        hit in every scope: text scan, streaming scan, build-context and
+        image layers."""
+        counterexamples = (
+            ('api_key = "<production-primary-secret-value>"', "literal_secret_assignment"),
+            ('password = "<database-root-password>"', "literal_password_assignment"),
+        )
+        for text, pattern in counterexamples:
+            with self.subTest(scope="scan_text", text=text):
+                hits: list[scan.Hit] = []
+                scan.scan_text(text, "tree:probe.txt", hits, relpath="probe.txt")
+                self.assertTrue(hits)
+                self.assertEqual(hits[0].pattern, pattern)
+            with self.subTest(scope="scan_bytes_stream", text=text):
+                hits = []
+                scan.scan_bytes_stream(
+                    iter([text.encode("utf-8")]), "tree:probe.txt", "probe.txt",
+                    hits, [], strict=True,
+                )
+                self.assertTrue(hits)
+                self.assertEqual(hits[0].pattern, pattern)
+            with self.subTest(scope="build-context", text=text):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo = Path(tmp)
+                    # scope_build_context iterates every declared build
+                    # context, so the temp repo needs all three dirs.
+                    for rel in (
+                        "map_core",
+                        "map-business-backend",
+                        "map-observability/map-observability-backend",
+                    ):
+                        (repo / rel).mkdir(parents=True, exist_ok=True)
+                    ctx = repo / "map_core"
+                    (ctx / "secret.txt").write_text(text + "\n", encoding="utf-8")
+                    hits = []
+                    with mock.patch("scripts.security_scan.ROOT", repo):
+                        scan.scope_build_context(hits, [])
+                    self.assertTrue(
+                        hits, "build-context must hit %r" % text
+                    )
+            with self.subTest(scope="image", text=text):
+                import io
+                import tarfile as tarfilelib
+                buf = io.BytesIO()
+                with tarfilelib.open(fileobj=buf, mode="w") as layer:
+                    payload = (text + "\n").encode()
+                    info = tarfilelib.TarInfo("app/secret.txt")
+                    info.size = len(payload)
+                    layer.addfile(info, io.BytesIO(payload))
+                outer = io.BytesIO()
+                with tarfilelib.open(fileobj=outer, mode="w") as outer_tar:
+                    manifest = json.dumps(
+                        [{"Config": "blobs/sha256/cfg", "Layers": ["blobs/sha256/layer"]}]
+                    ).encode()
+                    mi = tarfilelib.TarInfo("manifest.json")
+                    mi.size = len(manifest)
+                    outer_tar.addfile(mi, io.BytesIO(manifest))
+                    cfg = json.dumps({"config": {}}).encode()
+                    ci = tarfilelib.TarInfo("blobs/sha256/cfg")
+                    ci.size = len(cfg)
+                    outer_tar.addfile(ci, io.BytesIO(cfg))
+                    li = tarfilelib.TarInfo("blobs/sha256/layer")
+                    li.size = len(buf.getvalue())
+                    outer_tar.addfile(li, io.BytesIO(buf.getvalue()))
+                hits: list[scan.Hit] = []
+                scan._scan_image_tarball(
+                    "probe", outer.getvalue(), hits, [], []
+                )
+                self.assertTrue(hits, "image layer must hit %r" % text)
 
     @staticmethod
     def _git(repo: Path, *args: str) -> str:

@@ -23,9 +23,10 @@ Scopes:
 S2-05 hardening:
 
 - the allowlist is EXACT-VALUE only: a value is exempt solely when it
-  equals a registered placeholder (or is a <placeholder>); substrings like
-  fake/example/changeme inside a real formatted token are NO LONGER exempt
-  and are always reported;
+  equals one of the values registered in ``_ALLOWED_EXACT_VALUES`` (every
+  entry is code-reviewed; there is NO wildcard shape). Substrings like
+  fake/example/changeme inside a real formatted token, and any
+  UNREGISTERED whole ``<...>`` value, are always reported;
 - .env.example has no whole-file exemption; only the two explicit
   low-risk dev placeholder lines are exempt, each pinned to path+rule+line
   with an owner and an expiry date (expired exemptions stop applying);
@@ -116,10 +117,10 @@ CREDENTIAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
 ]
 
-# S2-05: exact-value allowlist only. A match is exempt ONLY when the whole
-# matched value equals one of these placeholders (or is a <placeholder>).
-# Substrings (fake/example/changeme inside a real formatted token) are
-# reported.
+# S4-04: exact-value allowlist ONLY - the angle-bracket wildcard is
+# DELETED. A match is exempt solely when the whole matched value equals
+# one of these code-reviewed exact values. Adding a new value requires
+# code review; there is no shape-based placeholder exemption anymore.
 _ALLOWED_EXACT_VALUES: frozenset[str] = frozenset(
     {
         "changeme",
@@ -158,7 +159,7 @@ class Exemption:
     reason: str
     owner: str
     expires_at: str  # ISO date YYYY-MM-DD
-    expected_fingerprint: str | None = None
+    expected_fingerprint: str  # REQUIRED (S4-04): empty values fail the scan
 
 
 EXEMPTIONS: tuple[Exemption, ...] = (
@@ -331,6 +332,47 @@ def _exemption_expired(exemption: Exemption) -> bool:
     return expires < date.today()
 
 
+def validate_exemptions(
+    exemptions: tuple[Exemption, ...] = EXEMPTIONS,
+) -> list[str]:
+    """S4-04: exemption-table integrity gate (fail closed at startup).
+
+    A missing/empty fingerprint, a duplicate (path, rule, line) entry or an
+    expired/malformed exemption makes the scan exit non-zero BEFORE any
+    file is scanned - an invalid exemption table must never silently widen
+    the allowlist.
+    """
+    problems: list[str] = []
+    seen: set[tuple[str, str, int]] = set()
+    for exemption in exemptions:
+        if not exemption.expected_fingerprint:
+            problems.append(
+                "exemption %s:%d (%s) has no expected_fingerprint"
+                % (exemption.path, exemption.line, exemption.rule)
+            )
+        if not exemption.expected_fingerprint.startswith("sha256:"):
+            problems.append(
+                "exemption %s:%d (%s) expected_fingerprint %r is not "
+                "sha256:<hex>"
+                % (exemption.path, exemption.line, exemption.rule,
+                   exemption.expected_fingerprint)
+            )
+        key = (exemption.path, exemption.rule, exemption.line)
+        if key in seen:
+            problems.append(
+                "duplicate exemption %s:%d (%s)"
+                % (exemption.path, exemption.line, exemption.rule)
+            )
+        seen.add(key)
+        if _exemption_expired(exemption):
+            problems.append(
+                "exemption %s:%d (%s) expired %s"
+                % (exemption.path, exemption.line, exemption.rule,
+                   exemption.expires_at)
+            )
+    return problems
+
+
 def _hit_relpath(hit: Hit) -> str:
     """Repo-relative path from a hit location ("scope:relpath")."""
     return hit.location.split(":", 1)[1] if ":" in hit.location else hit.location
@@ -354,10 +396,7 @@ def exempted_exemption(
             continue
         if _exemption_expired(exemption):
             continue
-        if (
-            exemption.expected_fingerprint is not None
-            and exemption.expected_fingerprint != fingerprint(value)
-        ):
+        if exemption.expected_fingerprint != fingerprint(value):
             return None, True
         return exemption, False
     return None, False
@@ -389,15 +428,13 @@ def _extract_assigned_value(value: str) -> str:
     return extracted
 
 
-_PLACEHOLDER_RE = re.compile(r"^<[A-Za-z0-9_ ./-]{1,64}>$")
-
-
 def _allowed_hit(value: str) -> bool:
-    # S3-03: placeholders must be a WHOLE value matching the strict
-    # placeholder shape - an arbitrary "<...>" substring inside a real
-    # formatted token is NOT exempt.
-    if _PLACEHOLDER_RE.fullmatch(value):
-        return True
+    """S4-04: ONLY code-reviewed exact values are exempt.
+
+    There is no placeholder SHAPE anymore: an unregistered whole '<...>'
+    value (api_key = '<production-primary-secret-value>') is reported,
+    exactly like any other literal credential.
+    """
     return value in _ALLOWED_EXACT_VALUES
 
 
@@ -961,6 +998,16 @@ def main(argv: list[str] | None = None) -> int:
         print("no scope given", file=sys.stderr)
         return 2
 
+    # S4-04: the exemption table itself must be healthy before any file
+    # is scanned - missing fingerprints, duplicates and expired entries
+    # fail the scan (exit 2) instead of silently widening the allowlist.
+    exemption_problems = validate_exemptions()
+    if exemption_problems:
+        for problem in exemption_problems:
+            print("security scan error: EXEMPTION INVALID %s" % problem,
+                  file=sys.stderr)
+        return 2
+
     hits: list[Hit] = []
     third_party_hits: list[Hit] = []
     unscanned: list[dict[str, str]] = []
@@ -1044,6 +1091,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.fail_on_hit and hits:
+        return 1
+    # S4-04: a drifted exemption means the exemption table no longer matches
+    # reality - a configuration integrity failure that must exit non-zero
+    # even without --fail-on-hit.
+    if drifted_exemptions:
         return 1
     return 0
 
