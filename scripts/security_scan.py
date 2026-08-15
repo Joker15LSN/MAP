@@ -319,8 +319,8 @@ EXEMPTIONS: tuple[Exemption, ...] = (
     ),
     Exemption(
         "map_core/tests/test_sandbox_router.py",
-        "literal_secret_assignment", 103,
-        "S5-01 router fixture: fake api_key for the OpenSandbox double",
+        "literal_secret_assignment", 145,
+        "S5-01/S6-03 router fixture: fake api_key for the OpenSandbox double",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:5ee001bc1d740c5c",
     ),
