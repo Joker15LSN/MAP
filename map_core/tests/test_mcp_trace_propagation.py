@@ -42,7 +42,10 @@ class _FakeGuardedPost:
 
 def _allow_egress(monkeypatch) -> None:
     """Neutralize the S2-04 address policy (covered by its own tests)."""
-    monkeypatch.setattr(dynamic_tools, "validate_mcp_url", lambda url, policy: [])
+    monkeypatch.setattr(
+        dynamic_tools, "validate_mcp_url",
+        lambda url, policy: ([], frozenset()),
+    )
     monkeypatch.setattr(
         dynamic_tools,
         "EgressPolicy",
