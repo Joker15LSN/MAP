@@ -2,7 +2,7 @@
   "schema_version": "1.1.0",
   "task_id": "P1-CTX-01",
   "ac_id": "AC-CTX-05",
-  "status": "blocked",
+  "status": "superseded",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
   "implementation_sha": "61e265a1d7bf5a3fee69ae60d1d3b1273b7aec85",
   "environment_digest": "98d0d02c7ade7b889b9b19d1b5673ed319526fe2d5485c99f025c15835dfde57",
@@ -50,10 +50,10 @@
   "waiver_owner": null,
   "waiver_expires_at": null,
   "not_applicable_reason": null,
-  "blocked_reason": "OpenViking server integration not implemented in this change set",
-  "blocker_owner": "development owner (golden-taskbook implementation)",
-  "superseded_by": null,
-  "superseded_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P1-CTX-01/98937df8a0aac7b42ea6fababa988978f4892d01/AC-CTX-05/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha 98937df8a0aac7b42ea6fababa988978f4892d01",
   "producer": {
     "agent": "developer-agent",
     "version": "1.0.0"

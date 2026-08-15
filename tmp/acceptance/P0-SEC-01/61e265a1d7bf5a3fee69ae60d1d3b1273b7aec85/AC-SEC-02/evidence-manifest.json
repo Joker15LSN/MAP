@@ -1,8 +1,8 @@
 {
-  "schema_version": "1.1.0",
+  "schema_version": "1.2.0",
   "task_id": "P0-SEC-01",
   "ac_id": "AC-SEC-02",
-  "status": "pass",
+  "status": "superseded",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
   "implementation_sha": "61e265a1d7bf5a3fee69ae60d1d3b1273b7aec85",
   "environment_digest": "98d0d02c7ade7b889b9b19d1b5673ed319526fe2d5485c99f025c15835dfde57",
@@ -58,10 +58,22 @@
   "not_applicable_reason": null,
   "blocked_reason": null,
   "blocker_owner": null,
-  "superseded_by": null,
-  "superseded_reason": null,
+  "superseded_by": "tmp/acceptance/P0-SEC-01/98937df8a0aac7b42ea6fababa988978f4892d01/AC-SEC-02/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha 98937df8a0aac7b42ea6fababa988978f4892d01",
   "producer": {
-    "agent": "developer-agent",
-    "version": "1.0.0"
+    "agent": "map-acceptance-evidence",
+    "version": "2.0.0"
+  },
+  "attestation": {
+    "type": "map-acceptance-evidence/v1",
+    "issuer": "map-release-evidence-ci",
+    "workflow": "release-gate/gate-final",
+    "signatures": [
+      {
+        "key_id": "map-acceptance-evidence-2026-08",
+        "algorithm": "ed25519",
+        "signature": "65db29bcd10fe454a69293e72a4fa45e706b0b02b150161ca166f20d17fa2a465239d4419438673dd3924a7964b20265cb267a633b56a6e3fe0af7a4f6a27407"
+      }
+    ]
   }
 }
