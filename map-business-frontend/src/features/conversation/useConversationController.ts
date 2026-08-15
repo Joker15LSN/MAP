@@ -78,6 +78,9 @@ export function useConversationController(options: UseConversationControllerOpti
   const streamingMessageId = useRef<string | null>(null);
   // 真实服务端 message id:仅在收到 start 后非空,用于 stop 接口调用。
   const serverMessageIdRef = useRef<string | null>(null);
+  // start 尚未到达时被点击 stop 的等待句柄:resolve 后拿到真实服务端 id,
+  // 避免「只 abort 本地 SSE、服务端继续执行」的竞态。
+  const serverIdReadyRef = useRef<Promise<string> | null>(null);
   // generation/版本号:每次 send 自增;stop 成功提交权威终态时再次自增,
   // 使旧的流回调 / GET 回调因版本不匹配而被丢弃。
   const turnRef = useRef(0);
@@ -197,6 +200,10 @@ export function useConversationController(options: UseConversationControllerOpti
     abortRef.current = abort;
     streamingMessageId.current = assistantPlaceholder.id;
     serverMessageIdRef.current = null;
+    let resolveServerId: (id: string) => void = () => {};
+    serverIdReadyRef.current = new Promise<string>((resolve) => {
+      resolveServerId = resolve;
+    });
 
     setState((prev) => ({
       ...prev,
@@ -225,6 +232,7 @@ export function useConversationController(options: UseConversationControllerOpti
             assistantId = serverId;
             streamingMessageId.current = serverId;
             serverMessageIdRef.current = serverId;
+            resolveServerId(serverId);
             adoptMessageId(assistantPlaceholder.id, serverId);
           }
         } else if (event.event === 'content_delta') {
@@ -290,6 +298,7 @@ export function useConversationController(options: UseConversationControllerOpti
         abortRef.current = null;
         streamingMessageId.current = null;
         serverMessageIdRef.current = null;
+        serverIdReadyRef.current = null;
       }
     }
 
@@ -309,12 +318,23 @@ export function useConversationController(options: UseConversationControllerOpti
   }, [input, state.conversation]);
 
   const stop = useCallback(async () => {
-    const serverId = serverMessageIdRef.current;
+    // S4-05 race fix: stop 可能早于 start 事件被点击。先短暂等待真实服务端
+    // id(最多 2.5s),拿到后走权威路径;等待超时才落到本地 abort 兜底。
+    let serverId = serverMessageIdRef.current;
+    if (!serverId && serverIdReadyRef.current) {
+      serverId = await Promise.race([
+        serverIdReadyRef.current,
+        new Promise<string | null>((resolve) => setTimeout(() => resolve(null), 2500)),
+      ]);
+    }
     if (serverId) {
       try {
         // 权威路径:服务端条件更新与终态为准。done 先赢时接口显式返回
-        // completed,此处不得把终态回退成 streaming/completed。
-        const terminal = await conversationApi.stop(serverId);
+        // completed,此处不得把终态回退成 streaming/completed。8s 超时
+        // 保证 stop 永不悬挂(失败落到本地 abort 兜底)。
+        const terminal = await conversationApi.stop(serverId, {
+          signal: AbortSignal.timeout(8000),
+        });
         turnRef.current += 1; // 使本 turn 的流/GET 回调失效
         serverMessageIdRef.current = null;
         streamingMessageId.current = null;
@@ -329,7 +349,7 @@ export function useConversationController(options: UseConversationControllerOpti
         // 网络/超时失败:落到本地 abort 兜底。
       }
     }
-    // 兜底:仅本地 abort(以及 start 尚未到达时无法拿到真实 id 的情况)。
+    // 兜底:仅本地 abort(start 迟迟不到或服务端停止失败)。
     abortRef.current?.abort();
     const localId = streamingMessageId.current;
     if (localId) {

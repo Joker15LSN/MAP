@@ -142,7 +142,7 @@ describe('conversation feature', () => {
       expect(screen.getByText(/stopped/)).toBeInTheDocument();
     });
     // 关键断言:停止必须先打到服务端,且使用 start 里的真实 message_id。
-    expect(stopSpy).toHaveBeenCalledWith('m-new');
+    expect(stopSpy).toHaveBeenCalledWith('m-new', expect.anything());
     expect(stopSpy).toHaveBeenCalledTimes(1);
 
     streamSpy.mockRestore();
@@ -182,7 +182,7 @@ describe('conversation feature', () => {
     await waitFor(() => {
       expect(screen.getByText('竞态已完成')).toBeInTheDocument();
     });
-    expect(stopSpy).toHaveBeenCalledWith('m-new');
+    expect(stopSpy).toHaveBeenCalledWith('m-new', expect.anything());
     expect(screen.queryByText(/stopped/)).not.toBeInTheDocument();
 
     streamSpy.mockRestore();
@@ -217,7 +217,46 @@ describe('conversation feature', () => {
     await waitFor(() => {
       expect(screen.getByText(/stopped/)).toBeInTheDocument();
     });
-    expect(stopSpy).toHaveBeenCalledWith('m-new');
+    expect(stopSpy).toHaveBeenCalledWith('m-new', expect.anything());
+
+    streamSpy.mockRestore();
+    stopSpy.mockRestore();
+  });
+
+  it('stop clicked before the start event still calls the server stop API once the real id arrives', async () => {
+    // start 事件延迟 100ms:stop 点击先于真实服务端 id 到达,控制器必须等待
+    // start 后仍走服务端权威路径,而不是只 abort 本地 SSE。
+    const streamSpy = vi.spyOn(conversationApi, 'stream').mockImplementationOnce(
+      async function* () {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        yield { event: 'start', data: { message_id: 'm-new', conversation_id: 'c-1' } };
+        yield { event: 'content_delta', data: { content: '部分' } };
+        await new Promise(() => undefined);
+      },
+    );
+    const stopSpy = vi
+      .spyOn(conversationApi, 'stop')
+      .mockResolvedValueOnce(assistantMessage({ status: 'stopped', content: '部分' }));
+
+    render(<Harness conversationId="c-1" />);
+    await waitFor(() => {
+      expect(screen.getByLabelText('输入问题')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText('输入问题'), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByRole('button', { name: /发\s*送/ }));
+    // 立即点击:此刻 start 尚未到达。
+    await waitFor(() => {
+      expect(screen.getByTestId('stop-button')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('stop-button'));
+
+    await waitFor(() => {
+      expect(stopSpy).toHaveBeenCalledWith('m-new', expect.anything());
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/stopped/)).toBeInTheDocument();
+    });
 
     streamSpy.mockRestore();
     stopSpy.mockRestore();
@@ -259,7 +298,7 @@ describe('conversation feature', () => {
       },
       { timeout: 2000 },
     );
-    expect(stopSpy).toHaveBeenCalledWith('m-new');
+    expect(stopSpy).toHaveBeenCalledWith('m-new', expect.anything());
     expect(screen.queryByText('迟到的完成')).not.toBeInTheDocument();
 
     streamSpy.mockRestore();
