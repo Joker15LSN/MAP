@@ -1,39 +1,47 @@
-"""S4-01: durable OpenSandbox execution capability.
+"""S5-01: crash-safe durable OpenSandbox execution capability.
 
 The algorithm link reaches the OpenSandbox Server ONLY through this
 production tool + OpenSandboxClient; there is NO host fallback. The tool
 is registered in the shared tool registry and invoked by both engines
 (legacy ToolCallAgent and the AgentScope adapter) through ToolExecutor.
 
-S4-01 hardening (replaces the S3-01 in-process ledger):
+S5-01 hardening (replaces the S4-01 ownerless ledger):
 
-- the durable identity chain (workspace/run/step/attempt/invocation/
-  client_request) must arrive COMPLETE from the request path - missing
-  fields fail closed with OPENSANDBOX_IDENTITY_INCOMPLETE, nothing is
-  invented locally;
-- exactly-once is enforced by a SandboxInvocationLedger keyed on
-  (workspace_id, invocation_id). The atomic claim (a PostgreSQL unique
-  constraint, or the equivalent in the in-memory double) guarantees ONE
-  caller drives the remote create/execute; the others replay the recorded
-  outcome. The ledger is the durable source of truth, never an in-process
-  dict and never the destroyed remote sandbox;
-- idempotency keys embed workspace + a normalized request digest, so the
-  SAME invocation id with a DIFFERENT payload conflicts instead of
-  replaying an old result;
-- a lost create/execute response never blindly resends a mutation: the
-  handler reconciles against the server WHILE the sandbox still exists
-  and otherwise fails closed to an unknown terminal state.
+- every claim carries an owner_id + a database-time lease + a non-reusable
+  fencing token; a heartbeat renews the lease while the owner drives the
+  remote create/execute, and every ledger write (record_created/complete)
+  is a CAS bound to that generation;
+- a caller that observes a non-terminal row owned by someone else WAITS
+  for a terminal fact and, once the lease expires, takes over the row
+  atomically and FINISHES the remote flow itself - it never gives up on a
+  crashed invocation after a fixed 30s window;
+- the terminal write happens BEFORE destroy and is fenced: when the
+  terminal state cannot be persisted (ledger failure / lost ownership) the
+  caller raises a typed ledger error and MUST NOT destroy the sandbox - the
+  remote sandbox stays queryable so the durable reconciler (or a retry of
+  the same invocation) can converge the row to a definite terminal state;
+- a durable reconciler (started from the Core lifespan) scans expired
+  pending/created rows, takes them over and re-drives create/execute with
+  the SAME idempotency keys stored in the row - the OpenSandbox server
+  deduplicates by key, so re-driving can never double a side effect, and
+  when the server state cannot prove what happened the row fails closed to
+  unknown (never blind-replayed);
+- the row stores the normalized request payload (command + limits +
+  identity chain), because after an owner crash it is the only place the
+  original command survives for a takeover owner to resume.
 
 Server contract: OpenSandbox Server 0.2.2 OpenAPI (PROTOCOL_VERSION);
-the image reference pins the 0.2.2 tag. AC-SEC-12 remains blocked until
-the real-server dedup acceptance runs.
+the image reference pins the 0.2.2 tag.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import os
 import time
+import uuid
 from typing import Any
 
 from .agent.base import AgentRequest, ToolResult
@@ -47,18 +55,27 @@ from .opensandbox_client import (
     SandboxResourceLimits,
 )
 from .sandbox_ledger import (
+    DEFAULT_LEASE_SECONDS,
     IDEMPOTENCY_CONFLICT,
+    LEDGER_ERROR,
+    STATUS_CREATED,
     STATUS_FAILED,
     STATUS_SUCCEEDED,
     STATUS_UNKNOWN,
+    ClaimOutcome,
+    InMemorySandboxInvocationLedger,
     PostgresSandboxInvocationLedger,
+    SandboxInvocationFence,
     SandboxInvocationLedger,
     SandboxInvocationRecord,
     SandboxLedgerError,
+    SandboxOwnershipLost,
     build_create_key,
     build_execute_key,
     normalize_request_digest,
 )
+
+logger = logging.getLogger(__name__)
 
 CAPABILITY_DISABLED = "CAPABILITY_DISABLED"
 IDENTITY_INCOMPLETE = "OPENSANDBOX_IDENTITY_INCOMPLETE"
@@ -94,6 +111,28 @@ REQUIRED_IDENTITY_FIELDS = (
     "client_request_id",
 )
 
+# Reconciler cadence.
+RECONCILER_INTERVAL_SECONDS = 10.0
+RECONCILER_BATCH = 10
+RECONCILER_LEASE_SECONDS = 120.0
+
+
+def _lease_seconds() -> float:
+    """Claim lease; tunable via env so crash-recovery tests shrink the window."""
+    raw = os.getenv("MAP_SANDBOX_LEASE_SECONDS", "").strip()
+    try:
+        return float(raw) if raw else DEFAULT_LEASE_SECONDS
+    except ValueError:
+        return DEFAULT_LEASE_SECONDS
+
+
+def _in_progress_wait_seconds() -> float:
+    raw = os.getenv("MAP_SANDBOX_IN_PROGRESS_WAIT_SECONDS", "").strip()
+    try:
+        return float(raw) if raw else 30.0
+    except ValueError:
+        return 30.0
+
 # Ledger injection. Production resolves the PostgreSQL ledger lazily from
 # POSTGRES_DSN; tests inject the in-memory double (same transactional
 # semantics) via set_sandbox_ledger().
@@ -120,6 +159,21 @@ def _get_sandbox_ledger() -> SandboxInvocationLedger:
     return _ledger
 
 
+async def close_sandbox_ledger() -> None:
+    """S5-01: close the PostgreSQL ledger pool (Core shutdown path).
+
+    Called from the Core lifespan finally block so a stopping process never
+    leaks pooled connections to map_control.
+    """
+    global _ledger
+    ledger, _ledger = _ledger, None
+    if ledger is not None:
+        try:
+            await ledger.close()
+        except Exception:  # noqa: BLE001 - shutdown best effort
+            logger.exception("sandbox ledger close failed during shutdown")
+
+
 def _identity_from_request(request: AgentRequest) -> SandboxIdentity | str:
     """Build the durable identity chain from the request runtime payload.
 
@@ -139,6 +193,34 @@ def _identity_from_request(request: AgentRequest) -> SandboxIdentity | str:
         invocation_id=str(extra["invocation_id"]),
         client_request_id=str(extra["client_request_id"]),
     )
+
+
+def _identity_from_payload(payload: dict[str, Any]) -> SandboxIdentity | None:
+    """Rebuild the identity chain stored in a ledger row (reconciler path).
+
+    Returns None when any of the six fields is missing - the reconciler
+    then fails the row closed instead of inventing identity.
+    """
+    identity = payload.get("identity")
+    if not isinstance(identity, dict):
+        return None
+    fields = {name: identity.get(name) for name in REQUIRED_IDENTITY_FIELDS}
+    if not all(fields.values()):
+        return None
+    return SandboxIdentity(**{name: str(fields[name]) for name in REQUIRED_IDENTITY_FIELDS})
+
+
+def _limits_from_payload(payload: dict[str, Any]) -> SandboxResourceLimits:
+    limits = payload.get("limits")
+    if isinstance(limits, dict):
+        valid = {
+            key: int(limits[key])
+            for key in SandboxResourceLimits().__dict__
+            if key in limits and isinstance(limits[key], int)
+        }
+        if valid:
+            return SandboxResourceLimits(**valid)
+    return SandboxResourceLimits()
 
 
 def _result_meta(
@@ -203,54 +285,124 @@ def _replay(
     )
 
 
-async def _wait_for_terminal(
+def _owner_id() -> str:
+    """A process-unique owner name for claim/heartbeat rows."""
+    return f"core-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+
+async def _renew_loop(
     ledger: SandboxInvocationLedger,
+    *,
     workspace_id: str,
     invocation_id: str,
-    timeout_s: float = 30.0,
-) -> SandboxInvocationRecord | None:
-    """Wait for the owning caller to settle the invocation, then replay.
+    fence: SandboxInvocationFence,
+    lease_seconds: float,
+    ownership_lost: asyncio.Event,
+) -> None:
+    """Heartbeat the lease until the terminal write or ownership loss."""
+    interval = max(0.2, lease_seconds / 3.0)
+    while not ownership_lost.is_set():
+        await asyncio.sleep(interval)
+        try:
+            ok = await ledger.renew(
+                workspace_id=workspace_id,
+                invocation_id=invocation_id,
+                fence=fence,
+                lease_seconds=lease_seconds,
+            )
+        except SandboxLedgerError:
+            ok = False
+        if not ok:
+            ownership_lost.set()
+            return
 
-    Never takes over and never re-issues a mutation: a caller that does not
-    own the claim just waits for a terminal fact.
+
+async def _wait_and_takeover(
+    ledger: SandboxInvocationLedger,
+    *,
+    workspace_id: str,
+    invocation_id: str,
+    owner_id: str,
+    timeout_s: float | None = None,
+) -> ClaimOutcome | None:
+    """Resolve an in-progress invocation without ever stealing a live lease.
+
+    While the owning generation holds a LIVE lease we only poll for a
+    terminal fact. Once the lease is expired we attempt the atomic takeover
+    CAS; winning it makes THIS caller the owner that finishes the remote
+    flow (the crashed owner's work is resumed, never replayed blindly).
+    Returns None when the budget expires while another generation still
+    holds the row.
     """
+    if timeout_s is None:
+        timeout_s = _in_progress_wait_seconds()
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         record = await ledger.get(
             workspace_id=workspace_id, invocation_id=invocation_id
         )
-        if record is not None and record.terminal:
-            return record
+        if record is None:
+            return None  # row vanished; the caller re-claims from scratch
+        if record.terminal:
+            return ClaimOutcome("replay", record)
+        if record.lease_expires_at <= 0.0 or record.lease_expires_at <= time.time():
+            outcome = await ledger.takeover(
+                workspace_id=workspace_id,
+                invocation_id=invocation_id,
+                owner_id=owner_id,
+                lease_seconds=_lease_seconds(),
+            )
+            if outcome.kind in ("takeover", "replay"):
+                return outcome
         await asyncio.sleep(0.05)
     return None
 
 
-async def _complete_best_effort(
+async def _settle_fenced(
     ledger: SandboxInvocationLedger,
-    identity: SandboxIdentity,
     *,
+    identity: SandboxIdentity,
+    fence: SandboxInvocationFence,
     status: str,
     sandbox_id: str | None = None,
     output: str | None = None,
     error: str | None = None,
     server_state: dict[str, Any] | None = None,
 ) -> None:
-    """Settle the invocation; a ledger failure must not mask the outcome."""
+    """Persist the terminal state under OUR fence; NEVER destroy on failure.
+
+    A ledger failure here leaves the row non-terminal (pending/created) for
+    the durable reconciler. The caller MUST NOT destroy the sandbox in that
+    case - the sandbox is the only place the remote outcome can still be
+    queried - and MUST NOT report success.
+    """
     try:
         await ledger.complete(
             workspace_id=identity.workspace_id,
             invocation_id=identity.invocation_id,
             status=status,
+            fence=fence,
             sandbox_id=sandbox_id,
             output=output,
             error=error,
             server_state=server_state,
         )
-    except SandboxLedgerError:
-        # The remote outcome already happened; never raise the ledger error
-        # over a settled execution. The row stays pending/created for a later
-        # operator reconciliation.
-        pass
+    except SandboxLedgerError as exc:
+        raise SandboxLedgerError(
+            LEDGER_ERROR,
+            f"terminal state for invocation {identity.invocation_id!r} could "
+            f"not be persisted ({exc}); the remote sandbox was NOT destroyed "
+            "so the durable reconciler can converge the invocation",
+        ) from exc
+
+
+def _settle_failed_result(identity: SandboxIdentity, exc: Exception) -> ToolResult:
+    return ToolResult(
+        success=False,
+        name=SANDBOX_TOOL_NAME,
+        error=str(exc),
+        data_source={"source": "opensandbox", "error_code": LEDGER_ERROR},
+    )
 
 
 async def _sandbox_execute_handler(
@@ -295,7 +447,15 @@ async def _sandbox_execute_handler(
         invocation_id=identity.invocation_id,
         request_digest=request_digest,
     )
+    # S5-01: the row must survive an owner crash, so it stores the full
+    # normalized request (command + limits + identity chain).
+    request_payload: dict[str, Any] = {
+        "command": command,
+        "limits": limits.to_dict(),
+        "identity": identity.to_dict(),
+    }
 
+    owner_id = _owner_id()
     ledger = _get_sandbox_ledger()
     try:
         claim = await ledger.claim(
@@ -304,6 +464,9 @@ async def _sandbox_execute_handler(
             request_digest=request_digest,
             create_key=create_key,
             execute_key=execute_key,
+            request_payload=request_payload,
+            owner_id=owner_id,
+            lease_seconds=_lease_seconds(),
         )
     except SandboxLedgerError as exc:
         return ToolResult(
@@ -327,10 +490,16 @@ async def _sandbox_execute_handler(
     if claim.kind == "replay":
         return _replay(claim.record, identity, limits)  # type: ignore[arg-type]
     if claim.kind == "in_progress":
-        record = await _wait_for_terminal(
-            ledger, identity.workspace_id, identity.invocation_id
+        # S5-01: wait for a terminal fact; when the owner's lease expires,
+        # take the row over and finish the remote flow ourselves instead of
+        # giving up after 30s (owner-crash convergence).
+        resolved = await _wait_and_takeover(
+            ledger,
+            workspace_id=identity.workspace_id,
+            invocation_id=identity.invocation_id,
+            owner_id=owner_id,
         )
-        if record is None:
+        if resolved is None:
             return ToolResult(
                 success=False,
                 name=SANDBOX_TOOL_NAME,
@@ -345,9 +514,49 @@ async def _sandbox_execute_handler(
                     "error_code": INVOCATION_IN_PROGRESS,
                 },
             )
-        return _replay(record, identity, limits)
+        claim = resolved
+    if claim.kind == "replay":
+        return _replay(claim.record, identity, limits)  # type: ignore[arg-type]
 
-    # Owned: this caller drives the remote create/execute exactly once.
+    # owned / takeover: this caller drives (or resumes) the remote flow.
+    if claim.fence is None or claim.record is None:  # pragma: no cover
+        raise RuntimeError("owned claim without fence/record")
+    fence = claim.fence
+
+    try:
+        client = OpenSandboxClient.from_env()
+    except OpenSandboxClientError as exc:
+        if exc.code == MISSING_CONFIG_ERROR:
+            # No host fallback: the capability is simply disabled.
+            try:
+                await _settle_fenced(
+                    ledger,
+                    identity=identity,
+                    fence=fence,
+                    status=STATUS_FAILED,
+                    error=f"{CAPABILITY_DISABLED}: {exc}",
+                )
+            except SandboxLedgerError as ledger_exc:
+                return _settle_failed_result(identity, ledger_exc)
+            return ToolResult(
+                success=False,
+                name=SANDBOX_TOOL_NAME,
+                error=f"{CAPABILITY_DISABLED}: {exc}",
+                data_source={"source": "opensandbox", "error_code": exc.code},
+            )
+        raise
+
+    ownership_lost = asyncio.Event()
+    renew_task = asyncio.create_task(
+        _renew_loop(
+            ledger,
+            workspace_id=identity.workspace_id,
+            invocation_id=identity.invocation_id,
+            fence=fence,
+            lease_seconds=_lease_seconds(),
+            ownership_lost=ownership_lost,
+        )
+    )
     try:
         return await _drive_remote_execution(
             command=command,
@@ -356,19 +565,48 @@ async def _sandbox_execute_handler(
             create_key=create_key,
             execute_key=execute_key,
             ledger=ledger,
+            record=claim.record,
+            fence=fence,
+            client=client,
+            ownership_lost=ownership_lost,
         )
     except OpenSandboxClientError as exc:
-        # Definitive failure (unreachable / API error): settle the row so a
-        # retry replays the same terminal fact, then propagate.
-        await _complete_best_effort(
-            ledger, identity, status=STATUS_FAILED, error=str(exc)
-        )
+        # Definitive remote failure: settle failed under our fence so a
+        # retry replays the same terminal fact, then propagate. If the
+        # fenced settle itself fails the row stays for the reconciler.
+        try:
+            await _settle_fenced(
+                ledger,
+                identity=identity,
+                fence=fence,
+                status=STATUS_FAILED,
+                error=str(exc),
+            )
+        except SandboxLedgerError:
+            logger.exception("failed terminal settle after remote error")
+        raise
+    except SandboxLedgerError:
+        # Ownership lost / terminal write failure: the drive function has
+        # NOT destroyed the sandbox. Surface the typed error to the caller;
+        # the reconciler converges the row.
         raise
     except Exception as exc:  # noqa: BLE001 - handler boundary
-        await _complete_best_effort(
-            ledger, identity, status=STATUS_FAILED, error=str(exc)
-        )
+        try:
+            await _settle_fenced(
+                ledger,
+                identity=identity,
+                fence=fence,
+                status=STATUS_FAILED,
+                error=str(exc),
+            )
+        except SandboxLedgerError:
+            logger.exception("failed terminal settle after unexpected error")
         raise
+    finally:
+        renew_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await renew_task
+        await client.aclose()
 
 
 async def _drive_remote_execution(
@@ -379,31 +617,40 @@ async def _drive_remote_execution(
     create_key: str,
     execute_key: str,
     ledger: SandboxInvocationLedger,
+    record: SandboxInvocationRecord,
+    fence: SandboxInvocationFence,
+    client: OpenSandboxClient,
+    ownership_lost: asyncio.Event,
 ) -> ToolResult:
-    """The one caller that owns the claim performs create/execute/destroy."""
-    try:
-        client = OpenSandboxClient.from_env()
-    except OpenSandboxClientError as exc:
-        if exc.code == MISSING_CONFIG_ERROR:
-            # No host fallback: the capability is simply disabled.
-            await _complete_best_effort(
-                ledger,
-                identity,
-                status=STATUS_FAILED,
-                error=f"{CAPABILITY_DISABLED}: {exc}",
+    """The ONE caller that owns the fence performs create/execute/destroy.
+
+    Resume contract (S5-01): a takeover owner starts from the row it won -
+    a pending row re-issues create with the SAME idempotency key (the
+    server deduplicates, so this can never create a second sandbox); a
+    created row reuses the recorded sandbox_id and reconciles the server
+    state before ever re-issuing execute.
+
+    Destroy contract: the sandbox is destroyed ONLY after a fenced terminal
+    write succeeded. Any ledger failure here raises WITHOUT destroying the
+    sandbox, so the remote outcome stays queryable for the reconciler.
+    """
+
+    def _ownership_ok() -> None:
+        if ownership_lost.is_set():
+            raise SandboxOwnershipLost(
+                "sandbox lease heartbeat lost ownership mid-flight; "
+                "refusing to write terminal state or destroy the sandbox"
             )
-            return ToolResult(
-                success=False,
-                name=SANDBOX_TOOL_NAME,
-                error=f"{CAPABILITY_DISABLED}: {exc}",
-                data_source={"source": "opensandbox", "error_code": exc.code},
-            )
-        raise
 
     sandbox_id: str | None = None
-    async with client:
-        # Create. A lost create response is NOT blind-retried: without a
-        # server-side dedup guarantee the outcome is unknown and fail-closed.
+    resumed = record.status == STATUS_CREATED and bool(record.sandbox_id)
+    if resumed:
+        # Takeover resume: the durable sandbox_id survives the crashed owner.
+        sandbox_id = record.sandbox_id
+    else:
+        # Create. A lost create response is NOT blind-retried: the
+        # idempotency key makes a re-send safe (server dedup), and the
+        # takeover owner re-sends the SAME key from the ledger row.
         try:
             created = await client.create_sandbox(
                 identity, limits, idempotency_key=create_key
@@ -415,8 +662,12 @@ async def _drive_remote_execution(
                     "server dedup guarantee is unverified; refusing to "
                     "blindly re-send the mutation"
                 )
-                await _complete_best_effort(
-                    ledger, identity, status=STATUS_UNKNOWN, error=error
+                await _settle_fenced(
+                    ledger,
+                    identity=identity,
+                    fence=fence,
+                    status=STATUS_UNKNOWN,
+                    error=error,
                 )
                 return ToolResult(
                     success=False,
@@ -425,149 +676,389 @@ async def _drive_remote_execution(
                     data_source={"source": "opensandbox", "error_code": UNKNOWN_OUTCOME},
                 )
             raise
+        _ownership_ok()
         sandbox_id = str(created.get("sandbox_id") or "")
         if not sandbox_id:
             error = "OPENSANDBOX_API_ERROR: create response missing sandbox_id"
-            await _complete_best_effort(
-                ledger, identity, status=STATUS_FAILED, error=error
+            await _settle_fenced(
+                ledger,
+                identity=identity,
+                fence=fence,
+                status=STATUS_FAILED,
+                error=error,
             )
             return ToolResult(
                 success=False, name=SANDBOX_TOOL_NAME, error=error
             )
-
+        # Fenced durable write BEFORE any further mutation; on failure the
+        # sandbox is left alive for the reconciler (never destroyed here).
         await ledger.record_created(
             workspace_id=identity.workspace_id,
             invocation_id=identity.invocation_id,
             sandbox_id=sandbox_id,
+            fence=fence,
         )
+        record = replace_status(record, status="created", sandbox_id=sandbox_id)
 
-        # Reconcile BEFORE mutating (sandbox still exists): if the server
-        # already executed our key, take its result instead of re-issuing.
-        try:
-            state = await client.get_sandbox(sandbox_id)
-        except OpenSandboxClientError:
-            state = {}
-        prior = _prior_server_execution(state, execute_key)
-        if prior is not None:
-            output = str(prior.get("output") or "")
-            await _complete_best_effort(
+    # Reconcile BEFORE mutating (sandbox still exists): if the server
+    # already executed our key, take its result instead of re-issuing.
+    try:
+        state = await client.get_sandbox(sandbox_id)
+    except OpenSandboxClientError as exc:
+        if resumed:
+            # S5-01 fail-closed: on a RESUMED (created) row the prior owner
+            # may already have executed; an unqueryable sandbox cannot prove
+            # the absence of that execution, so execute is never re-issued.
+            error = (
+                "OPENSANDBOX_UNKNOWN_OUTCOME: the sandbox is no longer "
+                "queryable and the prior execution cannot be proven "
+                "absent; refusing to re-issue the mutation"
+            )
+            await _settle_fenced(
                 ledger,
-                identity,
-                status=STATUS_SUCCEEDED,
+                identity=identity,
+                fence=fence,
+                status=STATUS_UNKNOWN,
                 sandbox_id=sandbox_id,
-                output=output,
-                server_state=state,
+                error=error,
             )
-            await _destroy_best_effort(client, sandbox_id)
             return ToolResult(
+                success=False,
                 name=SANDBOX_TOOL_NAME,
-                content=output,
-                data_source=_result_meta(
-                    identity=identity, limits=limits, server_state=state
-                ),
+                error=error,
+                data_source={"source": "opensandbox", "error_code": UNKNOWN_OUTCOME},
             )
-
-        try:
-            outcome = await client.execute(
-                sandbox_id,
-                identity,
-                command,
-                limits.timeout_seconds,
-                idempotency_key=execute_key,
-            )
-        except OpenSandboxClientError as exc:
-            if exc.code == UNKNOWN_OUTCOME:
-                # Reconcile while the sandbox still exists; never blind-replay.
-                try:
-                    state = await client.reconcile(sandbox_id)
-                except OpenSandboxClientError as reconcile_exc:
-                    error = (
-                        "OPENSANDBOX_UNKNOWN_OUTCOME: execute timed out and "
-                        f"reconciliation failed: {reconcile_exc}"
-                    )
-                    await _complete_best_effort(
-                        ledger, identity, status=STATUS_UNKNOWN, error=error
-                    )
-                    return ToolResult(
-                        success=False,
-                        name=SANDBOX_TOOL_NAME,
-                        error=error,
-                        data_source={
-                            "source": "opensandbox",
-                            "error_code": UNKNOWN_OUTCOME,
-                        },
-                    )
-                prior = _prior_server_execution(state, execute_key)
-                if prior is not None:
-                    output = str(prior.get("output") or "")
-                    await _complete_best_effort(
-                        ledger,
-                        identity,
-                        status=STATUS_SUCCEEDED,
-                        sandbox_id=sandbox_id,
-                        output=output,
-                        server_state=state,
-                    )
-                    await _destroy_best_effort(client, sandbox_id)
-                    return ToolResult(
-                        name=SANDBOX_TOOL_NAME,
-                        content=output,
-                        data_source=_result_meta(
-                            identity=identity, limits=limits, server_state=state
-                        ),
-                    )
-                error = (
-                    "OPENSANDBOX_UNKNOWN_OUTCOME: execute timed out; "
-                    "server-side state reconciled - no duplicate execution "
-                    "was issued"
-                )
-                await _complete_best_effort(
-                    ledger,
-                    identity,
-                    status=STATUS_UNKNOWN,
-                    sandbox_id=sandbox_id,
-                    error=error,
-                    server_state=state,
-                )
-                return ToolResult(
-                    success=False,
-                    name=SANDBOX_TOOL_NAME,
-                    error=error,
-                    data_source=_result_meta(
-                        identity=identity, limits=limits, server_state=state
-                    ),
-                )
-            raise
-
-        output = str(outcome.get("output") or outcome.get("result") or "")
-
-        # Record the terminal success BEFORE destroy: the ledger is the
-        # durable source of truth once the sandbox is gone and the server is
-        # no longer queryable.
-        await _complete_best_effort(
+        # Fresh create in THIS call: no prior owner ever executed (the
+        # protocol records the sandbox before any execute), so a transient
+        # GET failure is not a safety hazard - execute is still keyed.
+        state = {}
+    prior = _prior_server_execution(state, execute_key)
+    if prior is not None:
+        output = str(prior.get("output") or "")
+        await _settle_fenced(
             ledger,
-            identity,
+            identity=identity,
+            fence=fence,
             status=STATUS_SUCCEEDED,
             sandbox_id=sandbox_id,
             output=output,
-            server_state=outcome,
+            server_state=state,
         )
+        _ownership_ok()
         await _destroy_best_effort(client, sandbox_id)
         return ToolResult(
             name=SANDBOX_TOOL_NAME,
             content=output,
             data_source=_result_meta(
-                identity=identity, limits=limits, server_state=outcome
+                identity=identity, limits=limits, server_state=state
             ),
         )
 
+    try:
+        outcome = await client.execute(
+            sandbox_id,
+            identity,
+            command,
+            limits.timeout_seconds,
+            idempotency_key=execute_key,
+        )
+    except OpenSandboxClientError as exc:
+        if exc.code == UNKNOWN_OUTCOME:
+            # Reconcile while the sandbox still exists; never blind-replay.
+            try:
+                state = await client.reconcile(sandbox_id)
+            except OpenSandboxClientError as reconcile_exc:
+                error = (
+                    "OPENSANDBOX_UNKNOWN_OUTCOME: execute timed out and "
+                    f"reconciliation failed: {reconcile_exc}"
+                )
+                await _settle_fenced(
+                    ledger,
+                    identity=identity,
+                    fence=fence,
+                    status=STATUS_UNKNOWN,
+                    sandbox_id=sandbox_id,
+                    error=error,
+                )
+                return ToolResult(
+                    success=False,
+                    name=SANDBOX_TOOL_NAME,
+                    error=error,
+                    data_source={
+                        "source": "opensandbox",
+                        "error_code": UNKNOWN_OUTCOME,
+                    },
+                )
+            prior = _prior_server_execution(state, execute_key)
+            if prior is not None:
+                output = str(prior.get("output") or "")
+                await _settle_fenced(
+                    ledger,
+                    identity=identity,
+                    fence=fence,
+                    status=STATUS_SUCCEEDED,
+                    sandbox_id=sandbox_id,
+                    output=output,
+                    server_state=state,
+                )
+                _ownership_ok()
+                await _destroy_best_effort(client, sandbox_id)
+                return ToolResult(
+                    name=SANDBOX_TOOL_NAME,
+                    content=output,
+                    data_source=_result_meta(
+                        identity=identity, limits=limits, server_state=state
+                    ),
+                )
+            error = (
+                "OPENSANDBOX_UNKNOWN_OUTCOME: execute timed out; "
+                "server-side state reconciled - no duplicate execution "
+                "was issued"
+            )
+            await _settle_fenced(
+                ledger,
+                identity=identity,
+                fence=fence,
+                status=STATUS_UNKNOWN,
+                sandbox_id=sandbox_id,
+                error=error,
+                server_state=state,
+            )
+            return ToolResult(
+                success=False,
+                name=SANDBOX_TOOL_NAME,
+                error=error,
+                data_source=_result_meta(
+                    identity=identity, limits=limits, server_state=state
+                ),
+            )
+        raise
+
+    output = str(outcome.get("output") or outcome.get("result") or "")
+
+    # Record the terminal success BEFORE destroy: the ledger is the durable
+    # source of truth once the sandbox is gone. A failed terminal write
+    # raises HERE, before destroy, leaving the sandbox queryable.
+    await _settle_fenced(
+        ledger,
+        identity=identity,
+        fence=fence,
+        status=STATUS_SUCCEEDED,
+        sandbox_id=sandbox_id,
+        output=output,
+        server_state=outcome,
+    )
+    _ownership_ok()
+    await _destroy_best_effort(client, sandbox_id)
+    return ToolResult(
+        name=SANDBOX_TOOL_NAME,
+        content=output,
+        data_source=_result_meta(
+            identity=identity, limits=limits, server_state=outcome
+        ),
+    )
+
+
+def replace_status(
+    record: SandboxInvocationRecord, *, status: str, sandbox_id: str
+) -> SandboxInvocationRecord:
+    """Local mirror update after a successful fenced record_created."""
+    from dataclasses import replace
+
+    return replace(record, status=status, sandbox_id=sandbox_id)
+
 
 async def _destroy_best_effort(client: OpenSandboxClient, sandbox_id: str) -> None:
-    # Best-effort teardown; the server also enforces sandbox TTL.
+    # Best-effort teardown; the server also enforces sandbox TTL. Called
+    # ONLY after a fenced terminal write succeeded.
     try:
         await client.destroy_sandbox(sandbox_id)
     except OpenSandboxClientError:
         pass
+
+
+class SandboxReconciler:
+    """Durable reconciler for crashed non-terminal invocations (S5-01).
+
+    Scans expired pending/created rows, atomically takes each over and
+    re-drives the remote create/execute with the SAME idempotency keys the
+    crashed owner used (stored in the row). The OpenSandbox server dedupes
+    by key, so re-driving never doubles a side effect; when the remote
+    state cannot prove what happened, the row fails closed to unknown.
+
+    The reconciler runs in EVERY Core process; the takeover CAS guarantees
+    exactly one process drives each row. Rows whose lease is still alive
+    are never touched.
+    """
+
+    def __init__(
+        self,
+        ledger: SandboxInvocationLedger,
+        *,
+        interval_s: float = RECONCILER_INTERVAL_SECONDS,
+        batch: int = RECONCILER_BATCH,
+        lease_seconds: float = RECONCILER_LEASE_SECONDS,
+    ) -> None:
+        self._ledger = ledger
+        self._interval_s = interval_s
+        self._batch = batch
+        self._lease_seconds = lease_seconds
+        self._owner_id = f"reconciler-{os.getpid()}"
+
+    async def reconcile_once(self) -> int:
+        """Scan and converge expired rows once; returns the count driven."""
+        try:
+            client = OpenSandboxClient.from_env()
+        except OpenSandboxClientError:
+            return 0  # capability not configured: nothing to converge
+        rows = await self._ledger.list_expired(limit=self._batch)
+        if not rows:
+            await client.aclose()
+            return 0
+        reconciled = 0
+        try:
+            for row in rows:
+                try:
+                    if await self._reconcile_row(row, client):
+                        reconciled += 1
+                except Exception:  # noqa: BLE001 - one row never blocks the scan
+                    logger.exception(
+                        "sandbox reconciler failed to converge %s/%s",
+                        row.workspace_id,
+                        row.invocation_id,
+                    )
+        finally:
+            await client.aclose()
+        return reconciled
+
+    async def _reconcile_row(self, row: SandboxInvocationRecord, client: OpenSandboxClient) -> bool:
+        outcome = await self._ledger.takeover(
+            workspace_id=row.workspace_id,
+            invocation_id=row.invocation_id,
+            owner_id=self._owner_id,
+            lease_seconds=self._lease_seconds,
+        )
+        if outcome.kind != "takeover" or outcome.fence is None or outcome.record is None:
+            return False  # replay / still alive / gone: nothing to drive
+
+        payload = outcome.record.request_payload or {}
+        command = str(payload.get("command") or "").strip()
+        identity = _identity_from_payload(payload)
+        if not command or identity is None:
+            # The row cannot be resumed without the original request
+            # (pre-S5-01 rows). Never invent a command: fail closed.
+            error = (
+                "OPENSANDBOX_UNKNOWN_OUTCOME: the invocation row does not "
+                "carry the original request payload; the remote outcome "
+                "cannot be proven and will not be blindly replayed"
+            )
+            try:
+                await _settle_fenced(
+                    self._ledger,
+                    identity=identity or _placeholder_identity(row),
+                    fence=outcome.fence,
+                    status=STATUS_UNKNOWN,
+                    sandbox_id=outcome.record.sandbox_id,
+                    error=error,
+                )
+            except SandboxLedgerError:
+                logger.exception("reconciler could not settle payload-less row")
+            return True
+
+        limits = _limits_from_payload(payload)
+        ownership_lost = asyncio.Event()
+        renew_task = asyncio.create_task(
+            _renew_loop(
+                self._ledger,
+                workspace_id=row.workspace_id,
+                invocation_id=row.invocation_id,
+                fence=outcome.fence,
+                lease_seconds=self._lease_seconds,
+                ownership_lost=ownership_lost,
+            )
+        )
+        try:
+            await _drive_remote_execution(
+                command=command,
+                identity=identity,
+                limits=limits,
+                create_key=outcome.record.create_key,
+                execute_key=outcome.record.execute_key,
+                ledger=self._ledger,
+                record=outcome.record,
+                fence=outcome.fence,
+                client=client,
+                ownership_lost=ownership_lost,
+            )
+            return True
+        except OpenSandboxClientError as exc:
+            # Definitive remote failure: settle failed under our fence.
+            try:
+                await _settle_fenced(
+                    self._ledger,
+                    identity=identity,
+                    fence=outcome.fence,
+                    status=STATUS_FAILED,
+                    sandbox_id=outcome.record.sandbox_id,
+                    error=str(exc),
+                )
+            except SandboxLedgerError:
+                logger.exception("reconciler failed settle after remote error")
+            return True
+        except SandboxLedgerError as exc:
+            logger.warning(
+                "sandbox reconciler could not settle %s/%s: %s",
+                row.workspace_id,
+                row.invocation_id,
+                exc,
+            )
+            return False
+        finally:
+            renew_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await renew_task
+
+    async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
+        stop_event = stop_event or asyncio.Event()
+        while not stop_event.is_set():
+            try:
+                await self.reconcile_once()
+            except SandboxLedgerError as exc:
+                logger.warning("sandbox reconciler scan failed: %s", exc)
+            except Exception:  # noqa: BLE001 - keep the loop alive
+                logger.exception("sandbox reconciler iteration failed")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=self._interval_s)
+            except asyncio.TimeoutError:
+                pass
+
+
+def _placeholder_identity(row: SandboxInvocationRecord) -> SandboxIdentity:
+    """Identity used ONLY to settle payload-less pre-S5-01 rows unknown."""
+    return SandboxIdentity(
+        workspace_id=row.workspace_id,
+        run_id="unknown",
+        step_id="unknown",
+        attempt_id="unknown",
+        invocation_id=row.invocation_id,
+        client_request_id="unknown",
+    )
+
+
+def create_sandbox_reconciler() -> SandboxReconciler | None:
+    """Build the durable reconciler for the production PG ledger.
+
+    Returns None when PostgreSQL is not configured or when a test injected
+    an in-memory ledger (reconciliation there is driven by the claim
+    takeover path instead).
+    """
+    dsn = (os.getenv("POSTGRES_DSN") or "").strip()
+    if not dsn:
+        return None
+    ledger = _get_sandbox_ledger()
+    if isinstance(ledger, InMemorySandboxInvocationLedger):
+        return None
+    return SandboxReconciler(ledger)
 
 
 def build_sandbox_tools() -> dict[str, Tool]:

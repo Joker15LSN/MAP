@@ -51,7 +51,9 @@ import argparse
 import datetime as dt
 import json
 import re
+import secrets
 import sys
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -545,49 +547,94 @@ def scenario_reload_feedback(page, captured: Captured, answer: str) -> None:
     )
 
 
-def scenario_stop_mid_stream(page, captured: Captured, fake_llm_url: str) -> None:
-    """Stop a slow stream from the UI; the terminal state survives reload."""
-    configure_fake_llm(fake_llm_url, 0.35)
+def scenario_stop_mid_stream(
+    page, captured: Captured, fake_llm_url: str, repeat: int = 1
+) -> list[dict]:
+    """Stop a slow stream from the UI; the terminal state survives reload.
+
+    S5-04: repeat>1 runs the browser-layer stop stability loop. Each round
+    sends a unique message, asserts the round produced its OWN new stop API
+    request, and re-verifies (after reload) that the assistant row for that
+    round's unique message is still stopped. The fake LLM stays slow per
+    round and is restored to 0 by the outer finally."""
+    token = secrets.token_hex(4)
+    iterations: list[dict] = []
     try:
-        page.get_by_label("输入问题").fill("慢慢回答我")
-        page.get_by_role("button", name=SEND_BUTTON).click()
-        stop_button = page.get_by_test_id("stop-button")
-        stop_button.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
-        stop_button.click()
-        page.wait_for_function(
-            """() => {
-                const rows = document.querySelectorAll('[data-testid="message-assistant"]');
-                const last = rows[rows.length - 1];
-                return Boolean(last && last.textContent.includes('stopped'));
-            }""",
-            timeout=NAV_TIMEOUT_MS,
-        )
+        for round_num in range(1, repeat + 1):
+            message = f"慢慢回答我-{round_num}-{token}"
+            # captured is shared across scenarios: count this round's new
+            # stop requests by tracking the baseline before it starts.
+            base_stop_count = len(captured.stop_requests)
+            configure_fake_llm(fake_llm_url, 0.35)
+            t0 = time.monotonic()
 
-        page.reload()
-        page.wait_for_function(
-            """() => {
-                const rows = document.querySelectorAll('[data-testid="message-assistant"]');
-                return Array.from(rows).some((row) => row.textContent.includes('stopped'));
-            }""",
-            timeout=NAV_TIMEOUT_MS,
-        )
+            page.get_by_label("输入问题").fill(message)
+            page.get_by_role("button", name=SEND_BUTTON).click()
+            stop_button = page.get_by_test_id("stop-button")
+            stop_button.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
+            t_stop_clicked = time.monotonic()
+            stop_button.click()
 
-        # S4-05: the UI stop button must FIRST issue the server stop API
-        # (POST /api/v1/messages/{id}:stop), not merely abort the local SSE.
-        expect(
-            bool(captured.stop_requests),
-            "stop click never issued the server stop API request "
-            "(POST /api/v1/messages/{id}:stop)",
-        )
-        stop_request = captured.stop_requests[-1]
-        expect(
-            stop_request["url"].endswith(":stop"),
-            f"unexpected stop request url: {stop_request['url']}",
-        )
-        expect(bool(stop_request["x_request_id"]), "stop request missing X-Request-ID")
-        expect(bool(stop_request["x_session_id"]), "stop request missing X-Session-ID")
+            # This round's USER row (unique text) must be immediately
+            # followed by its ASSISTANT row showing 'stopped'.
+            wait_js = """(message) => {
+                const rows = document.querySelectorAll(
+                    '[data-testid="message-user"], [data-testid="message-assistant"]'
+                );
+                for (let i = 0; i < rows.length; i++) {
+                    if (rows[i].getAttribute('data-testid') === 'message-user'
+                        && rows[i].textContent.includes(message)) {
+                        const next = rows[i + 1];
+                        return Boolean(next
+                            && next.getAttribute('data-testid') === 'message-assistant'
+                            && next.textContent.includes('stopped'));
+                    }
+                }
+                return false;
+            }"""
+            page.wait_for_function(wait_js, arg=message, timeout=NAV_TIMEOUT_MS)
+            t_ui_stopped = time.monotonic()
+
+            page.reload()
+            page.wait_for_function(wait_js, arg=message, timeout=NAV_TIMEOUT_MS)
+
+            # S4-05 / S5-04: the UI stop button must FIRST issue the server
+            # stop API (POST /api/v1/messages/{id}:stop), not merely abort
+            # the local SSE — and THIS round must add a new such request.
+            expect(
+                len(captured.stop_requests) > base_stop_count,
+                "stop click never issued the server stop API request "
+                "(POST /api/v1/messages/{id}:stop)",
+            )
+            stop_request = captured.stop_requests[-1]
+            expect(
+                stop_request["url"].endswith(":stop"),
+                f"unexpected stop request url: {stop_request['url']}",
+            )
+            expect(bool(stop_request["x_request_id"]), "stop request missing X-Request-ID")
+            expect(bool(stop_request["x_session_id"]), "stop request missing X-Session-ID")
+
+            round_elapsed = time.monotonic() - t0
+            expect(
+                round_elapsed <= 60.0,
+                f"browser stop round {round_num} exceeded the 60s budget "
+                f"({round_elapsed:.2f}s)",
+            )
+            iterations.append(
+                {
+                    "iteration": round_num,
+                    "message": message,
+                    "stop_request_url": stop_request["url"],
+                    "stop_to_ui_stopped_s": round(t_ui_stopped - t_stop_clicked, 3),
+                    "terminal_state": "stopped",
+                }
+            )
+            print(f"[browser-e2e] stop stability round {round_num}/{repeat} OK", flush=True)
+            # Keep the fake LLM slow for the next round; outer finally resets.
+            configure_fake_llm(fake_llm_url, 0.35)
     finally:
         configure_fake_llm(fake_llm_url, 0.0)
+    return iterations
 
 
 # ---------------------------------------------------------------------------
@@ -835,7 +882,16 @@ def main() -> int:
         help="R4-P2-01 failure reproduction: verify the hygiene gate is "
         "fail-closed without needing a running stack",
     )
+    parser.add_argument(
+        "--repeat-stop",
+        type=int,
+        default=1,
+        help="S5-04: number of browser-layer stop scenario rounds (default 1)",
+    )
     args = parser.parse_args()
+
+    if args.repeat_stop < 1:
+        parser.error(f"--repeat-stop must be >= 1 (got {args.repeat_stop})")
 
     if args.self_test:
         return run_self_test()
@@ -853,6 +909,7 @@ def main() -> int:
 
     captured = Captured()
     scenarios: dict[str, str] = {}
+    stop_repeat: list[dict] = []
     failure: str | None = None
     hygiene: dict = {}
     diagnostics: list[str] = []
@@ -878,7 +935,9 @@ def main() -> int:
             print("[browser-e2e] reload + feedback + withdraw OK", flush=True)
 
             captured.begin_scenario("browser_stop_mid_stream")
-            scenario_stop_mid_stream(page, captured, args.fake_llm_url)
+            stop_repeat = scenario_stop_mid_stream(
+                page, captured, args.fake_llm_url, repeat=args.repeat_stop
+            )
             captured.end_scenario()
             scenarios["browser_stop_mid_stream"] = "PASS"
             print("[browser-e2e] stop mid-stream + reload OK", flush=True)
@@ -914,6 +973,7 @@ def main() -> int:
         "result": "PASS" if failure is None else "FAIL",
         "scenarios": scenarios,
         "workspace_id": args.workspace_id,
+        "stop_repeat": stop_repeat,
         **captured.as_dict(),
         **hygiene,
     }

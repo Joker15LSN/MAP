@@ -98,7 +98,12 @@ class JobExecutionContext:
             "step_id": step_id,
             "attempt_id": self.attempt_id,
             "invocation_id": invocation_id,
-            "client_request_id": self.client_request_id or self.idempotency_key,
+            # S5-01: all six fields must ALWAYS be present in the worker
+            # chain; fall back to the job id (stable, unique) so a missing
+            # idempotency key can never strip the client_request_id.
+            "client_request_id": (
+                self.client_request_id or self.idempotency_key or str(self.job_id)
+            ),
         }
 
 

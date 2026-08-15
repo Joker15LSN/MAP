@@ -1,5 +1,7 @@
 """S4-06 acceptance: production Compose is fail-closed on MAP_ENV.
 
+S5-03 [P0]: production Compose injects the CORS contract into the BFF.
+
 Verifies the production override (docker-compose.prod.yml) against the
 merged compose configuration:
 
@@ -7,7 +9,11 @@ merged compose configuration:
   interpolation in the override);
 - MAP_ENV=prod -> all three application services resolve to prod;
 - the production entrypoint scripts/compose-prod.sh exits non-zero for
-  MAP_ENV=dev / MAP_ENV=<unknown> (no silent dev fallback).
+  MAP_ENV=dev / MAP_ENV=<unknown> (no silent dev fallback);
+- S5-03: the prod merge resolves MAP_CORS_ORIGINS / MAP_CORS_ALLOW_CREDENTIALS
+  into BOTH backend-service and algorithm-service (origins :?required,
+  credentials default false), and the BFF startup path (create_app) honours
+  those container env values fail-closed.
 
 Hermetic like the OTel compose test: --env-file /dev/null and a stripped
 subprocess env so the developer's .env / shell can never leak in.
@@ -22,6 +28,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
+
+from app.main import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -112,14 +121,114 @@ def _entrypoint(
     )
 
 
+def _compose_config(
+    *extra_args: str,
+    env_override: dict[str, str] | None = None,
+) -> dict:
+    """Resolve docker compose config and return the parsed JSON."""
+    result = _compose(*extra_args, env_override=env_override)
+    assert result.returncode == 0, f"docker compose config failed: {result.stderr.strip()}"
+    return json.loads(result.stdout)
+
+
+def _service_env(config: dict, service: str) -> dict[str, str]:
+    environment = config["services"][service].get("environment", {})
+    # compose emits environment as either a mapping or a list of KEY=VALUE.
+    if isinstance(environment, list):
+        return dict(item.split("=", 1) for item in environment)
+    return {str(key): str(value) for key, value in environment.items()}
+
+
+_CORS_SERVICES = ("backend-service", "algorithm-service")
+
+_AUTH_SECRET = "fake-proxy-secret-for-cors-compose-test"
+
+# Every Settings-relevant env var, dropped before injecting the container env
+# so a developer shell can never leak into the in-process startup assertions.
+_STARTUP_CLEAN_KEYS = (
+    "MAP_CORE_API_ORIGIN",
+    "MAP_BFF_STATE_FILE",
+    "MAP_AUTH_MODE",
+    "MAP_ENV",
+    "MAP_DEFAULT_WORKSPACE_ID",
+    "MAP_TRUSTED_PROXY_SECRET",
+    "MAP_TRUSTED_PROXY_REQUIRED",
+    "MAP_SERVICE_CREDENTIALS",
+    "MAP_SERVICE_AUDIENCE",
+    "MAP_CORS_ORIGINS",
+    "MAP_CORS_ALLOW_CREDENTIALS",
+)
+
+
+def _backend_env(
+    *files: str,
+    env_override: dict[str, str] | None = None,
+) -> dict[str, str]:
+    config = _compose_config(*files, env_override=env_override)
+    return _service_env(config, "backend-service")
+
+
+def _inject_compose_env(
+    monkeypatch,
+    tmp_path,
+    backend_env: dict[str, str],
+    *,
+    trusted_header: bool = True,
+    cors_origins: str | None = None,
+    cors_allow_credentials: str | None = None,
+    env: str | None = None,
+) -> None:
+    """Replay the backend container env (from compose config) in-process.
+
+    create_app() reads load_settings() from os.environ exactly as the
+    container would, so the resolved compose values are injected here. Auth
+    is set to a valid trusted_header identity for prod cases: S5-03 covers
+    CORS only and the prod override does not (yet) pin MAP_AUTH_MODE, so the
+    unrelated MAP_AUTH_MODE=dev fail-closed must not mask the CORS path.
+    """
+    for key in _STARTUP_CLEAN_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MAP_ENV", env if env is not None else backend_env.get("MAP_ENV", "dev"))
+    monkeypatch.setenv(
+        "MAP_CORS_ORIGINS",
+        cors_origins if cors_origins is not None else backend_env.get("MAP_CORS_ORIGINS", "*"),
+    )
+    monkeypatch.setenv(
+        "MAP_CORS_ALLOW_CREDENTIALS",
+        cors_allow_credentials
+        if cors_allow_credentials is not None
+        else backend_env.get("MAP_CORS_ALLOW_CREDENTIALS", "true"),
+    )
+    monkeypatch.setenv("MAP_BFF_STATE_FILE", str(tmp_path / "admin_state.json"))
+    if trusted_header:
+        monkeypatch.setenv("MAP_AUTH_MODE", "trusted_header")
+        monkeypatch.setenv("MAP_TRUSTED_PROXY_REQUIRED", "true")
+        monkeypatch.setenv("MAP_TRUSTED_PROXY_SECRET", _AUTH_SECRET)
+    else:
+        monkeypatch.setenv("MAP_AUTH_MODE", "dev")
+
+
 def test_prod_compose_missing_map_env_exits_nonzero() -> None:
-    result = _compose(*_OVERRIDE_ARGS)
+    # S5-03: inject origins so the only remaining :? failure is MAP_ENV
+    # (otherwise compose reports the alphabetically-first MAP_CORS_ORIGINS).
+    result = _compose(
+        *_OVERRIDE_ARGS,
+        env_override={"MAP_CORS_ORIGINS": "https://app.example.com"},
+    )
     assert result.returncode != 0
     assert "MAP_ENV" in result.stderr
 
 
 def test_prod_compose_map_env_prod_resolves_all_three_services() -> None:
-    result = _compose(*_OVERRIDE_ARGS, env_override={"MAP_ENV": "prod"})
+    result = _compose(
+        *_OVERRIDE_ARGS,
+        env_override={
+            "MAP_ENV": "prod",
+            # S5-03: the prod override now :?requires origins; inject a legal
+            # value so this assertion exercises the MAP_ENV signal, not CORS.
+            "MAP_CORS_ORIGINS": "https://app.example.com",
+        },
+    )
     assert result.returncode == 0, result.stderr
     config = json.loads(result.stdout)
     for service in _PROD_SERVICES:
@@ -145,5 +254,149 @@ def test_prod_entrypoint_rejects_dev_and_unknown() -> None:
 
 
 def test_prod_entrypoint_accepts_prod() -> None:
-    result = _entrypoint("config", env_override={"MAP_ENV": "prod"})
+    result = _entrypoint(
+        "config",
+        env_override={
+            "MAP_ENV": "prod",
+            # S5-03: origins are :?required in the prod override.
+            "MAP_CORS_ORIGINS": "https://app.example.com",
+        },
+    )
     assert result.returncode == 0, result.stderr
+
+
+# --- S5-03 [P0]: production Compose injects the CORS contract into the BFF ---
+
+
+def test_prod_compose_injects_cors_into_both_services() -> None:
+    """The prod merge resolves CORS into BOTH containers (no internal fallback).
+
+    Credentials default to false under the prod override, so a deploy that
+    sets only origins never inherits the base dev wildcard + credentials.
+    """
+    config = _compose_config(
+        *_OVERRIDE_ARGS,
+        env_override={"MAP_ENV": "prod", "MAP_CORS_ORIGINS": "https://app.example.com"},
+    )
+    for service in _CORS_SERVICES:
+        env = _service_env(config, service)
+        assert env["MAP_CORS_ORIGINS"] == "https://app.example.com", service
+        assert env["MAP_CORS_ALLOW_CREDENTIALS"] == "false", service
+
+
+def test_prod_compose_missing_cors_origins_exits_nonzero() -> None:
+    result = _compose(*_OVERRIDE_ARGS, env_override={"MAP_ENV": "prod"})
+    assert result.returncode != 0
+    assert "MAP_CORS_ORIGINS" in result.stderr
+
+
+def test_prod_compose_explicit_cors_credentials_reach_both_services() -> None:
+    config = _compose_config(
+        *_OVERRIDE_ARGS,
+        env_override={
+            "MAP_ENV": "prod",
+            "MAP_CORS_ORIGINS": "https://app.example.com",
+            "MAP_CORS_ALLOW_CREDENTIALS": "true",
+        },
+    )
+    for service in _CORS_SERVICES:
+        env = _service_env(config, service)
+        assert env["MAP_CORS_ORIGINS"] == "https://app.example.com", service
+        assert env["MAP_CORS_ALLOW_CREDENTIALS"] == "true", service
+
+
+def test_base_compose_keeps_dev_cors_defaults() -> None:
+    config = _compose_config("-f", "docker-compose.yml", env_override={"MAP_ENV": "dev"})
+    for service in _CORS_SERVICES:
+        env = _service_env(config, service)
+        assert env["MAP_CORS_ORIGINS"] == "*", service
+        assert env["MAP_CORS_ALLOW_CREDENTIALS"] == "true", service
+
+
+# --- S5-03 startup path: create_app honours the resolved container env -----
+
+
+def test_startup_prod_legal_origin_succeeds_and_enforces_preflight(
+    monkeypatch, tmp_path
+) -> None:
+    backend_env = _backend_env(
+        *_OVERRIDE_ARGS,
+        env_override={
+            "MAP_ENV": "prod",
+            "MAP_CORS_ORIGINS": "https://app.example.com",
+            "MAP_CORS_ALLOW_CREDENTIALS": "true",
+        },
+    )
+    _inject_compose_env(monkeypatch, tmp_path, backend_env)
+    app = create_app()
+    client = TestClient(app)
+
+    allowed = client.options(
+        "/ready",
+        headers={
+            "Origin": "https://app.example.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == "https://app.example.com"
+
+    denied = client.options(
+        "/ready",
+        headers={
+            "Origin": "https://evil.example.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert denied.status_code == 400
+    assert "access-control-allow-origin" not in denied.headers
+
+
+def test_startup_prod_empty_origins_fails(monkeypatch, tmp_path) -> None:
+    # Compose :? already blocks an empty MAP_CORS_ORIGINS at config time; this
+    # drives the startup path directly with the same value the BFF would see.
+    _inject_compose_env(
+        monkeypatch,
+        tmp_path,
+        {},
+        cors_origins="",
+        env="prod",
+    )
+    with pytest.raises(RuntimeError, match="invalid MAP_CORS_ORIGINS"):
+        create_app()
+
+
+def test_startup_prod_wildcard_with_credentials_fails(monkeypatch, tmp_path) -> None:
+    backend_env = _backend_env(
+        *_OVERRIDE_ARGS,
+        env_override={
+            "MAP_ENV": "prod",
+            "MAP_CORS_ORIGINS": "*",
+            "MAP_CORS_ALLOW_CREDENTIALS": "true",
+        },
+    )
+    _inject_compose_env(monkeypatch, tmp_path, backend_env)
+    with pytest.raises(RuntimeError, match="wildcard CORS with credentials"):
+        create_app()
+
+
+def test_startup_prod_illegal_origin_fails(monkeypatch, tmp_path) -> None:
+    backend_env = _backend_env(
+        *_OVERRIDE_ARGS,
+        env_override={
+            "MAP_ENV": "prod",
+            "MAP_CORS_ORIGINS": "https://app.example.com/path",
+            "MAP_CORS_ALLOW_CREDENTIALS": "false",
+        },
+    )
+    _inject_compose_env(monkeypatch, tmp_path, backend_env)
+    with pytest.raises(RuntimeError, match="invalid MAP_CORS_ORIGINS"):
+        create_app()
+
+
+def test_startup_dev_defaults_succeed(monkeypatch, tmp_path) -> None:
+    backend_env = _backend_env("-f", "docker-compose.yml", env_override={"MAP_ENV": "dev"})
+    _inject_compose_env(monkeypatch, tmp_path, backend_env, trusted_header=False)
+    app = create_app()
+    assert app.state.settings.cors_origins == "*"
+    assert app.state.settings.cors_allow_credentials is True

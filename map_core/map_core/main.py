@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -214,7 +215,9 @@ async def lifespan(app: FastAPI):
     from .routers.global_domain_router import global_domain_router
     from .routers.master_pipeline_router import master_pipeline_router
     from .routers.openapi_router import openapi_router
+    from .routers.sandbox_router import sandbox_router
     from .routers.system_router import system_router
+    from .service import sandbox_tools
     from .service.state_store import GlobalAgentStateStore
 
     app.include_router(system_router)
@@ -222,9 +225,30 @@ async def lifespan(app: FastAPI):
     app.include_router(flow_domain_router)
     app.include_router(master_pipeline_router)
     app.include_router(openapi_router)
+    app.include_router(sandbox_router)
 
     GlobalAgentStateStore.instance().start()
     logger.info("[PID: {}] EventDispatcher started.", os.getpid())
+
+    # S5-01: the durable OpenSandbox reconciler converges crashed
+    # non-terminal invocations (owner died between a remote create/execute
+    # and the ledger write). It runs in every Core process; the takeover
+    # CAS in the ledger guarantees exactly one process drives each row.
+    # Started best-effort: without POSTGRES_DSN it stays a no-op and never
+    # blocks startup.
+    sandbox_reconciler = sandbox_tools.create_sandbox_reconciler()
+    sandbox_reconciler_stop: asyncio.Event | None = None
+    sandbox_reconciler_task: asyncio.Task | None = None
+    if sandbox_reconciler is not None:
+        sandbox_reconciler_stop = asyncio.Event()
+        sandbox_reconciler_task = asyncio.create_task(
+            sandbox_reconciler.run_forever(sandbox_reconciler_stop)
+        )
+        app.state.sandbox_reconciler_task = sandbox_reconciler_task
+        app.state.sandbox_reconciler_stop = sandbox_reconciler_stop
+        logger.info(
+            "[PID: {}] SandboxInvocation reconciler started.", os.getpid()
+        )
 
     try:
         yield
@@ -232,6 +256,18 @@ async def lifespan(app: FastAPI):
         state_store = GlobalAgentStateStore.maybe_instance()
         if state_store is not None:
             await state_store.close()
+
+        # S5-01: stop the reconciler first, then close the sandbox ledger
+        # pool so a stopping process never leaks pooled connections.
+        if sandbox_reconciler_task is not None:
+            if sandbox_reconciler_stop is not None:
+                sandbox_reconciler_stop.set()
+            sandbox_reconciler_task.cancel()
+            try:
+                await sandbox_reconciler_task
+            except asyncio.CancelledError:
+                pass
+        await sandbox_tools.close_sandbox_ledger()
 
         pg_client = getattr(app.state, "postgres_client", None)
         if pg_client is not None:

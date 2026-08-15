@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -133,6 +134,96 @@ def git_changed_paths_since(root: Path, sha: str) -> list[str]:
     if sha == git_head(root):
         return []
     return git(root, "diff", "--name-only", sha, "HEAD").splitlines()
+
+
+def git_changed_paths_between(root: Path, base: str, head: str) -> list[str]:
+    if base == head:
+        return []
+    return git(root, "diff", "--name-only", base, head).splitlines()
+
+
+def _baseline_from_manifests(manifests: list[tuple[Path, str, str, str]]) -> str | None:
+    """The recorded review baseline, valid only when every manifest agrees."""
+    baselines: set[str] = set()
+    for manifest, _task_dir, _sha_dir, _ac_dir in manifests:
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("baseline_sha"), str):
+            baselines.add(data["baseline_sha"])
+    return baselines.pop() if len(baselines) == 1 else None
+
+
+def _check_external_trust_anchor(root: Path, trust_config: dict) -> list[str]:
+    """S5-02: the in-repo trust config is only a MIRROR of the protected CI
+    trust root. Final mode demands an externally injected anchor (digest or
+    public key) that the mirror must match."""
+    from evidence_signing import trust_config_digest  # noqa: PLC0415 - stdlib path
+
+    digest = os.getenv("MAP_EVIDENCE_TRUST_DIGEST", "").strip()
+    public_key = os.getenv("MAP_EVIDENCE_TRUST_PUBLIC_KEY", "").strip()
+    if not digest and not public_key:
+        return [
+            "final mode requires an externally injected trust anchor "
+            "(MAP_EVIDENCE_TRUST_DIGEST or MAP_EVIDENCE_TRUST_PUBLIC_KEY); "
+            "the in-repo TODO/evidence-trust/trusted_keys.json is only a "
+            "mirror and cannot anchor its own trust"
+        ]
+    problems: list[str] = []
+    if digest:
+        if not SHA256.fullmatch(digest):
+            problems.append("MAP_EVIDENCE_TRUST_DIGEST must be a sha256 hex digest")
+        else:
+            actual = trust_config_digest(trust_config)
+            if actual != digest:
+                problems.append(
+                    "the in-repo trust config does not match the externally "
+                    f"pinned digest {digest[:12]}... (actual {actual[:12]}...); "
+                    "refusing to trust a checkout-supplied trust root"
+                )
+    if public_key:
+        pinned = {
+            str(key.get("public_key"))
+            for key in trust_config["keys"].values()
+            if isinstance(key, dict)
+        }
+        if public_key not in pinned:
+            problems.append(
+                "MAP_EVIDENCE_TRUST_PUBLIC_KEY is not one of the pinned trusted keys"
+            )
+    return problems
+
+
+def _check_attestation_after_implementation(
+    manifests: list[tuple[Path, str, str, str]],
+    freeze_sha: str,
+    commit_ts,
+    root: Path,
+) -> list[str]:
+    """S5-02: the official attestation must be produced AFTER the
+    implementation commit (the protected CI workflow runs post-commit)."""
+    problems: list[str] = []
+    for manifest, _task_dir, sha_dir, _ac_dir in manifests:
+        if sha_dir != freeze_sha:
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict) or data.get("status") not in RELEASABLE_STATUSES:
+            continue
+        started = parse_ts(str(data.get("started_at") or ""))
+        if started is None:
+            continue  # already reported by the manifest checks
+        if started <= commit_ts:
+            problems.append(
+                f"{manifest.relative_to(root)}: attestation started_at "
+                f"{data['started_at']} is not after the implementation "
+                f"commit time {commit_ts.isoformat()}; the attestation must "
+                "be produced post-commit by the protected CI workflow"
+            )
+    return problems
 
 
 def load_profile(root: Path, path: Path) -> dict:
@@ -410,6 +501,7 @@ def validate_manifest(
     verify_artifacts: bool,
     root: Path,
     trust_config: dict,
+    require_final: bool,
 ) -> list[str]:
     problems: list[str] = []
     rel = str(manifest.relative_to(root))
@@ -465,23 +557,38 @@ def validate_manifest(
     # S4-03: releasable evidence (pass / not-applicable-approved) must carry a
     # valid attestation signed by a TRUSTED CI key. The signature covers the
     # whole manifest (commit, command, environment, artifacts, assertions,
-    # producer, ...) plus the attestation's issuer/workflow, so forging the
-    # producer, command, exit code, commit or any artifact breaks verification.
-    # Free-text producer is never itself a source of trust.
+    # producer, ...) plus the attestation's issuer/workflow AND its CI
+    # identity (repository/git_ref/run_id), so forging the producer, command,
+    # exit code, commit or any artifact breaks verification. Free-text
+    # producer is never itself a source of trust.
+    #
+    # S5-02: a MISSING attestation is tolerated in structure mode (structure
+    # is explicitly not release evidence and local runs can no longer mint
+    # releasable signatures), but ALWAYS fails final mode.
     if status in RELEASABLE_STATUSES:
-        trusted_keys = {
-            str(kid): str(key.get("public_key"))
-            for kid, key in trust_config["keys"].items()
-            if isinstance(key, dict) and isinstance(key.get("public_key"), str)
-        }
-        problems.extend(
-            verify_attestation(
-                data,
-                trusted_keys=trusted_keys,
-                expected_issuer=trust_config["expected_issuer"],
-                expected_workflow=trust_config["expected_workflow"],
+        if not isinstance(data.get("attestation"), dict):
+            if require_final:
+                problems.append(
+                    f"{rel}: releasable status {status} without an "
+                    "attestation; only the protected CI workflow can attest "
+                    "pass evidence"
+                )
+        else:
+            trusted_keys = {
+                str(kid): str(key.get("public_key"))
+                for kid, key in trust_config["keys"].items()
+                if isinstance(key, dict) and isinstance(key.get("public_key"), str)
+            }
+            problems.extend(
+                verify_attestation(
+                    data,
+                    trusted_keys=trusted_keys,
+                    expected_issuer=trust_config["expected_issuer"],
+                    expected_workflow=trust_config["expected_workflow"],
+                    expected_repository=trust_config["expected_repository"],
+                    allowed_refs=trust_config["allowed_refs"],
+                )
             )
-        )
     if status == "blocked":
         if not (data["blocked_reason"] and data["blocker_owner"]):
             problems.append(f"{rel}: blocked requires blocked_reason and blocker_owner")
@@ -684,6 +791,53 @@ def main(argv: list[str] | None = None) -> int:
                     "--require-final: commits after the freeze sha touch "
                     f"non-evidence paths: {non_evidence[:5]}"
                 )
+        # S5-02: the in-repo trust config is ONLY a mirror. The release
+        # validator must be anchored by an externally injected value
+        # (protected CI secret/variable) that the mirror has to match - a
+        # developer replacing the trust root inside the same implementation
+        # commit can never self-establish trust.
+        problems.extend(
+            _check_external_trust_anchor(root, trust_config)
+        )
+        if freeze_sha:
+            # S5-02: the reviewed range may not rewrite the trust root and
+            # then establish trust from itself. baseline comes from the CI
+            # env (GATE_BASELINE_SHA) or the manifests' recorded baseline.
+            baseline = os.getenv("GATE_BASELINE_SHA") or _baseline_from_manifests(
+                manifests
+            )
+            if baseline and git_is_ancestor(root, baseline):
+                trust_changes = git_changed_paths_between(root, baseline, freeze_sha)
+                trust_root_touched = [
+                    p for p in trust_changes
+                    if p.startswith("TODO/evidence-trust/")
+                    or p == "scripts/evidence_signing.py"
+                ]
+                if trust_root_touched:
+                    problems.append(
+                        "--require-final: the reviewed range "
+                        f"{baseline[:12]}..{freeze_sha[:12]} modified the "
+                        "evidence trust root "
+                        f"({trust_root_touched[:3]}); trust cannot be "
+                        "established from a range that rewrites its own "
+                        "trust anchor"
+                    )
+            # S5-02: the attestation must have been produced AFTER the
+            # implementation commit it covers (the protected CI workflow
+            # runs post-commit). started_at before the freeze commit time
+            # means the attestation cannot be an official post-commit one.
+            try:
+                commit_ts = parse_ts(
+                    git(root, "show", "-s", "--format=%cI", freeze_sha)
+                )
+            except (subprocess.CalledProcessError, ValueError):
+                commit_ts = None
+            if commit_ts is not None:
+                problems.extend(
+                    _check_attestation_after_implementation(
+                        manifests, freeze_sha, commit_ts, root
+                    )
+                )
 
     expected: dict[str, str] = {}
     for task, acs in ac_by_task.items():
@@ -743,6 +897,7 @@ def main(argv: list[str] | None = None) -> int:
                     verify_artifacts=True,
                     root=root,
                     trust_config=trust_config,
+                    require_final=args.require_final,
                 )
             )
         # every other manifest for this AC is historical: structure only
@@ -757,6 +912,7 @@ def main(argv: list[str] | None = None) -> int:
                     verify_artifacts=False,
                     root=root,
                     trust_config=trust_config,
+                    require_final=args.require_final,
                 )
             )
         # S2-01 eligibility accounting: only the current manifest decides.

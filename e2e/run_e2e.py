@@ -665,34 +665,42 @@ def scenario_duplicate_request(ctx: Ctx, happy: dict) -> None:
     )
 
 
-def scenario_stop_mid_stream(ctx: Ctx) -> dict:
-    # Slow the fake LLM down so the stream is still open when we stop it.
-    status, _ = http_json(
-        "POST", f"{ctx.fake_llm}/__e2e/config", {"stream_token_delay_s": 0.35}
-    )
-    expect(status == 200, f"fake-llm config returned {status}")
+STOP_ROUND_BUDGET_S = 90.0
 
+
+def _stop_round(ctx: Ctx, round_num: int, token: str) -> dict:
+    """Run ONE HTTP-layer mid-stream stop round with a fresh message/run
+    identity (S5-04). Each round asserts: the stop API succeeds with
+    abort=true, the SSE terminates after stop (done event, at most one
+    late content_delta), and the message's PG terminal status is stopped."""
+    query = f"stop 稳定性第 {round_num} 轮"
     trace_id = uuid.uuid4().hex
+    run_id = f"stop-stab-{round_num}-{token}"
+    attempt_id = f"att-{round_num}"
     request_id = f"e2e-stop-{secrets.token_hex(4)}"
+    client_request_id = f"creq-{round_num}-{token}"
     headers = {
         "X-Request-ID": request_id,
+        "X-Run-ID": run_id,
+        "X-Attempt-ID": attempt_id,
+        "X-Client-Request-ID": client_request_id,
         "X-Workspace-ID": WORKSPACE_ID,
         "traceparent": traceparent_for(trace_id),
     }
     status, created = http_json(
         "POST",
         f"{ctx.bff}/api/v1/conversations",
-        {"mode": "global", "title": "E2E stop 场景"},
+        {"mode": "global", "title": f"E2E stop 稳定性 {round_num}"},
         headers,
     )
-    expect(status == 201, f"stop conversation create returned {status}")
+    expect(status == 201, f"stop stability conversation create returned {status}")
     conversation_id = created["id"]
 
     sse = SseCollector(
         "127.0.0.1",
         ctx.ports["MAP_BFF_PORT"],
         f"/api/v1/conversations/{conversation_id}/messages:stream",
-        {"query": "慢慢回答我", "request_id": request_id},
+        {"query": query, "request_id": request_id},
         headers,
     ).start()
     expect(sse.first_delta.wait(30.0), "no content_delta before stop")
@@ -700,6 +708,7 @@ def scenario_stop_mid_stream(ctx: Ctx) -> dict:
     message_id = start_data["message_id"]
     stop_index = len(sse.events)
 
+    t_stop = time.monotonic()
     status, stop_body = http_json(
         "POST", f"{ctx.bff}/api/v1/messages/{message_id}:stop", None, headers
     )
@@ -707,6 +716,7 @@ def scenario_stop_mid_stream(ctx: Ctx) -> dict:
     expect(stop_body.get("abort") is True, f"stop did not hit the registry: {stop_body}")
 
     expect(sse.finished.wait(15.0), "stream did not close within 15s after stop")
+    stop_to_done_s = time.monotonic() - t_stop
     tail = sse.deltas_after(stop_index)
     late_deltas = [d for name, d in tail if name == "content_delta"]
     expect(
@@ -722,8 +732,73 @@ def scenario_stop_mid_stream(ctx: Ctx) -> dict:
     )
     expect(final_status == "stopped", f"stopped message final status={final_status!r}")
 
-    http_json("POST", f"{ctx.fake_llm}/__e2e/config", {"stream_token_delay_s": 0.0})
-    return {"conversation_id": conversation_id, "message_id": message_id, "request_id": request_id}
+    return {
+        "iteration": round_num,
+        "query": query,
+        "conversation_id": conversation_id,
+        "message_id": message_id,
+        "request_id": request_id,
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "client_request_id": client_request_id,
+        "stop_to_done_s": round(stop_to_done_s, 3),
+        "pg_status": final_status,
+    }
+
+
+def scenario_stop_mid_stream(ctx: Ctx, repeat: int = 1) -> dict:
+    """HTTP-layer mid-stream stop; repeat>1 runs the S5-04 stability loop.
+    Each round uses a fresh message/run identity and unique query, has a
+    per-round wall-clock budget, and records per-round evidence in
+    ctx.report["stop_stability"]. Returns the FIRST round's ids for
+    backwards compatibility with the full-suite report fields."""
+    token = secrets.token_hex(4)
+    status, _ = http_json(
+        "POST", f"{ctx.fake_llm}/__e2e/config", {"stream_token_delay_s": 0.35}
+    )
+    expect(status == 200, f"fake-llm config returned {status}")
+
+    iterations: list[dict] = []
+    first: dict | None = None
+    try:
+        for round_num in range(1, repeat + 1):
+            round_start = time.monotonic()
+            evidence = _stop_round(ctx, round_num, token)
+            evidence["round_elapsed_s"] = round(time.monotonic() - round_start, 3)
+            expect(
+                evidence["round_elapsed_s"] <= STOP_ROUND_BUDGET_S,
+                f"stop stability round {round_num} exceeded the "
+                f"{STOP_ROUND_BUDGET_S:.0f}s budget "
+                f"({evidence['round_elapsed_s']}s)",
+            )
+            iterations.append(evidence)
+            if first is None:
+                first = evidence
+            log(
+                f"stop stability round {round_num}/{repeat} OK "
+                f"(message_id={evidence['message_id']}, "
+                f"stop->done={evidence['stop_to_done_s']}s, "
+                f"round={evidence['round_elapsed_s']}s)"
+            )
+    finally:
+        http_json("POST", f"{ctx.fake_llm}/__e2e/config", {"stream_token_delay_s": 0.0})
+
+    latencies = [i["stop_to_done_s"] for i in iterations]
+    ctx.report["stop_stability"] = {
+        "iterations": iterations,
+        "summary": {
+            "repeat": repeat,
+            "passed": len(iterations),
+            "total_elapsed_s": round(sum(i["round_elapsed_s"] for i in iterations), 3),
+            "avg_stop_to_done_s": round(sum(latencies) / len(latencies), 3),
+            "max_stop_to_done_s": round(max(latencies), 3),
+        },
+    }
+    return {
+        "conversation_id": first["conversation_id"],
+        "message_id": first["message_id"],
+        "request_id": first["request_id"],
+    }
 
 
 def scenario_core_restart(ctx: Ctx) -> dict:
@@ -901,7 +976,7 @@ def scenario_worker_reconcile(ctx: Ctx, happy: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def scenario_browser(ctx: Ctx) -> dict:
+def scenario_browser(ctx: Ctx, repeat_stop: int = 1) -> dict:
     """Run the Playwright scenarios in a subprocess and cross-check the
     captured conversation/session IDs against PostgreSQL and MongoDB."""
     out_path = REPO_ROOT / "e2e" / "tmp" / f"browser-{ctx.project}.json"
@@ -916,6 +991,8 @@ def scenario_browser(ctx: Ctx) -> dict:
         WORKSPACE_ID,
         "--out",
         str(out_path),
+        "--repeat-stop",
+        str(repeat_stop),
     ]
     proc = subprocess.run(
         cmd, capture_output=True, text=True, timeout=1200.0, cwd=REPO_ROOT
@@ -1744,7 +1821,7 @@ def print_report(ctx: Ctx, success: bool, failure: str | None) -> None:
         print(f"FAILURE: {failure}")
 
 
-def run_pr_suite(ctx: Ctx) -> None:
+def run_pr_suite(ctx: Ctx, repeat_browser_stop: int = 1) -> None:
     """Stable CI subset: browser happy path + identity boundary."""
     scenario_versions(ctx)
     scenario_model_center_redirect(ctx)
@@ -1759,7 +1836,7 @@ def run_pr_suite(ctx: Ctx) -> None:
     ctx.report["scenarios"]["happy_path"] = "PASS"
     log(f"happy path OK (request_id={happy['request_id']}, trace_id={happy['trace_id']})")
 
-    scenario_browser(ctx)
+    scenario_browser(ctx, repeat_browser_stop)
     ctx.report["scenarios"]["browser"] = "PASS"
     log("browser E2E OK (create/stream/reload/stop/feedback/withdraw)")
 
@@ -1768,12 +1845,12 @@ def run_pr_suite(ctx: Ctx) -> None:
     log("secure identity boundary OK")
 
 
-def run_full_suite(ctx: Ctx) -> None:
-    run_pr_suite(ctx)
-    run_fault_and_legacy_scenarios(ctx)
+def run_full_suite(ctx: Ctx, repeat_stop: int = 1, repeat_browser_stop: int = 1) -> None:
+    run_pr_suite(ctx, repeat_browser_stop)
+    run_fault_and_legacy_scenarios(ctx, repeat_stop)
 
 
-def run_fault_and_legacy_scenarios(ctx: Ctx) -> None:
+def run_fault_and_legacy_scenarios(ctx: Ctx, repeat_stop: int = 1) -> None:
     """Full-suite additions: fault matrix + the original HTTP scenarios."""
     happy = ctx.report["happy_ids"]
 
@@ -1781,7 +1858,7 @@ def run_fault_and_legacy_scenarios(ctx: Ctx) -> None:
     ctx.report["scenarios"]["duplicate_request_replay"] = "PASS"
     log("duplicate request_id replay OK")
 
-    stopped = scenario_stop_mid_stream(ctx)
+    stopped = scenario_stop_mid_stream(ctx, repeat_stop)
     ctx.report["request_ids"]["stop"] = stopped["request_id"]
     ctx.report["final_states"]["stop_message"] = "stopped"
     ctx.report["scenarios"]["stop_mid_stream"] = "PASS"
@@ -1813,16 +1890,66 @@ def run_fault_and_legacy_scenarios(ctx: Ctx) -> None:
     log("worker claim + message_reconcile OK")
 
 
+def run_stop_stability_suite(ctx: Ctx, repeat_stop: int, repeat_browser_stop: int) -> None:
+    """S5-04 stop-stability gate: reproduce the PR topology (fake-llm
+    required) and run ONLY the stop scenarios — the HTTP-layer stop N
+    rounds + the browser-layer stop N rounds — skipping happy path,
+    identity boundary and the fault matrix."""
+    # The model-center redirect is still required: the BFF embeds the
+    # model-center row into each core request, so without it the stop
+    # stream would not resolve to the fake LLM.
+    scenario_model_center_redirect(ctx)
+    ctx.report["scenarios"]["model_center_redirect"] = "PASS"
+
+    stopped = scenario_stop_mid_stream(ctx, repeat_stop)
+    ctx.report["request_ids"]["stop"] = stopped["request_id"]
+    ctx.report["final_states"]["stop_message"] = "stopped"
+    ctx.report["scenarios"]["stop_mid_stream"] = "PASS"
+    log(f"stop/abort mid-stream stability OK ({repeat_stop} round(s))")
+
+    scenario_browser(ctx, repeat_browser_stop)
+    ctx.report["scenarios"]["browser_stop_stability"] = "PASS"
+    log(f"browser stop stability OK ({repeat_browser_stop} round(s))")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="MAP Compose E2E runner")
     parser.add_argument(
         "--suite",
-        choices=["full", "pr"],
+        choices=["full", "pr", "stop-stability"],
         default="full",
         help="pr = browser happy path + identity boundary (CI); "
-        "full = everything incl. the fault matrix (default)",
+        "full = everything incl. the fault matrix (default); "
+        "stop-stability = stop scenarios only (S5-04 reproducible gate)",
+    )
+    parser.add_argument(
+        "--repeat-stop",
+        type=int,
+        default=None,
+        help="HTTP-layer stop scenario rounds (default: 1, or 20 for "
+        "--suite stop-stability)",
+    )
+    parser.add_argument(
+        "--repeat-browser-stop",
+        type=int,
+        default=None,
+        help="browser-layer stop scenario rounds (default: 1, or 20 for "
+        "--suite stop-stability)",
     )
     args = parser.parse_args()
+
+    # S5-04: --suite stop-stability implicitly sets both repeat counts to
+    # 20 unless the caller overrides them explicitly on the command line.
+    repeat_stop = args.repeat_stop if args.repeat_stop is not None else (
+        20 if args.suite == "stop-stability" else 1
+    )
+    repeat_browser_stop = args.repeat_browser_stop if args.repeat_browser_stop is not None else (
+        20 if args.suite == "stop-stability" else 1
+    )
+    if repeat_stop < 1:
+        parser.error(f"--repeat-stop must be >= 1 (got {repeat_stop})")
+    if repeat_browser_stop < 1:
+        parser.error(f"--repeat-browser-stop must be >= 1 (got {repeat_browser_stop})")
 
     ctx = Ctx()
     ctx.report["suite"] = args.suite
@@ -1846,10 +1973,12 @@ def main() -> int:
             if source["dirty"]:
                 log(f"final mode: docs-only dirtiness tolerated: {source['dirty_files']}")
         start_stack(ctx)
-        if args.suite == "pr":
-            run_pr_suite(ctx)
+        if args.suite == "stop-stability":
+            run_stop_stability_suite(ctx, repeat_stop, repeat_browser_stop)
+        elif args.suite == "pr":
+            run_pr_suite(ctx, repeat_browser_stop)
         else:
-            run_full_suite(ctx)
+            run_full_suite(ctx, repeat_stop, repeat_browser_stop)
         collect_db_counts(ctx)
     except E2EFailure as exc:
         failure = str(exc)

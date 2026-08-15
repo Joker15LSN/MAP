@@ -12,6 +12,7 @@ reconciliation path must rely on the ledger.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from unittest import mock
 
 import httpx
@@ -30,9 +31,12 @@ from map_core.service.opensandbox_client import (
 )
 from map_core.service.sandbox_ledger import (
     IDEMPOTENCY_CONFLICT,
+    LEDGER_ERROR,
+    STATUS_CREATED,
     STATUS_SUCCEEDED,
     STATUS_UNKNOWN,
     InMemorySandboxInvocationLedger,
+    SandboxLedgerError,
     normalize_request_digest,
 )
 from map_core.service.sandbox_tools import (
@@ -523,3 +527,144 @@ class TestS4LedgerExactlyOnce:
         assert second.success is False
         assert IDEMPOTENCY_CONFLICT in second.error
         assert len(server.execute_calls) == 1, "old result must never be replayed"
+"""S5-01: crash-window convergence for the sandbox execution tool.
+
+These tests reproduce the review's counter-example - an owner dies between
+the remote create/execute and the ledger write, or the terminal write
+itself fails - and pin the fixed behavior:
+
+- a retry NEVER hangs in pending forever: once the owner's lease expires the
+  retry takes the row over atomically and FINISHES the remote flow;
+- a failed terminal write NEVER destroys the only recoverable sandbox and
+  NEVER reports success; the row stays non-terminal for the reconciler;
+- remote create/execute counts stay <= 1 in every window (idempotency keys).
+"""
+
+FULL_IDENTITY = {
+    "workspace_id": "ws-1",
+    "run_id": "run-1",
+    "step_id": "step-1",
+    "attempt_id": "att-1",
+    "invocation_id": "inv-1",
+    "client_request_id": "req-1",
+}
+
+
+def _request(**extra) -> AgentRequest:
+    payload = dict(FULL_IDENTITY)
+    payload.update(extra)
+    return AgentRequest(query="run it", staff_code="pytest", extra=payload)
+
+
+class BlockingExecuteTransport(httpx.AsyncBaseTransport):
+    """Holds the execute response until released (crash-before-complete)."""
+
+    def __init__(self, server) -> None:
+        self.server = server
+        self.execute_seen = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/execute"):
+            self.execute_seen.set()
+            await self.release.wait()
+        return self.server._handle(request)  # noqa: SLF001 - test double
+
+
+def _configure_fast_lease(monkeypatch) -> None:
+    monkeypatch.setenv("MAP_OPENSANDBOX_URL", "https://sandbox.test")
+    monkeypatch.setenv("MAP_OPENSANDBOX_API_KEY", "key-1234567890abcdef")
+    monkeypatch.setenv("MAP_SANDBOX_LEASE_SECONDS", "0.2")
+    monkeypatch.setenv("MAP_SANDBOX_IN_PROGRESS_WAIT_SECONDS", "10")
+
+
+def test_owner_crash_after_execute_converges_via_takeover(monkeypatch) -> None:
+    """S5-01 counter-example fixed: owner dies with the execute response
+    pending; the retry takes over after lease expiry and converges WITHOUT a
+    second remote execution (the server dedupes by the execute key)."""
+    _configure_fast_lease(monkeypatch)
+    server = FakeSandboxServer()
+    transport = BlockingExecuteTransport(server)
+
+    def client_factory() -> OpenSandboxClient:
+        return OpenSandboxClient(
+            base_url="https://sandbox.test",
+            api_key="key-1234567890abcdef",
+            transport=transport,
+        )
+
+    async def run() -> None:
+        with mock.patch.object(OpenSandboxClient, "from_env", client_factory):
+            first_task = asyncio.create_task(
+                _sandbox_execute_handler(
+                    {"command": "echo hi"}, _request(workspace_id="ws-1"), "parid"
+                )
+            )
+            await transport.execute_seen.wait()
+            # Simulate the owner process dying before complete(): cancel it.
+            first_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await first_task
+            transport.release.set()
+            # The retry (same invocation) must converge, not hang.
+            result = await _sandbox_execute_handler(
+                {"command": "echo hi"}, _request(workspace_id="ws-1"), "parid"
+            )
+        assert result.success is True
+        assert "ok: echo hi" in result.content
+        assert len(server.execute_calls) == 1, "must never double-execute"
+        assert len(server.create_calls) == 1, "must never double-create"
+        assert len(server.destroy_calls) == 1
+        record = await _ACTIVE_LEDGER.get(workspace_id="ws-1", invocation_id="inv-1")
+        assert record is not None and record.terminal
+        assert record.status == STATUS_SUCCEEDED
+
+    asyncio.run(run())
+
+
+def test_terminal_write_failure_never_destroys_and_never_fakes_success(
+    monkeypatch,
+) -> None:
+    """S5-01 window E: ledger.complete() fails after the remote execute
+    succeeded. The call must NOT destroy the sandbox and must NOT return
+    success; the next attempt converges from the ledger + server state."""
+    _configure_fast_lease(monkeypatch)
+    server = FakeSandboxServer()
+
+    def client_factory() -> OpenSandboxClient:
+        return OpenSandboxClient(
+            base_url="https://sandbox.test",
+            api_key="key-1234567890abcdef",
+            transport=server.transport(),
+        )
+
+    async def run() -> None:
+        _ACTIVE_LEDGER.fail_complete_next = True
+        with mock.patch.object(OpenSandboxClient, "from_env", client_factory):
+            with pytest.raises(SandboxLedgerError) as exc_info:
+                await _sandbox_execute_handler(
+                    {"command": "echo hi"}, _request(workspace_id="ws-1"), "parid"
+                )
+        assert LEDGER_ERROR in str(exc_info.value)
+        # The sandbox was NOT destroyed: it is the only recoverable fact.
+        assert len(server.destroy_calls) == 0
+        assert len(server.execute_calls) == 1
+        record = await _ACTIVE_LEDGER.get(workspace_id="ws-1", invocation_id="inv-1")
+        assert record is not None and not record.terminal
+        assert record.status == STATUS_CREATED
+        assert record.sandbox_id is not None
+        # Wait out the dead owner's lease, then converge.
+        await asyncio.sleep(0.35)
+        with mock.patch.object(OpenSandboxClient, "from_env", client_factory):
+            result = await _sandbox_execute_handler(
+                {"command": "echo hi"}, _request(workspace_id="ws-1"), "parid"
+            )
+        assert result.success is True
+        assert "ok: echo hi" in result.content
+        assert len(server.execute_calls) == 1, "prior execution must be reused"
+        assert len(server.destroy_calls) == 1
+        record = await _ACTIVE_LEDGER.get(workspace_id="ws-1", invocation_id="inv-1")
+        assert record is not None and record.terminal
+        assert record.status == STATUS_SUCCEEDED
+
+    asyncio.run(run())

@@ -174,6 +174,10 @@ services:
       MAP_CORE_API_ORIGIN: http://algorithm-service:10000
       # S3-04: one frozen environment signal for the BFF too
       MAP_ENV: ${MAP_ENV:-dev}
+      # S2-07: shared CORS policy (same contract as map_core). Production
+      # (MAP_ENV=prod) refuses wildcard + credentials at startup.
+      MAP_CORS_ORIGINS: ${MAP_CORS_ORIGINS:-*}
+      MAP_CORS_ALLOW_CREDENTIALS: ${MAP_CORS_ALLOW_CREDENTIALS:-true}
       MAP_BFF_STATE_FILE: /app/data/admin_state.json
       MAP_CONTROL_DB_DSN: postgresql+asyncpg://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:?MAP_POSTGRES_APP_PASSWORD is required}@postgres:5432/map
       MAP_DEFAULT_WORKSPACE_ID: ${MAP_DEFAULT_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}

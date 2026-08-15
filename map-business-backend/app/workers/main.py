@@ -13,6 +13,7 @@ import contextlib
 import logging
 import os
 import signal
+from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -30,6 +31,10 @@ def build_runner() -> JobRunner:
     # a BFF crash; enqueue a job of this type per interval to trigger it.
     handlers: dict[str, JobHandler] = {
         "message_reconcile": _message_reconcile_handler,
+        # S5-01: real worker -> Core sandbox execution with the complete
+        # six-field durable identity carried as request headers; Core
+        # validates every field (fail-closed) before the sandbox tool runs.
+        "sandbox_exec": _sandbox_exec_handler,
     }
     # R4-P1-01: the effect probe is an E2E-only handler (never registered
     # unless the fault matrix explicitly opts in) that drives the full
@@ -78,6 +83,47 @@ async def _message_reconcile_handler(job: Job, session: AsyncSession) -> dict | 
     stale_after_s = int(os.getenv("MAP_RECONCILE_STALE_AFTER_S", "300"))
     count = await reconcile_stale_streaming_messages(session, stale_after_s=stale_after_s)
     return {"reconciled": count}
+
+
+async def _sandbox_exec_handler(job: Job, session: AsyncSession) -> dict | None:
+    """S5-01: execute a remote OpenSandbox command through map_core.
+
+    The request carries the COMPLETE six-field durable identity
+    (workspace/run/step/attempt/invocation/client_request) as headers, built
+    by the runner-owned context: the worker owns run/attempt/client_request,
+    step/invocation are minted here per job attempt. Core validates every
+    field and fails closed when any is missing. The command comes from the
+    job payload; a missing command fails the job (typed error).
+    """
+    from ..core_client import MapCoreClient
+    from .job_runner import get_current_job_context
+
+    ctx = get_current_job_context()
+    if ctx is not None and not ctx.lease_ok:
+        # Lease already lost before we started: produce no side effects.
+        return None
+    payload = job.payload_json or {}
+    command = str(payload.get("command") or "").strip()
+    if not command:
+        raise ValueError("sandbox_exec: job payload requires a non-empty command")
+    step_id = f"step-{job.attempt or 0}-{uuid4().hex[:8]}"
+    invocation_id = f"inv-{uuid4().hex[:12]}"
+    if ctx is None:  # pragma: no cover - the runner always sets the context
+        raise RuntimeError("sandbox_exec: missing job execution context")
+    identity = ctx.sandbox_identity_extra(step_id=step_id, invocation_id=invocation_id)
+    headers = {
+        "X-Workspace-ID": identity["workspace_id"] or "",
+        "X-Run-ID": identity["run_id"] or "",
+        "X-Step-ID": identity["step_id"] or "",
+        "X-Attempt-ID": identity["attempt_id"] or "",
+        "X-Invocation-ID": identity["invocation_id"] or "",
+        "X-Client-Request-ID": identity["client_request_id"] or "",
+    }
+    core_origin = os.getenv("MAP_CORE_API_ORIGIN", "http://127.0.0.1:10000")
+    result = await MapCoreClient(core_origin).chat_by_path(
+        "/sandbox/exec", {"command": command}, headers
+    )
+    return {"sandbox": result}
 
 
 class _E2eFactProvider:

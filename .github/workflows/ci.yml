@@ -241,8 +241,27 @@ jobs:
           fi
           echo "GATE_BASELINE_SHA=$BASELINE" >> "$GITHUB_ENV"
 
+      # S5-02: ONLY this protected-branch job attests pass evidence. The
+      # signing key comes from the EVIDENCE_SIGNING_KEY secret, the trust
+      # anchor from the MAP_EVIDENCE_TRUST_DIGEST variable - both live
+      # OUTSIDE the reviewed checkout, so a developer swapping the in-repo
+      # trust mirror and self-signing can never produce a releasable pass.
+      - name: Attest pass evidence (protected CI only)
+        run: |
+          python3 scripts/generate_acceptance_evidence.py \
+            --profile TODO/acceptance-profile.yaml
+        env:
+          MAP_EVIDENCE_CI: "1"
+          EVIDENCE_SIGNING_KEY: ${{ secrets.EVIDENCE_SIGNING_KEY }}
+          MAP_EVIDENCE_REPOSITORY: ${{ github.repository }}
+          MAP_EVIDENCE_GIT_REF: ${{ github.ref }}
+          MAP_EVIDENCE_RUN_ID: ${{ github.run_id }}
+
       - name: Final release gate (eligibility — release evidence)
         run: RELEASE_GATE_FINAL=1 bash scripts/release_gate.sh
+        env:
+          GATE_BASELINE_SHA: ${{ env.GATE_BASELINE_SHA }}
+          MAP_EVIDENCE_TRUST_DIGEST: ${{ vars.MAP_EVIDENCE_TRUST_DIGEST }}
 
       - name: Upload gate artifacts
         if: always()
@@ -250,6 +269,15 @@ jobs:
         with:
           name: gate-logs-final
           path: tmp/gate-logs
+
+      # S5-02: the CI-attested evidence is the offline-verifiable release
+      # attestation artifact (verify with MAP_EVIDENCE_TRUST_DIGEST).
+      - name: Upload attested evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attested-evidence
+          path: tmp/acceptance/**
 
   e2e-full-nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -282,6 +310,46 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-report-full
+          path: |
+            e2e/tmp/report-*.json
+            e2e/tmp/browser-*.json
+            e2e/tmp/logs-*.txt
+          if-no-files-found: warn
+
+  # S5-04: browser/HTTP stop stability gate. 20 rounds with a FRESH
+  # message/run identity per round, per-round assertions (stop API success,
+  # SSE termination, reloaded history terminal state, PG final state) and a
+  # per-round timeout that fails the whole run. The suite is executed TWICE
+  # in a row - BOTH runs must finish 20/20 for the job to pass. Each run
+  # uploads its report (20 independent iterations, latencies, terminal
+  # states) as a CI artifact.
+  stop-stability:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright + Chromium
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install playwright
+          python3 -m playwright install --with-deps chromium
+
+      - name: Stop stability run 1 (20 rounds HTTP + 20 rounds browser)
+        run: python3 e2e/run_e2e.py --suite stop-stability
+
+      - name: Stop stability run 2 (20 rounds HTTP + 20 rounds browser)
+        run: python3 e2e/run_e2e.py --suite stop-stability
+
+      - name: Upload stop stability reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stop-stability-reports
           path: |
             e2e/tmp/report-*.json
             e2e/tmp/browser-*.json

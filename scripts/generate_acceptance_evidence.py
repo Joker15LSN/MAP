@@ -20,7 +20,19 @@ Run AFTER the code freeze commit:
         --profile TODO/acceptance-profile.yaml
 
 The generator only creates manifests that do not exist yet and never
-silently overwrites evidence.
+silently overwrites recorded facts.
+
+S5-02 attestation model:
+
+- locally (and on PR/structure CI) pass manifests are recorded WITHOUT an
+  attestation: the structure validator tolerates them, the release
+  validator rejects them - a local key can never mint a releasable pass;
+- the protected CI workflow (MAP_EVIDENCE_CI=1 + EVIDENCE_SIGNING_KEY +
+  repository/git_ref/run_id) attests newly created pass manifests and
+  re-attests existing ones IN PLACE (only the attestation field is
+  replaced - command/exit code/artifacts/timestamps are never touched);
+- the release validator then anchors the trust root through the externally
+  injected MAP_EVIDENCE_TRUST_DIGEST / MAP_EVIDENCE_TRUST_PUBLIC_KEY.
 """
 
 from __future__ import annotations
@@ -28,6 +40,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -42,7 +55,7 @@ from validate_acceptance_evidence import (  # noqa: E402
     load_profile,
     required_ac_by_task,
 )
-from evidence_signing import load_secret, sign_manifest  # noqa: E402
+from evidence_signing import sign_manifest  # noqa: E402
 
 SCHEMA_VERSION = "1.2.0"
 BASELINE_SHA = "e019059c2c8499454ecddc9eb63655aeadb0bd90"
@@ -315,6 +328,10 @@ def supersede_stale_manifests(freeze_sha: str) -> int:
             "not_applicable_reason",
         ):
             data[status_field] = None
+        # S5-02: a superseded manifest is not release evidence; any old-format
+        # attestation (pre repository/git_ref/run_id) must be dropped so the
+        # historical record stays schema-valid.
+        data["attestation"] = None
         manifest.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -365,15 +382,84 @@ def build_blocked_manifest(
     }
 
 
+def ci_signing_context() -> tuple[str, str, str, str] | None:
+    """S5-02: the protected-CI signing context, resolved from the CI env.
+
+    Returns (secret_hex, repository, git_ref, run_id) only when BOTH the
+    CI marker and the injected signing key are present. Local development
+    never returns a context - local keys cannot produce a releasable pass.
+    """
+    if os.getenv("MAP_EVIDENCE_CI", "").strip() != "1":
+        return None
+    secret = os.getenv("EVIDENCE_SIGNING_KEY", "").strip()
+    if not secret:
+        return None
+    repository = (
+        os.getenv("MAP_EVIDENCE_REPOSITORY", "").strip()
+        or os.getenv("GITHUB_REPOSITORY", "").strip()
+    )
+    git_ref = (
+        os.getenv("MAP_EVIDENCE_GIT_REF", "").strip()
+        or os.getenv("GITHUB_REF", "").strip()
+    )
+    run_id = (
+        os.getenv("MAP_EVIDENCE_RUN_ID", "").strip()
+        or os.getenv("GITHUB_RUN_ID", "").strip()
+    )
+    if not repository or not git_ref or not run_id:
+        print(
+            "warning: MAP_EVIDENCE_CI=1 but the CI identity "
+            "(repository/git_ref/run_id) is incomplete; pass evidence stays "
+            "unattested and is NOT releasable",
+            file=sys.stderr,
+        )
+        return None
+    return secret, repository, git_ref, run_id
+
+
+def sign_pass_manifest(manifest: dict) -> dict:
+    """Attest a pass manifest with the protected-CI context when present.
+
+    Without the CI context the manifest keeps attestation=None: structure
+    validation tolerates it, the release validator rejects it - a local run
+    can never mint a releasable pass (S5-02).
+    """
+    context = ci_signing_context()
+    if context is None:
+        manifest["attestation"] = None
+        return manifest
+    secret, repository, git_ref, run_id = context
+    return sign_manifest(
+        manifest,
+        secret,
+        issuer=TRUSTED_ISSUER,
+        workflow=TRUSTED_WORKFLOW,
+        key_id=TRUSTED_KEY_ID,
+        repository=repository,
+        git_ref=git_ref,
+        run_id=run_id,
+    )
+
+
+def resign_pass_manifest(path: Path) -> None:
+    """S5-02 CI re-attestation: replace ONLY the attestation of an existing
+    pass manifest with the protected-CI signature (the recorded execution
+    facts - command, exit code, artifacts, timestamps - are never touched)."""
+    context = ci_signing_context()
+    if context is None:
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("status") != "pass":
+        return
+    signed = sign_pass_manifest(data)
+    path.write_text(
+        json.dumps(signed, ensure_ascii=False, indent=2) + chr(10), encoding="utf-8"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="TODO/acceptance-profile.yaml")
-    parser.add_argument(
-        "--signing-key",
-        default="tmp/evidence-signing-key/ed25519.key",
-        help="path (repo-relative) to the Ed25519 signing key "
-        "(git-ignored; CI injects it from a secret)",
-    )
     parser.add_argument("--issuer", default=TRUSTED_ISSUER)
     parser.add_argument("--workflow", default=TRUSTED_WORKFLOW)
     parser.add_argument("--key-id", default=TRUSTED_KEY_ID)
@@ -403,12 +489,20 @@ def main(argv: list[str] | None = None) -> int:
 
     created = 0
     skipped = 0
+    resigned = 0
     for task in sorted(ac_by_task):
         for ac in sorted(ac_by_task[task]):
             target_dir = ROOT / "tmp" / "acceptance" / task / freeze_sha / ac
             target = target_dir / "evidence-manifest.json"
             if target.exists():
-                skipped += 1
+                # S5-02: in the protected CI context, existing pass manifests
+                # are re-attested (attestation replaced, facts untouched);
+                # locally they stay as-is (unsigned = not releasable).
+                if ci_signing_context() is not None:
+                    resign_pass_manifest(target)
+                    resigned += 1
+                else:
+                    skipped += 1
                 continue
             target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -521,17 +615,20 @@ def main(argv: list[str] | None = None) -> int:
                     ],
                 )
 
-            # S4-03: pass evidence must be signed by the trusted CI key so it
-            # has a verifiable source; blocked/fail evidence stays unsigned
-            # (it is not releasable regardless).
+            # S5-02: pass evidence is attested ONLY by the protected CI
+            # context (MAP_EVIDENCE_CI=1 + EVIDENCE_SIGNING_KEY + CI
+            # identity). Local runs record pass facts WITHOUT an attestation:
+            # structure validation tolerates it, the release validator
+            # rejects it - a local key can never mint a releasable pass.
             if manifest["status"] == "pass":
-                manifest = sign_manifest(
-                    manifest,
-                    load_secret(ROOT / args.signing_key),
-                    issuer=args.issuer,
-                    workflow=args.workflow,
-                    key_id=args.key_id,
-                )
+                if ci_signing_context() is None:
+                    print(
+                        f"warning: {task}/{ac} pass evidence is UNATTESTED "
+                        "(not releasable); only the protected CI workflow "
+                        "can attest it",
+                        file=sys.stderr,
+                    )
+                manifest = sign_pass_manifest(manifest)
             target.write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
@@ -540,7 +637,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "evidence generation done: " + str(created) + " created, "
-        + str(skipped) + " already present, freeze sha " + freeze_sha[:12]
+        + str(skipped) + " already present, " + str(resigned)
+        + " re-attested, freeze sha " + freeze_sha[:12]
     )
     return 0
 

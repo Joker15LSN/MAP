@@ -28,12 +28,28 @@ Statement signed by the workflow (deterministic, JSON object):
         "type": "map-acceptance-evidence/v1",
         "issuer": "<expected issuer, e.g. map-release-evidence-ci>",
         "workflow": "<expected workflow, e.g. release-gate/gate-final>",
+        "repository": "<expected repository, e.g. owner/repo>",
+        "git_ref": "<protected branch ref, e.g. refs/heads/main>",
+        "run_id": "<CI run id - never reused>",
         "manifest": { <the manifest dict WITHOUT its "attestation" field> }
     }
 
 The manifest then stores, under 'attestation', the type/issuer/workflow plus
-'signatures' (key_id/algorithm/signature). The validator reconstructs the
-statement from the actual manifest bytes and verifies the signature offline.
+repository/git_ref/run_id plus 'signatures' (key_id/algorithm/signature).
+The validator reconstructs the statement from the actual manifest bytes and
+verifies the signature offline.
+
+S5-02 trust model:
+
+- the CI identity (repository/git_ref/run_id) is PART of the signed
+  statement, so a signature produced anywhere but the pinned protected
+  workflow (right repository, allowed ref, fresh run) never verifies;
+- the trusted public key pinned in TODO/evidence-trust/trusted_keys.json is
+  only a MIRROR: the release validator demands an externally injected
+  anchor (MAP_EVIDENCE_TRUST_DIGEST / MAP_EVIDENCE_TRUST_PUBLIC_KEY) that
+  must match the mirror, so a developer who swaps the trust root inside the
+  same implementation commit can never self-establish trust;
+- local signing keys therefore can never produce a releasable pass.
 """
 
 from __future__ import annotations
@@ -247,6 +263,9 @@ def build_statement(manifest, attestation):
         "type": attestation.get("type"),
         "issuer": attestation.get("issuer"),
         "workflow": attestation.get("workflow"),
+        "repository": attestation.get("repository"),
+        "git_ref": attestation.get("git_ref"),
+        "run_id": attestation.get("run_id"),
         "manifest": subject,
     }
 
@@ -255,14 +274,32 @@ def statement_bytes(statement):
     return canonical_json(statement).encode("utf-8")
 
 
-def sign_manifest(manifest, secret_hex, *, issuer, workflow, key_id):
+def sign_manifest(
+    manifest, secret_hex, *, issuer, workflow, key_id, repository, git_ref, run_id
+):
+    """Attach a CI-bound attestation to one manifest.
+
+    S5-02: repository/git_ref/run_id are REQUIRED and become part of the
+    signed statement - a signature produced outside the pinned protected
+    workflow never verifies.
+    """
+    if not repository or not git_ref or not run_id:
+        raise ValueError(
+            "repository, git_ref and run_id are required to sign "
+            "acceptance evidence (S5-02 CI-bound attestation)"
+        )
     secret = bytes.fromhex(secret_hex)
     public = public_key_bytes(secret)
-    meta = {"type": ATTESTATION_TYPE, "issuer": issuer, "workflow": workflow}
-    attestation = {
+    meta = {
         "type": ATTESTATION_TYPE,
         "issuer": issuer,
         "workflow": workflow,
+        "repository": repository,
+        "git_ref": git_ref,
+        "run_id": run_id,
+    }
+    attestation = {
+        **meta,
         "signatures": [
             {
                 "key_id": key_id,
@@ -280,7 +317,22 @@ def sign_manifest(manifest, secret_hex, *, issuer, workflow, key_id):
     return result
 
 
-def verify_attestation(manifest, *, trusted_keys, expected_issuer, expected_workflow):
+def _ref_matches(git_ref: str, allowed_refs: list[str]) -> bool:
+    """A ref matches when it equals an allowed ref or an allowed glob."""
+    import fnmatch
+
+    return any(fnmatch.fnmatchcase(git_ref, pattern) for pattern in allowed_refs)
+
+
+def verify_attestation(
+    manifest,
+    *,
+    trusted_keys,
+    expected_issuer,
+    expected_workflow,
+    expected_repository,
+    allowed_refs,
+):
     attestation = manifest.get("attestation")
     if not isinstance(attestation, dict):
         return ["missing attestation object"]
@@ -301,6 +353,22 @@ def verify_attestation(manifest, *, trusted_keys, expected_issuer, expected_work
             "attestation workflow " + repr(attestation.get("workflow"))
             + " != expected " + repr(expected_workflow)
         )
+    # S5-02: the CI identity is part of the signed statement - an
+    # attestation minted on the wrong repository / unprotected ref / without
+    # a fresh run id never verifies.
+    if attestation.get("repository") != expected_repository:
+        problems.append(
+            "attestation repository " + repr(attestation.get("repository"))
+            + " != expected " + repr(expected_repository)
+        )
+    git_ref = attestation.get("git_ref")
+    if not git_ref or not _ref_matches(str(git_ref), allowed_refs):
+        problems.append(
+            "attestation git_ref " + repr(git_ref)
+            + " is not an allowed protected ref " + repr(allowed_refs)
+        )
+    if not attestation.get("run_id"):
+        problems.append("attestation run_id is missing")
 
     signatures = attestation.get("signatures")
     if not isinstance(signatures, list) or not signatures:
@@ -354,13 +422,40 @@ def load_trust_config(root, path):
         data = json.load(fh)
     if not isinstance(data, dict):
         raise ValueError("trust config must be a JSON object")
-    for field in ("expected_issuer", "expected_workflow", "keys"):
+    for field in (
+        "expected_issuer",
+        "expected_workflow",
+        "expected_repository",
+        "allowed_refs",
+        "keys",
+    ):
         if field not in data:
             raise ValueError("trust config missing " + repr(field))
     keys = data["keys"]
     if not isinstance(keys, dict) or not keys:
         raise ValueError("trust config must pin at least one key")
+    allowed_refs = data["allowed_refs"]
+    if (
+        not isinstance(allowed_refs, list)
+        or not allowed_refs
+        or any(not isinstance(ref, str) or not ref for ref in allowed_refs)
+    ):
+        raise ValueError(
+            "trust config allowed_refs must be a non-empty list of ref patterns"
+        )
     return data
+
+
+def trust_config_digest(data: dict) -> str:
+    """S5-02 external anchor: the pinned sha256 of the canonical trust config.
+
+    Protected CI injects this digest (or the public key itself); the
+    validator computes the SAME digest over the in-repo mirror and requires
+    equality, so the trust root can no longer be rewritten inside the
+    reviewed range.
+    """
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def load_secret(path):
@@ -395,6 +490,9 @@ def _cli_sign(args):
         issuer=args.issuer,
         workflow=args.workflow,
         key_id=args.key_id,
+        repository=args.repository,
+        git_ref=args.git_ref,
+        run_id=args.run_id,
     )
     out = Path(args.out) if args.out else manifest_path
     out.write_text(
@@ -418,6 +516,10 @@ def main(argv=None):
     sign.add_argument("--issuer", required=True)
     sign.add_argument("--workflow", required=True)
     sign.add_argument("--key-id", required=True)
+    # S5-02: the CI identity is part of the signed statement.
+    sign.add_argument("--repository", required=True)
+    sign.add_argument("--git-ref", required=True)
+    sign.add_argument("--run-id", required=True)
     sign.add_argument("--out", default=None)
     sign.set_defaults(func=_cli_sign)
 

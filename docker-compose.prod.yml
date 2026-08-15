@@ -12,8 +12,10 @@
 #
 # CORS: the base compose defaults MAP_CORS_ORIGINS to "*" with credentials
 # on. In production that combination is refused at startup by BOTH services
-# (shared schema, fail-closed), so a production deploy MUST set explicit
-# origins (MAP_CORS_ORIGINS) or MAP_CORS_ALLOW_CREDENTIALS=false.
+# (shared schema, fail-closed). This override therefore makes
+# MAP_CORS_ORIGINS :?required (config fails non-zero when unset) and defaults
+# MAP_CORS_ALLOW_CREDENTIALS to false, so a production deploy cannot silently
+# inherit the base dev wildcard + credentials combination.
 services:
   algorithm-service:
     environment:
@@ -21,10 +23,19 @@ services:
       # inside map_core; both resolve to prod here.
       ENV: prod
       MAP_ENV: ${MAP_ENV:?MAP_ENV is required for production deployments (must be "prod")}
+      # S5-03: production CORS contract (same for both services). Origins
+      # become :?required and credentials default false - never the base
+      # dev default (* + true).
+      MAP_CORS_ORIGINS: ${MAP_CORS_ORIGINS:?MAP_CORS_ORIGINS is required for production deployments}
+      MAP_CORS_ALLOW_CREDENTIALS: ${MAP_CORS_ALLOW_CREDENTIALS:-false}
 
   backend-service:
     environment:
       MAP_ENV: ${MAP_ENV:?MAP_ENV is required for production deployments (must be "prod")}
+      # S5-03: same production CORS contract as algorithm-service (origins
+      # :?required, credentials default false - no service-internal default).
+      MAP_CORS_ORIGINS: ${MAP_CORS_ORIGINS:?MAP_CORS_ORIGINS is required for production deployments}
+      MAP_CORS_ALLOW_CREDENTIALS: ${MAP_CORS_ALLOW_CREDENTIALS:-false}
 
   worker-service:
     environment:

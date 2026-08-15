@@ -22,6 +22,7 @@ Exit: 0 = all tests pass; 1 = at least one failure.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,19 @@ import evidence_signing  # noqa: E402
 FAKE_SHA_1 = "a" * 40
 FAKE_SHA_2 = "b" * 40
 
+# S5-02: the CI identity bound into every attestation by the self-test.
+TEST_REPOSITORY = "test-org/test-repo"
+TEST_GIT_REF = "refs/heads/main"
+TEST_RUN_ID = "test-run-1"
+
+
+def _future_iso(offset_hours: float = 1.0) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (
+        datetime.now(timezone.utc) + timedelta(hours=offset_hours)
+    ).isoformat().replace("+00:00", "Z")
+
 
 def make_manifest(
     *,
@@ -49,7 +63,11 @@ def make_manifest(
     artifact_sha: str,
     extra_fields: dict | None = None,
     waiver_expires_at: str | None = None,
+    started_at: str | None = None,
 ) -> dict:
+    # S5-02: started_at defaults to the FUTURE relative to the fixture
+    # commits, so the "attestation after implementation" check passes;
+    # counter-tests pass an explicit past timestamp.
     manifest: dict = {
         "schema_version": "1.1.0",
         "task_id": task,
@@ -58,8 +76,8 @@ def make_manifest(
         "baseline_sha": FAKE_SHA_1,
         "implementation_sha": implementation_sha,
         "environment_digest": "e" * 64,
-        "started_at": "2026-08-13T10:00:00Z",
-        "finished_at": "2026-08-13T10:01:00Z",
+        "started_at": started_at or _future_iso(),
+        "finished_at": started_at or _future_iso(),
         "command": "pytest tests/ -q",
         "exit_code": 0 if status == "pass" else 1,
         "artifacts": [
@@ -81,6 +99,7 @@ def make_manifest(
         "blocker_owner": "platform-security" if status == "blocked" else None,
         "superseded_by": None,
         "superseded_reason": None,
+        "attestation": None,
         "producer": {"agent": "validator-self-test", "version": "1.0.0"},
     }
     if status == "not-applicable-approved":
@@ -113,25 +132,43 @@ class BaseValidatorTest(unittest.TestCase):
         self.key_id = "test-key"
         trust_dir = self.root / "TODO" / "evidence-trust"
         trust_dir.mkdir(parents=True, exist_ok=True)
-        (trust_dir / "trusted_keys.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": "1.0.0",
-                    "expected_issuer": self.issuer,
-                    "expected_workflow": self.workflow,
-                    "keys": {
-                        self.key_id: {
-                            "algorithm": "ed25519",
-                            "public_key": self.public_hex,
-                        }
-                    },
+        self.trust_config = {
+            "schema_version": "2.0.0",
+            "expected_issuer": self.issuer,
+            "expected_workflow": self.workflow,
+            "expected_repository": TEST_REPOSITORY,
+            "allowed_refs": ["refs/heads/main", "refs/heads/release*"],
+            "keys": {
+                self.key_id: {
+                    "algorithm": "ed25519",
+                    "public_key": self.public_hex,
                 }
-            ),
-            encoding="utf-8",
+            },
+        }
+        (trust_dir / "trusted_keys.json").write_text(
+            json.dumps(self.trust_config), encoding="utf-8"
         )
         self.profile = self.root / "TODO" / "acceptance-profile.yaml"
+        # S5-02: the release validator demands an EXTERNALLY injected trust
+        # anchor; the self-test plays the protected-CI role and injects the
+        # digest of the mirror it just pinned.
+        self._prev_anchor = {
+            name: os.environ.get(name)
+            for name in (
+                "MAP_EVIDENCE_TRUST_DIGEST",
+                "MAP_EVIDENCE_TRUST_PUBLIC_KEY",
+            )
+        }
+        os.environ["MAP_EVIDENCE_TRUST_DIGEST"] = evidence_signing.trust_config_digest(
+            self.trust_config
+        )
 
     def tearDown(self) -> None:
+        for name, value in self._prev_anchor.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         self._tmp.cleanup()
 
     def _git(self, *args: str) -> str:
@@ -204,6 +241,9 @@ class BaseValidatorTest(unittest.TestCase):
             issuer=self.issuer,
             workflow=self.workflow,
             key_id=self.key_id,
+            repository=TEST_REPOSITORY,
+            git_ref=TEST_GIT_REF,
+            run_id=TEST_RUN_ID,
         )
 
     def _manifest(
@@ -689,9 +729,11 @@ class IntegrityTests(BaseValidatorTest):
         (trust_dir / "trusted_keys.json").write_text(
             json.dumps(
                 {
-                    "schema_version": "1.0.0",
+                    "schema_version": "2.0.0",
                     "expected_issuer": self.issuer,
                     "expected_workflow": self.workflow,
+                    "expected_repository": TEST_REPOSITORY,
+                    "allowed_refs": ["refs/heads/main"],
                     "keys": {
                         self.key_id: {
                             "algorithm": "ed25519",
@@ -873,6 +915,9 @@ class AttestationTests(BaseValidatorTest):
             issuer="evil-issuer",
             workflow=self.workflow,
             key_id=self.key_id,
+            repository=TEST_REPOSITORY,
+            git_ref=TEST_GIT_REF,
+            run_id=TEST_RUN_ID,
         )
         self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
         self.commit_all("evidence")
@@ -896,6 +941,9 @@ class AttestationTests(BaseValidatorTest):
             issuer=self.issuer,
             workflow="evil-workflow/deploy",
             key_id=self.key_id,
+            repository=TEST_REPOSITORY,
+            git_ref=TEST_GIT_REF,
+            run_id=TEST_RUN_ID,
         )
         self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
         self.commit_all("evidence")
@@ -919,12 +967,173 @@ class AttestationTests(BaseValidatorTest):
             issuer=self.issuer,
             workflow=self.workflow,
             key_id="untrusted-key",
+            repository=TEST_REPOSITORY,
+            git_ref=TEST_GIT_REF,
+            run_id=TEST_RUN_ID,
         )
         self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
         self.commit_all("evidence")
         proc = self.run_validator("--require-final")
         self.assertEqual(proc.returncode, 1)
         self.assertIn("not a trusted key", proc.stderr)
+
+
+class TrustAnchorTests(BaseValidatorTest):
+    """S5-02: the trust root lives OUTSIDE the reviewed range and the
+    attestation is CI-bound (repository / protected ref / post-commit)."""
+
+    def test_trust_root_replaced_and_self_signed_fails_final(self) -> None:
+        """The review's counter-example: replace the trust root in the SAME
+        implementation commit, self-sign with the new key - the final gate
+        must fail because the external anchor no longer matches."""
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        # Attacker swaps the pinned key AND self-signs with the new one.
+        attacker_secret, attacker_public = evidence_signing.generate_keypair()
+        self.trust_config["keys"] = {
+            "attacker-key": {
+                "algorithm": "ed25519",
+                "public_key": attacker_public,
+            }
+        }
+        trust_dir = self.root / "TODO" / "evidence-trust"
+        (trust_dir / "trusted_keys.json").write_text(
+            json.dumps(self.trust_config), encoding="utf-8"
+        )
+        manifest = evidence_signing.sign_manifest(
+            make_manifest(
+                task="P1-TEST-A",
+                ac="AC-A-01",
+                status="pass",
+                implementation_sha=freeze,
+                artifact_path=self._artifact("P1-TEST-A", freeze, "AC-A-01")[0],
+                artifact_sha=self._artifact("P1-TEST-A", freeze, "AC-A-01")[1],
+            ),
+            attacker_secret,
+            issuer=self.issuer,
+            workflow=self.workflow,
+            key_id="attacker-key",
+            repository=TEST_REPOSITORY,
+            git_ref=TEST_GIT_REF,
+            run_id=TEST_RUN_ID,
+        )
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("attacker rewrite")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("externally pinned digest", proc.stderr)
+
+    def test_attestation_from_wrong_repository_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = evidence_signing.sign_manifest(
+            make_manifest(
+                task="P1-TEST-A",
+                ac="AC-A-01",
+                status="pass",
+                implementation_sha=freeze,
+                artifact_path=self._artifact("P1-TEST-A", freeze, "AC-A-01")[0],
+                artifact_sha=self._artifact("P1-TEST-A", freeze, "AC-A-01")[1],
+            ),
+            self.secret_hex,
+            issuer=self.issuer,
+            workflow=self.workflow,
+            key_id=self.key_id,
+            repository="evil-org/evil-repo",
+            git_ref=TEST_GIT_REF,
+            run_id=TEST_RUN_ID,
+        )
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("repository", proc.stderr)
+
+    def test_attestation_from_unprotected_ref_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = evidence_signing.sign_manifest(
+            make_manifest(
+                task="P1-TEST-A",
+                ac="AC-A-01",
+                status="pass",
+                implementation_sha=freeze,
+                artifact_path=self._artifact("P1-TEST-A", freeze, "AC-A-01")[0],
+                artifact_sha=self._artifact("P1-TEST-A", freeze, "AC-A-01")[1],
+            ),
+            self.secret_hex,
+            issuer=self.issuer,
+            workflow=self.workflow,
+            key_id=self.key_id,
+            repository=TEST_REPOSITORY,
+            git_ref="refs/heads/feature-branch",
+            run_id=TEST_RUN_ID,
+        )
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("git_ref", proc.stderr)
+
+    def test_attestation_predating_implementation_commit_fails(self) -> None:
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        manifest = self._manifest(
+            task="P1-TEST-A",
+            ac="AC-A-01",
+            status="pass",
+            implementation_sha=freeze,
+        )
+        # Rewind the attestation window to BEFORE the implementation commit.
+        manifest["started_at"] = "2020-01-01T00:00:00Z"
+        manifest["finished_at"] = "2020-01-01T00:01:00Z"
+        manifest = self._sign(manifest)
+        self.write_evidence("P1-TEST-A", freeze, "AC-A-01", manifest)
+        self.commit_all("evidence")
+        proc = self.run_validator("--require-final")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("not after the implementation commit", proc.stderr)
+
+    def test_structure_tolerates_unsigned_pass_but_final_rejects(self) -> None:
+        """S5-02: local runs record pass facts without an attestation.
+        Structure mode (explicitly not release evidence) tolerates it;
+        the release validator rejects it."""
+        self.write_profile({"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}})
+        freeze = self.commit_all("freeze")
+        self.write_evidence(
+            "P1-TEST-A",
+            freeze,
+            "AC-A-01",
+            self._manifest(
+                task="P1-TEST-A",
+                ac="AC-A-01",
+                status="pass",
+                implementation_sha=freeze,
+                sign=False,
+            ),
+        )
+        self.commit_all("evidence")
+        structure = self.run_validator()
+        self.assertEqual(structure.returncode, 0, structure.stderr)
+        final = self.run_validator("--require-final")
+        self.assertEqual(final.returncode, 1)
+        self.assertIn("without an attestation", final.stderr)
+
+    def test_final_without_external_anchor_fails(self) -> None:
+        """S5-02: without the externally injected anchor the release
+        validator refuses to trust a checkout-supplied trust root."""
+        self.freeze_repo(
+            {"P1-TEST-A": {"depends_on": [], "acceptance_ids": ["AC-A-01"]}}
+        )
+        os.environ.pop("MAP_EVIDENCE_TRUST_DIGEST", None)
+        try:
+            proc = self.run_validator("--require-final")
+        finally:
+            os.environ["MAP_EVIDENCE_TRUST_DIGEST"] = (
+                evidence_signing.trust_config_digest(self.trust_config)
+            )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("externally injected trust anchor", proc.stderr)
 
 
 if __name__ == "__main__":
