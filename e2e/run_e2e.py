@@ -62,7 +62,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1899,6 +1899,10 @@ def start_stack(ctx: Ctx) -> None:
                     "service_name": "map-worker",
                     "audience": "map-core",
                     "scopes": ["sandbox:execute"],
+                    # S7-04: credentials must carry an explicit expiry.
+                    "expires_at": (
+                        datetime.now(timezone.utc) + timedelta(days=1)
+                    ).isoformat().replace("+00:00", "Z"),
                 }
             ]
         ),

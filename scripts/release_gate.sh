@@ -97,7 +97,10 @@ if [ "${RELEASE_GATE_FINAL:-0}" = "1" ]; then
         exit 1
     fi
     if [ "${#DIRTY_FILES[@]}" -gt 0 ]; then
-        echo "[gate] final mode: docs-only dirtiness tolerated (${#DIRTY_FILES[@]} file(s))"
+        # R7-P2-03: evidence-only rewrites (the protected-CI attest step
+        # re-signs pass manifests in place) are tolerated - the release
+        # validator is their integrity control.
+        echo "[gate] final mode: docs/evidence-only dirtiness tolerated (${#DIRTY_FILES[@]} file(s))"
     fi
 fi
 
@@ -105,6 +108,15 @@ echo "[gate] log dir: $LOG_DIR"
 echo "[gate] source control: sha=$GIT_SHA tree=$GIT_TREE branch=$GIT_BRANCH dirty=${#DIRTY_FILES[@]} product_dirty=${#DIRTY_PRODUCT[@]}"
 if [ -n "$GATE_BASELINE_SHA" ]; then
     echo "[gate] baseline sha: $GATE_BASELINE_SHA"
+fi
+
+# R7-P2-03 regression hook: the CI-sequence test runs the REAL startup
+# checks above (source-control snapshot + final-mode baseline validation +
+# clean-product refusal) against a synthetic repository and exits here,
+# before any heavyweight gate step starts. Production/CI never sets this.
+if [ "${GATE_STARTUP_CHECK_ONLY:-0}" = "1" ]; then
+    echo "[gate] STARTUP CHECK PASSED (GATE_STARTUP_CHECK_ONLY=1 - gate steps not executed)"
+    exit 0
 fi
 
 # run <step-name> <workdir> <command...>

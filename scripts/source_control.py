@@ -34,6 +34,13 @@ Rules baked in:
   sha256 manifest of every untracked file), so a non-final artifact can
   still prove WHAT was tested; a FINAL run must happen on a clean
   product tree where commit SHA/tree alone describe the product code.
+- R7-P2-03: tracked acceptance evidence (``tmp/acceptance/**``) is
+  NOT product code. The protected-CI attest step legitimately re-attests
+  pass manifests IN PLACE (a fresh CI run identity/signature on every
+  run), so final mode must tolerate evidence-only worktree rewrites; the
+  release validator is the integrity control for those files
+  (attestation, hashes, coverage). Classifying them as dirty product
+  made the gate-final job self-block before its first gate step ran.
 
 CLI:
 
@@ -58,10 +65,22 @@ from pathlib import Path
 # runner must never re-implement it.
 DOCS_PREFIXES = ("TODO/", "SPEC/", ".qoder/", ".reasonix/", ".understand-anything/")
 
+# R7-P2-03: tracked acceptance evidence. The protected-CI attest step
+# re-signs pass manifests in place (the CI run identity is part of the
+# signature), so tmp/acceptance/** is legitimately dirty right before the
+# final gate. It is evidence, never product code; its integrity is the
+# release validator's job, not the clean-product check's.
+EVIDENCE_PREFIXES = ("tmp/acceptance/",)
+
 
 def is_docs_path(path: str) -> bool:
     """True when a repo-relative path is documentation, not product code."""
     return path.startswith(DOCS_PREFIXES) or path.endswith(".md")
+
+
+def is_evidence_path(path: str) -> bool:
+    """True when a repo-relative path is tracked acceptance evidence."""
+    return path.startswith(EVIDENCE_PREFIXES)
 
 
 def parse_porcelain_z(raw: bytes) -> list[dict]:
@@ -161,12 +180,13 @@ def snapshot(repo_root: Path) -> dict:
     changed — rename entries contribute BOTH paths (R6-P2-01); the gate
     and the E2E runner consume this one set, so they can never classify
     differently. ``dirty_files`` mirrors it for compatibility,
-    ``dirty_product`` filters it through ``is_docs_path``, and
-    ``docs_only_dirty`` is true only when the tree is dirty AND every
-    affected path is documentation. All paths are PARSED repo-relative
-    paths, byte-identical to what git reports. A dirty tree additionally
-    carries ``diff_head_sha256`` and the untracked-file content manifest
-    (R5-P2-02 content evidence).
+    ``dirty_product`` filters out docs AND tracked acceptance evidence
+    (R7-P2-03), ``docs_only_dirty`` is true only when the tree is dirty
+    AND every affected path is non-product, and ``evidence_only_dirty``
+    is true when at least one affected path is tracked evidence. All
+    paths are PARSED repo-relative paths, byte-identical to what git
+    reports. A dirty tree additionally carries ``diff_head_sha256`` and
+    the untracked-file content manifest (R5-P2-02 content evidence).
     """
     porcelain = _git_bytes(
         repo_root, "-c", "core.quotepath=false", "status", "--porcelain=v1", "-z"
@@ -175,8 +195,17 @@ def snapshot(repo_root: Path) -> dict:
     affected_paths = sorted(
         {path for entry in entries for path in affected_paths_for(entry)}
     )
-    dirty_product = [path for path in affected_paths if not is_docs_path(path)]
+    dirty_evidence = [path for path in affected_paths if is_evidence_path(path)]
+    dirty_product = [
+        path
+        for path in affected_paths
+        if not is_docs_path(path) and not is_evidence_path(path)
+    ]
+    dirty_docs = [path for path in affected_paths if is_docs_path(path)]
     docs_only_dirty = bool(affected_paths) and not dirty_product
+    evidence_only_dirty = (
+        bool(affected_paths) and not dirty_product and bool(dirty_evidence)
+    )
     result = {
         "git_sha": _git_text(repo_root, "rev-parse", "HEAD"),
         "git_tree": _git_text(repo_root, "rev-parse", "HEAD^{tree}"),
@@ -184,8 +213,11 @@ def snapshot(repo_root: Path) -> dict:
         "dirty": bool(affected_paths),
         "affected_paths": affected_paths,
         "dirty_files": affected_paths,
+        "dirty_docs": dirty_docs,
+        "dirty_evidence": dirty_evidence,
         "dirty_product": dirty_product,
         "docs_only_dirty": docs_only_dirty,
+        "evidence_only_dirty": evidence_only_dirty,
         "entries": entries,
         "captured_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -208,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--require-clean-product",
         action="store_true",
-        help="exit 2 when any PRODUCT file is dirty (docs-only is tolerated)",
+        help="exit 2 when any PRODUCT file is dirty (docs/evidence-only tolerated)",
     )
     args = parser.parse_args(argv)
 
@@ -235,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
             f"sha={result['git_sha']} tree={result['git_tree']} "
             f"branch={result['branch']} dirty={len(result['dirty_files'])} "
             f"product_dirty={len(result['dirty_product'])} "
+            f"evidence_dirty={len(result['dirty_evidence'])} "
             f"docs_only_dirty={result['docs_only_dirty']}"
         )
     return 0

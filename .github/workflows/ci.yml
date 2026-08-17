@@ -241,6 +241,16 @@ jobs:
           fi
           echo "GATE_BASELINE_SHA=$BASELINE" >> "$GITHUB_ENV"
 
+      # R7-P2-03: attestation must freeze at the IMPLEMENTATION commit, not
+      # at HEAD (which on a protected-branch push is normally the evidence
+      # re-freeze commit). Walking back to the first commit that changes
+      # anything outside tmp/acceptance/** is the release validator's own
+      # freeze model, so the two can never disagree.
+      - name: Resolve evidence implementation commit (code freeze)
+        run: |
+          IMPLEMENTATION_SHA="$(python3 scripts/resolve_evidence_implementation_sha.py)"
+          echo "MAP_EVIDENCE_IMPLEMENTATION_SHA=$IMPLEMENTATION_SHA" >> "$GITHUB_ENV"
+
       # S5-02: ONLY this protected-branch job attests pass evidence. The
       # signing key comes from the EVIDENCE_SIGNING_KEY secret, the trust
       # anchor from the MAP_EVIDENCE_TRUST_DIGEST variable - both live
@@ -248,10 +258,16 @@ jobs:
       # trust mirror and self-signing can never produce a releasable pass.
       - name: Attest pass evidence (protected CI only)
         run: |
+          test -n "$MAP_EVIDENCE_IMPLEMENTATION_SHA" || {
+            echo "MAP_EVIDENCE_IMPLEMENTATION_SHA is empty - refusing to freeze evidence at HEAD" >&2
+            exit 1
+          }
           python3 scripts/generate_acceptance_evidence.py \
-            --profile TODO/acceptance-profile.yaml
+            --profile TODO/acceptance-profile.yaml \
+            --implementation-sha "$MAP_EVIDENCE_IMPLEMENTATION_SHA"
         env:
           MAP_EVIDENCE_CI: "1"
+          MAP_EVIDENCE_IMPLEMENTATION_SHA: ${{ env.MAP_EVIDENCE_IMPLEMENTATION_SHA }}
           EVIDENCE_SIGNING_KEY: ${{ secrets.EVIDENCE_SIGNING_KEY }}
           MAP_EVIDENCE_REPOSITORY: ${{ github.repository }}
           MAP_EVIDENCE_GIT_REF: ${{ github.ref }}

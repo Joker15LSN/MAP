@@ -52,6 +52,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from validate_acceptance_evidence import (  # noqa: E402
     git_head,
+    git_is_ancestor,
     load_profile,
     required_ac_by_task,
 )
@@ -290,6 +291,45 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def resolve_freeze_sha(root: Path, cli_value: str | None) -> str:
+    """R7-P2-03: pin the evidence freeze to the IMPLEMENTATION commit.
+
+    On a protected-branch push HEAD is normally the evidence re-freeze
+    commit; freezing at ``git_head`` there supersedes the entire tracked
+    evidence set and regenerates it under a new sha, which the final
+    clean-product check then rejects. The protected CI workflow injects
+    ``MAP_EVIDENCE_IMPLEMENTATION_SHA`` (or passes ``--implementation-sha``)
+    so attestation re-signs the existing manifests IN PLACE at the frozen
+    code commit. Local runs keep the old behavior (freeze at HEAD) so a
+    developer can still mint a first evidence set.
+
+    Fail-closed: an injected sha must resolve to a commit and must be HEAD
+    itself or an ancestor of HEAD - evidence can never describe a commit
+    that is not part of the checked-out history.
+    """
+    raw = (cli_value or os.getenv("MAP_EVIDENCE_IMPLEMENTATION_SHA", "") or "").strip()
+    if not raw:
+        return git_head(root)
+    proc = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", f"{raw}^{{commit}}"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(
+            "MAP_EVIDENCE_IMPLEMENTATION_SHA does not resolve to a commit: "
+            f"{raw!r} ({proc.stderr.strip()})"
+        )
+    sha = proc.stdout.strip()
+    if sha != git_head(root) and not git_is_ancestor(root, sha):
+        raise SystemExit(
+            "MAP_EVIDENCE_IMPLEMENTATION_SHA is not HEAD or an ancestor of "
+            f"HEAD: {sha}"
+        )
+    print(f"evidence: freeze sha pinned by MAP_EVIDENCE_IMPLEMENTATION_SHA to {sha[:12]}")
+    return sha
+
+
 def supersede_stale_manifests(freeze_sha: str) -> int:
     """S2-01 completion rule: evidence frozen at an older sha is marked
     superseded (pointing at the new freeze sha) instead of being silently
@@ -307,6 +347,13 @@ def supersede_stale_manifests(freeze_sha: str) -> int:
         except (json.JSONDecodeError, OSError):
             continue
         if not isinstance(data, dict):
+            continue
+        if data.get("status") == "superseded":
+            # R7-P2-03: an already-superseded historical manifest keeps its
+            # original superseded_by/reason. Rewriting it on every CI
+            # re-attest (with a new freeze sha target) would dirty thousands
+            # of historical records for no reason; only records that are
+            # still current at another sha need to be marked superseded.
             continue
         replacement = (
             base / task_dir / freeze_sha / ac_dir / "evidence-manifest.json"
@@ -469,11 +516,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--issuer", default=TRUSTED_ISSUER)
     parser.add_argument("--workflow", default=TRUSTED_WORKFLOW)
     parser.add_argument("--key-id", default=TRUSTED_KEY_ID)
+    parser.add_argument(
+        "--implementation-sha",
+        default=None,
+        help=(
+            "pin evidence to this implementation commit instead of HEAD "
+            "(same as MAP_EVIDENCE_IMPLEMENTATION_SHA; R7-P2-03)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     profile = load_profile(ROOT, ROOT / args.profile)
     ac_by_task = required_ac_by_task(profile)
-    freeze_sha = git_head(ROOT)
+    freeze_sha = resolve_freeze_sha(ROOT, args.implementation_sha)
     # S2-01 completion rule: stale evidence from older freeze shas is
     # marked superseded (never silently overwritten, never left current).
     superseded = supersede_stale_manifests(freeze_sha)

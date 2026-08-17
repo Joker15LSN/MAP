@@ -326,17 +326,23 @@ def test_sigkill_window_converges(window: str, monkeypatch, tmp_path) -> None:
         double.stop()
 
 
-class RealPgReconcilerTests:
+class TestRealPgReconciler:
     """S6-01: the durable reconciler converges rows on REAL PostgreSQL with
     NO caller retry - the background scan path itself must finish the job.
 
     Directly asserts the types decoded from PG (request_payload /
     server_state must be dict, never str) and the malformed-JSONB
     fail-closed path (non-object JSONB converges to unknown).
+
+    S7-02: the class is named ``TestRealPgReconciler`` (not
+    ``RealPgReconcilerTests``) so pytest's default ``python_classes``
+    actually COLLECTS it, and ``_claim`` is awaited inside the SAME
+    ``asyncio.run`` as the rest of the test - never a nested
+    ``asyncio.run`` (which raises RuntimeError from a running loop).
     """
 
     @staticmethod
-    def _claim(ledger, workspace_id, invocation_id):
+    async def _claim(ledger, workspace_id, invocation_id):
         from map_core.service.sandbox_ledger import (
             build_create_key,
             build_execute_key,
@@ -345,8 +351,7 @@ class RealPgReconcilerTests:
 
         limits = SandboxResourceLimits().to_dict()
         digest = normalize_request_digest(command="echo hi", limits=limits)
-        return asyncio.run(
-            ledger.claim(
+        return await ledger.claim(
                 workspace_id=workspace_id,
                 invocation_id=invocation_id,
                 request_digest=digest,
@@ -375,7 +380,6 @@ class RealPgReconcilerTests:
                 owner_id="crashed-owner",
                 lease_seconds=0.2,
             )
-        )
 
     def test_reconciler_only_converges_pending_row(self, monkeypatch) -> None:
         """No caller retry: the background reconciler alone drives a crashed
@@ -392,7 +396,7 @@ class RealPgReconcilerTests:
             ledger = PostgresSandboxInvocationLedger(DSN)
 
             async def run() -> None:
-                claim = self._claim(ledger, workspace_id, invocation_id)
+                claim = await self._claim(ledger, workspace_id, invocation_id)
                 assert claim.kind == "owned"
                 await asyncio.sleep(0.5)  # lease expires; owner is gone
                 from map_core.service.sandbox_tools import SandboxReconciler
@@ -434,7 +438,7 @@ class RealPgReconcilerTests:
             ledger = PostgresSandboxInvocationLedger(DSN)
 
             async def run() -> None:
-                claim = self._claim(ledger, workspace_id, invocation_id)
+                claim = await self._claim(ledger, workspace_id, invocation_id)
                 client = OpenSandboxClient.from_env()
                 identity = SandboxIdentity(
                     workspace_id=workspace_id,
@@ -508,7 +512,7 @@ class RealPgReconcilerTests:
             ledger = PostgresSandboxInvocationLedger(DSN)
 
             async def run() -> None:
-                claim = self._claim(ledger, workspace_id, invocation_id)
+                claim = await self._claim(ledger, workspace_id, invocation_id)
                 assert claim.kind == "owned"
                 import asyncpg
 
@@ -549,3 +553,45 @@ class RealPgReconcilerTests:
                 assert double.server_state["execute_actions"] == 0
         finally:
             double.stop()
+
+
+def test_s7_02_real_pg_reconciler_tests_are_collectable_by_default() -> None:
+    """S7-02 collection sentinel: pytest's DEFAULT python_classes must
+    collect the three real-PG reconciler tests.
+
+    The sixth round named the class ``RealPgReconcilerTests`` - pytest's
+    default only collects ``Test*`` classes, so the tests silently never
+    entered the gate while the delivery report counted them. This test
+    runs a real ``pytest --collect-only`` in a subprocess and fails if
+    any of the three node ids disappears again.
+    """
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).parents[1])
+        + os.pathsep
+        + os.environ.get("PYTHONPATH", ""),
+    }
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            str(Path(__file__)),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    for node_id in (
+        "test_reconciler_only_converges_pending_row",
+        "test_reconciler_only_reuses_prior_execution",
+        "test_malformed_jsonb_converges_unknown",
+    ):
+        assert node_id in proc.stdout, (
+            f"{node_id} not collected by default: {proc.stdout}"
+        )

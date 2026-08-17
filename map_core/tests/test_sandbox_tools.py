@@ -22,7 +22,6 @@ from map_core.service.agent.base import AgentRequest, ToolResult
 from map_core.service.opensandbox_client import (
     CONNECT_ERROR,
     IDEMPOTENCY_HEADER,
-    MISSING_CONFIG_ERROR,
     UNKNOWN_OUTCOME,
     OpenSandboxClient,
     OpenSandboxClientError,
@@ -235,7 +234,10 @@ class TestUnconfiguredCapability:
         assert result.success is False
         assert CAPABILITY_DISABLED in result.error
         assert result.data_source is not None
-        assert result.data_source.get("error_code") == MISSING_CONFIG_ERROR
+        # S7-03: the machine-readable code the worker maps on is
+        # CAPABILITY_DISABLED (terminal), not the client-internal
+        # OPENSANDBOX_CONFIG_MISSING detail.
+        assert result.data_source.get("error_code") == CAPABILITY_DISABLED
 
 
 class TestFullChain:

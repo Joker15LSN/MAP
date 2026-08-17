@@ -29,11 +29,14 @@ logger = logging.getLogger(__name__)
 # outside it, so the worker fails fast BEFORE the HTTP call).
 _SANDBOX_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 
-# S6-02: Core success=false error codes and their job-state mapping:
-# terminal (authoritative, never retry) vs uncertain (never replay) vs
-# everything else (retryable handler error).
+# S6-02 / S7-03: Core success=false error codes and their job-state
+# mapping: terminal (authoritative, never retry) vs uncertain (never
+# replay) vs everything else (retryable handler error). Every Core
+# success=false response must carry data_source.error_code; OPENSANDBOX_FAILED
+# is the typed terminal code for replay of a definitively failed row.
 _SANDBOX_TERMINAL_CODES = {
     "OPENSANDBOX_IDEMPOTENCY_CONFLICT",
+    "OPENSANDBOX_FAILED",
     "CAPABILITY_DISABLED",
 }
 _SANDBOX_UNCERTAIN_CODES = {

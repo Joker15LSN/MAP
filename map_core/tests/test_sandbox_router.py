@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import httpx
@@ -25,10 +26,21 @@ from fastapi import FastAPI
 from map_core.routers.sandbox_router import IDENTITY_HEADERS, sandbox_router
 from map_core.service.opensandbox_client import (
     IDEMPOTENCY_HEADER,
+    MISSING_CONFIG_ERROR,
     OpenSandboxClient,
+    SandboxResourceLimits,
 )
-from map_core.service.sandbox_ledger import InMemorySandboxInvocationLedger
+from map_core.service.sandbox_ledger import (
+    IDEMPOTENCY_CONFLICT,
+    STATUS_FAILED,
+    STATUS_UNKNOWN,
+    InMemorySandboxInvocationLedger,
+    build_create_key,
+    build_execute_key,
+    normalize_request_digest,
+)
 from map_core.service.sandbox_tools import (
+    CAPABILITY_DISABLED,
     IDENTITY_INCOMPLETE,
     set_sandbox_ledger,
 )
@@ -51,6 +63,8 @@ CREDENTIALS = json.dumps(
             "service_name": "map-worker",
             "audience": "map-core",
             "scopes": ["sandbox:execute"],
+            # S7-04: expires_at is now mandatory (no silent immortal creds).
+            "expires_at": "2099-12-31T23:59:59Z",
         }
     ]
 )
@@ -197,6 +211,49 @@ class TestS6AuthBoundary:
         assert server.bytes_seen == 0
         assert _LEDGER._rows == {}  # noqa: SLF001
 
+    def test_expired_token_is_401_with_zero_side_effects(self, monkeypatch) -> None:
+        """S7-04 counter-example: a token that still sits in the registry
+        but is past expires_at must be rejected exactly like a forged
+        token - HTTP 401, zero ledger rows, zero remote bytes."""
+        monkeypatch.setenv(
+            "MAP_SANDBOX_SERVICE_CREDENTIALS",
+            json.dumps(
+                [
+                    {
+                        "key_id": "k-expired",
+                        "token": TOKEN,
+                        "service_name": "map-worker",
+                        "audience": "map-core",
+                        "scopes": ["sandbox:execute"],
+                        "expires_at": (
+                            datetime.now(timezone.utc) - timedelta(seconds=1)
+                        ).isoformat().replace("+00:00", "Z"),
+                    }
+                ]
+            ),
+        )
+        server = FakeSandboxServer()
+        transport = httpx.ASGITransport(app=_app())
+
+        async def run() -> None:
+            with mock.patch.object(OpenSandboxClient, "from_env", lambda: _client(server)):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        "/sandbox/exec",
+                        json={"command": "echo hi"},
+                        headers=_auth_headers(),
+                    )
+            assert response.status_code == 401
+            assert response.json()["error_code"] == "OPENSANDBOX_UNAUTHORIZED"
+
+        asyncio.run(run())
+        assert server.create_calls == []
+        assert server.execute_calls == []
+        assert server.bytes_seen == 0
+        assert _LEDGER._rows == {}  # noqa: SLF001
+
     def test_wrong_audience_is_403_with_zero_side_effects(self, monkeypatch) -> None:
         monkeypatch.setenv(
             "MAP_SANDBOX_SERVICE_CREDENTIALS",
@@ -208,6 +265,7 @@ class TestS6AuthBoundary:
                         "service_name": "map-worker",
                         "audience": "not-map-core",
                         "scopes": ["sandbox:execute"],
+                        "expires_at": "2099-12-31T23:59:59Z",
                     }
                 ]
             ),
@@ -242,6 +300,7 @@ class TestS6AuthBoundary:
                         "service_name": "map-worker",
                         "audience": "map-core",
                         "scopes": [],
+                        "expires_at": "2099-12-31T23:59:59Z",
                     }
                 ]
             ),
@@ -338,5 +397,131 @@ class TestS5FullChain:
             assert execute_payload["attempt_id"] == "att-1"
             assert execute_payload["invocation_id"] == "inv-1"
             assert execute_payload["client_request_id"] == "req-1"
+
+        asyncio.run(run())
+
+
+def _preseed_terminal(status: str, error: str) -> None:
+    """Write a terminal row for FULL_HEADERS' identity through the REAL
+    ledger API, exactly as a prior crashed attempt would have left it."""
+    workspace_id = FULL_HEADERS["X-Workspace-ID"]
+    invocation_id = FULL_HEADERS["X-Invocation-ID"]
+    limits = SandboxResourceLimits().to_dict()
+    digest = normalize_request_digest(command="echo hi", limits=limits)
+
+    async def run() -> None:
+        claim = await _LEDGER.claim(
+            workspace_id=workspace_id,
+            invocation_id=invocation_id,
+            request_digest=digest,
+            create_key=build_create_key(
+                workspace_id=workspace_id,
+                invocation_id=invocation_id,
+                request_digest=digest,
+            ),
+            execute_key=build_execute_key(
+                workspace_id=workspace_id,
+                invocation_id=invocation_id,
+                request_digest=digest,
+            ),
+            request_payload={
+                "command": "echo hi",
+                "limits": limits,
+                "identity": {k: v for k, v in FULL_HEADERS.items()},
+            },
+            owner_id="prior-attempt",
+            lease_seconds=0.0,
+        )
+        await _LEDGER.complete(
+            workspace_id=workspace_id,
+            invocation_id=invocation_id,
+            status=status,
+            fence=claim.fence,
+            error=error,
+        )
+
+    asyncio.run(run())
+
+
+class TestS7CoreFailureContract:
+    """S7-03: REAL Core response shapes for every success=false path.
+
+    The worker maps ONLY on ``data_source.error_code``. These tests pin
+    the actual router responses for the two paths that previously lacked
+    the code: capability-disabled (200/success=false) and replay of a
+    terminal unknown/failed row.
+    """
+
+    def test_capability_disabled_response_carries_terminal_code(
+        self, monkeypatch
+    ) -> None:
+        """Core without OpenSandbox config answers HTTP 200 success=false
+        with error_code=CAPABILITY_DISABLED - the worker's terminal set."""
+        monkeypatch.delenv("MAP_OPENSANDBOX_URL")
+        monkeypatch.delenv("MAP_OPENSANDBOX_API_KEY")
+        transport = httpx.ASGITransport(app=_app())
+
+        async def run() -> None:
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/sandbox/exec",
+                    json={"command": "echo hi"},
+                    headers=_auth_headers(),
+                )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["success"] is False
+            assert str(body["error"]).startswith(f"{CAPABILITY_DISABLED}:")
+            assert body["data_source"]["error_code"] == CAPABILITY_DISABLED
+            # The client-internal detail must NOT leak as the mapped code.
+            assert body["data_source"]["error_code"] != MISSING_CONFIG_ERROR
+
+        asyncio.run(run())
+
+    def test_replay_unknown_terminal_carries_uncertain_code(self) -> None:
+        _preseed_terminal(
+            STATUS_UNKNOWN, "OPENSANDBOX_UNKNOWN_OUTCOME: execute outcome unknown"
+        )
+        transport = httpx.ASGITransport(app=_app())
+
+        async def run() -> None:
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/sandbox/exec",
+                    json={"command": "echo hi"},
+                    headers=_auth_headers(),
+                )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["success"] is False
+            assert body["data_source"]["error_code"] == "OPENSANDBOX_UNKNOWN_OUTCOME"
+
+        asyncio.run(run())
+
+    def test_replay_failed_conflict_carries_terminal_code(self) -> None:
+        _preseed_terminal(
+            STATUS_FAILED,
+            f"{IDEMPOTENCY_CONFLICT}: invocation already used with a "
+            "different payload",
+        )
+        transport = httpx.ASGITransport(app=_app())
+
+        async def run() -> None:
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/sandbox/exec",
+                    json={"command": "echo hi"},
+                    headers=_auth_headers(),
+                )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["success"] is False
+            assert body["data_source"]["error_code"] == IDEMPOTENCY_CONFLICT
 
         asyncio.run(run())

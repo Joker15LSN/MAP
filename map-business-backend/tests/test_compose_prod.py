@@ -48,12 +48,14 @@ _STRIP_KEYS = (
     "MAP_SANDBOX_CORE_TOKEN",
 )
 
-# S6-03: prod compose tests must inject a (fake) credential registry so
-# the :? interpolation succeeds; the value itself is asserted separately.
+# S6-03 / S7-04: prod compose tests must inject a (fake) credential
+# registry so the :? interpolation succeeds; the value itself is asserted
+# separately. S7-04 makes expires_at mandatory.
 _SANDBOX_CREDENTIALS = (
     '[{"key_id":"k-test","token":"fake-sandbox-token",'
     '"service_name":"map-worker","audience":"map-core",'
-    '"scopes":["sandbox:execute"]}]'
+    '"scopes":["sandbox:execute"],'
+    '"expires_at":"2099-12-31T23:59:59Z"}]'
 )
 
 # P0-SEC-01: base compose passwords are :?required; inject fake one-shot

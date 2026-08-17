@@ -80,6 +80,8 @@ logger = logging.getLogger(__name__)
 CAPABILITY_DISABLED = "CAPABILITY_DISABLED"
 IDENTITY_INCOMPLETE = "OPENSANDBOX_IDENTITY_INCOMPLETE"
 INVOCATION_IN_PROGRESS = "OPENSANDBOX_INVOCATION_IN_PROGRESS"
+FAILED_OUTCOME = "OPENSANDBOX_FAILED"
+INVALID_ARGS = "OPENSANDBOX_INVALID_ARGS"
 PROTOCOL_VERSION = "0.2.2"
 SERVER_IMAGE_REF = "ghcr.io/opensandbox-group/opensandbox:0.2.2"
 
@@ -228,9 +230,15 @@ def _result_meta(
     identity: SandboxIdentity,
     limits: SandboxResourceLimits,
     server_state: dict[str, Any] | None,
+    error_code: str | None = None,
 ) -> dict[str, Any]:
-    """Durable record: identity, policy version, limits and remote state."""
-    return {
+    """Durable record: identity, policy version, limits and remote state.
+
+    S7-03: every success=false Core response must carry a machine-readable
+    ``error_code`` so the worker can map it to typed terminal/uncertain job
+    states instead of retrying a definitively failed invocation forever.
+    """
+    meta: dict[str, Any] = {
         "source": "opensandbox",
         "protocol_version": PROTOCOL_VERSION,
         "server_image_ref": SERVER_IMAGE_REF,
@@ -238,6 +246,9 @@ def _result_meta(
         "limits": limits.to_dict(),
         "server_state": server_state or {},
     }
+    if error_code is not None:
+        meta["error_code"] = error_code
+    return meta
 
 
 def _prior_server_execution(
@@ -260,12 +271,46 @@ def _prior_server_execution(
     return None
 
 
+_KNOWN_FAILURE_CODES = {
+    IDEMPOTENCY_CONFLICT,
+    CAPABILITY_DISABLED,
+    UNKNOWN_OUTCOME,
+    LEDGER_ERROR,
+    IDENTITY_INCOMPLETE,
+    INVOCATION_IN_PROGRESS,
+    FAILED_OUTCOME,
+}
+
+
+def _error_code_from_message(error: str | None) -> str | None:
+    """Extract a machine-readable code from an error message prefix.
+
+    Core error strings use the ``CODE: detail`` convention; the worker maps
+    on ``data_source.error_code`` only, so the replay path must convert the
+    ledger's recorded message back into exactly the typed code that was (or
+    should have been) reported when the terminal state was written.
+    """
+    if not error:
+        return None
+    prefix = error.split(":", 1)[0].strip()
+    return prefix if prefix in _KNOWN_FAILURE_CODES else None
+
+
 def _replay(
     record: SandboxInvocationRecord,
     identity: SandboxIdentity,
     limits: SandboxResourceLimits,
 ) -> ToolResult:
-    """Replay a terminal ledger fact without touching the server."""
+    """Replay a terminal ledger fact without touching the server.
+
+    S7-03: the replay response must carry ``data_source.error_code`` for
+    every non-success terminal status - ``unknown`` maps to
+    OPENSANDBOX_UNKNOWN_OUTCOME (worker: EffectUncertainError, never
+    retried), ``failed``/idempotency-conflict messages map to their typed
+    terminal code, and any other failed terminal fact maps to the typed
+    OPENSANDBOX_FAILED terminal code (worker: JobTerminalError, never
+    retried).
+    """
     if record.status == STATUS_SUCCEEDED:
         return ToolResult(
             name=SANDBOX_TOOL_NAME,
@@ -274,13 +319,25 @@ def _replay(
                 identity=identity, limits=limits, server_state=record.server_state
             ),
         )
-    error = record.error or f"OPENSANDBOX_{record.status.upper()}"
+    if record.status == STATUS_UNKNOWN:
+        error_code = UNKNOWN_OUTCOME
+        error = record.error or (
+            f"{UNKNOWN_OUTCOME}: terminal ledger status unknown"
+        )
+    else:
+        error_code = _error_code_from_message(record.error) or FAILED_OUTCOME
+        error = record.error or (
+            f"{FAILED_OUTCOME}: terminal ledger status {record.status}"
+        )
     return ToolResult(
         success=False,
         name=SANDBOX_TOOL_NAME,
         error=error,
         data_source=_result_meta(
-            identity=identity, limits=limits, server_state=record.server_state
+            identity=identity,
+            limits=limits,
+            server_state=record.server_state,
+            error_code=error_code,
         ),
     )
 
@@ -413,7 +470,8 @@ async def _sandbox_execute_handler(
         return ToolResult(
             success=False,
             name=SANDBOX_TOOL_NAME,
-            error="sandbox_exec_tool: command must be a non-empty string",
+            error=f"{INVALID_ARGS}: command must be a non-empty string",
+            data_source={"source": "opensandbox", "error_code": INVALID_ARGS},
         )
 
     identity_result = _identity_from_request(request)
@@ -542,7 +600,13 @@ async def _sandbox_execute_handler(
                 success=False,
                 name=SANDBOX_TOOL_NAME,
                 error=f"{CAPABILITY_DISABLED}: {exc}",
-                data_source={"source": "opensandbox", "error_code": exc.code},
+                # S7-03: the machine-readable code the worker maps on is
+                # CAPABILITY_DISABLED (terminal), NOT the client's internal
+                # OPENSANDBOX_CONFIG_MISSING detail.
+                data_source={
+                    "source": "opensandbox",
+                    "error_code": CAPABILITY_DISABLED,
+                },
             )
         raise
 
@@ -688,7 +752,13 @@ async def _drive_remote_execution(
                 error=error,
             )
             return ToolResult(
-                success=False, name=SANDBOX_TOOL_NAME, error=error
+                success=False,
+                name=SANDBOX_TOOL_NAME,
+                error=error,
+                data_source={
+                    "source": "opensandbox",
+                    "error_code": FAILED_OUTCOME,
+                },
             )
         # Fenced durable write BEFORE any further mutation; on failure the
         # sandbox is left alive for the reconciler (never destroyed here).
@@ -829,7 +899,10 @@ async def _drive_remote_execution(
                 name=SANDBOX_TOOL_NAME,
                 error=error,
                 data_source=_result_meta(
-                    identity=identity, limits=limits, server_state=state
+                    identity=identity,
+                    limits=limits,
+                    server_state=state,
+                    error_code=UNKNOWN_OUTCOME,
                 ),
             )
         raise

@@ -343,6 +343,131 @@ async def test_success_false_transient_is_retryable(_engine, monkeypatch) -> Non
         fake_core.server.should_exit = True
 
 
+async def _run_job_against_core_response(
+    _engine, monkeypatch, response: dict, *, max_attempts: int = 2
+):
+    """Run one sandbox_exec job against a REAL HTTP Core double that
+    returns the given (real-Core-shaped) response."""
+    fake_core = FakeCoreServer(response=response)
+    thread = threading.Thread(target=fake_core.serve, daemon=True)
+    thread.start()
+    try:
+        await _wait_ready(fake_core)
+        monkeypatch.setenv("MAP_CORE_API_ORIGIN", fake_core.url)
+        factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
+        async with factory() as s:
+            await _clear_jobs(s)
+            job = await _create_job(
+                s, payload={"command": "echo hi"}, max_attempts=max_attempts
+            )
+        runner = JobRunner(
+            factory,
+            {"sandbox_exec": _sandbox_exec_handler},
+            worker_id="sandbox-worker",
+            poll_seconds=0.01,
+        )
+        assert await runner.run_once() is True
+        async with factory() as s:
+            return await s.get(Job, job.id)
+    finally:
+        fake_core.server.should_exit = True
+
+
+async def test_capability_disabled_real_core_shape_is_terminal(_engine, monkeypatch) -> None:
+    """S7-03 counter-example 1: Core's real capability-disabled response
+    (HTTP 200, success=false, error_code=CAPABILITY_DISABLED) must map to
+    an immediate typed FAILED - never a retryable HANDLER_ERROR."""
+    stored = await _run_job_against_core_response(
+        _engine,
+        monkeypatch,
+        response={
+            "success": False,
+            "content": "",
+            "error": (
+                "CAPABILITY_DISABLED: OPENSANDBOX_CONFIG_MISSING: "
+                "OpenSandbox is not configured"
+            ),
+            "data_source": {
+                "source": "opensandbox",
+                "error_code": "CAPABILITY_DISABLED",
+            },
+        },
+    )
+    assert stored.status == JobStatus.FAILED
+    assert stored.error_code == "SANDBOX_EXEC_CAPABILITY_DISABLED"
+    assert stored.attempt == 1  # never retried
+
+
+async def test_replay_unknown_real_core_shape_is_uncertain(_engine, monkeypatch) -> None:
+    """S7-03 counter-example 2a: Core's replay of a terminal unknown row
+    must map to EffectUncertainError, never a retryable HANDLER_ERROR."""
+    stored = await _run_job_against_core_response(
+        _engine,
+        monkeypatch,
+        response={
+            "success": False,
+            "content": "",
+            "error": "OPENSANDBOX_UNKNOWN_OUTCOME: terminal ledger status unknown",
+            "data_source": {
+                "source": "opensandbox",
+                "error_code": "OPENSANDBOX_UNKNOWN_OUTCOME",
+            },
+        },
+    )
+    assert stored.status == JobStatus.FAILED
+    assert stored.error_code == "EFFECT_UNCERTAIN"
+    assert stored.attempt == 1
+
+
+async def test_replay_failed_conflict_real_core_shape_is_terminal(
+    _engine, monkeypatch
+) -> None:
+    """S7-03 counter-example 2b: Core's replay of a failed idempotency
+    conflict must map to the typed terminal code."""
+    stored = await _run_job_against_core_response(
+        _engine,
+        monkeypatch,
+        response={
+            "success": False,
+            "content": "",
+            "error": (
+                "OPENSANDBOX_IDEMPOTENCY_CONFLICT: invocation already used "
+                "with a different payload"
+            ),
+            "data_source": {
+                "source": "opensandbox",
+                "error_code": "OPENSANDBOX_IDEMPOTENCY_CONFLICT",
+            },
+        },
+    )
+    assert stored.status == JobStatus.FAILED
+    assert stored.error_code == "SANDBOX_EXEC_OPENSANDBOX_IDEMPOTENCY_CONFLICT"
+    assert stored.attempt == 1
+
+
+async def test_replay_generic_failed_real_core_shape_is_terminal(
+    _engine, monkeypatch
+) -> None:
+    """S7-03: a definitive failed row without a more specific prefix maps
+    to OPENSANDBOX_FAILED - terminal, never retried."""
+    stored = await _run_job_against_core_response(
+        _engine,
+        monkeypatch,
+        response={
+            "success": False,
+            "content": "",
+            "error": "OPENSANDBOX_FAILED: terminal ledger status failed",
+            "data_source": {
+                "source": "opensandbox",
+                "error_code": "OPENSANDBOX_FAILED",
+            },
+        },
+    )
+    assert stored.status == JobStatus.FAILED
+    assert stored.error_code == "SANDBOX_EXEC_OPENSANDBOX_FAILED"
+    assert stored.attempt == 1
+
+
 async def test_worker_sandbox_exec_missing_command_fails_job(_engine, monkeypatch) -> None:
     factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as s:
