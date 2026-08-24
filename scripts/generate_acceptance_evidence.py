@@ -50,13 +50,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from evidence_signing import sign_manifest  # noqa: E402
 from validate_acceptance_evidence import (  # noqa: E402
     git_head,
     git_is_ancestor,
     load_profile,
     required_ac_by_task,
 )
-from evidence_signing import sign_manifest  # noqa: E402
 
 SCHEMA_VERSION = "1.2.0"
 BASELINE_SHA = "e019059c2c8499454ecddc9eb63655aeadb0bd90"
@@ -288,7 +288,8 @@ def run_with_logs(command: str, target_dir: Path) -> tuple[int, list[dict]]:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    # Keep the evidence CLI importable by the macOS system Python 3.9.
+    return datetime.now(timezone.utc).isoformat()  # noqa: UP017
 
 
 def resolve_freeze_sha(root: Path, cli_value: str | None) -> str:
@@ -494,20 +495,26 @@ def sign_pass_manifest(manifest: dict) -> dict:
     )
 
 
-def resign_pass_manifest(path: Path) -> None:
+def resign_pass_manifest(path: Path) -> bool:
     """S5-02 CI re-attestation: replace ONLY the attestation of an existing
     pass manifest with the protected-CI signature (the recorded execution
-    facts - command, exit code, artifacts, timestamps - are never touched)."""
+    facts - command, exit code, artifacts, timestamps - are never touched).
+
+    Returns ``True`` exactly when a pass manifest was written. This keeps
+    the generator's audit count aligned with the files it actually
+    re-attested (S8-03).
+    """
     context = ci_signing_context()
     if context is None:
-        return
+        return False
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or data.get("status") != "pass":
-        return
+        return False
     signed = sign_pass_manifest(data)
     path.write_text(
         json.dumps(signed, ensure_ascii=False, indent=2) + chr(10), encoding="utf-8"
     )
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -558,9 +565,9 @@ def main(argv: list[str] | None = None) -> int:
             if target.exists():
                 # S5-02: in the protected CI context, existing pass manifests
                 # are re-attested (attestation replaced, facts untouched);
-                # locally they stay as-is (unsigned = not releasable).
-                if ci_signing_context() is not None:
-                    resign_pass_manifest(target)
+                # locally and for non-pass manifests they stay as-is. Count
+                # only files actually written as re-attested (S8-03).
+                if resign_pass_manifest(target):
                     resigned += 1
                 else:
                     skipped += 1

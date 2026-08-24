@@ -66,7 +66,7 @@ profile_id: "synthetic-ci-sequence-test"
 task_registry:
   GLOBAL:
     depends_on: []
-    acceptance_ids: [AC-ONE]
+    acceptance_ids: [AC-ONE, AC-BLOCKED]
 """
 
 
@@ -146,6 +146,21 @@ def _build_repo(tmp_path: Path) -> tuple[Path, str, Path]:
     (manifest_dir / "evidence-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    blocked_dir = (
+        repo / "tmp" / "acceptance" / "GLOBAL" / implementation_sha / "AC-BLOCKED"
+    )
+    blocked_dir.mkdir(parents=True)
+    blocked_manifest = {
+        **manifest,
+        "ac_id": "AC-BLOCKED",
+        "status": "blocked",
+        "exit_code": 1,
+        "blocked_reason": "synthetic blocker",
+    }
+    (blocked_dir / "evidence-manifest.json").write_text(
+        json.dumps(blocked_manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     # A historical superseded manifest (previous freeze) must NOT be
     # rewritten by a CI re-attest at the new implementation sha - that was
     # the 1599-file rewrite half of the seventh-round P0 reproduction.
@@ -210,6 +225,7 @@ def test_ci_final_sequence(ci_repo, monkeypatch) -> None:
     assert rc == 0, stderr.getvalue()
     assert implementation_sha[:12] in stdout.getvalue()
     assert "1 re-attested" in stdout.getvalue()
+    assert "1 already present" in stdout.getvalue()
     # The re-attested manifest is a worktree modification under
     # tmp/acceptance/** and must NOT have created a second freeze dir.
     attested = json.loads(manifest_path.read_text(encoding="utf-8"))

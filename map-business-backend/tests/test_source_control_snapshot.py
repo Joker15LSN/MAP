@@ -22,6 +22,10 @@ porcelain rename can sit in EITHER column — ``mv app.py TODO/app.py.md
 repository, and the worktree-side form must classify exactly like the
 index-side one. The quadrant matrix below runs every rename class in
 BOTH column positions against real temporary repositories.
+
+S8-02 narrows the acceptance-evidence exemption to committed files with
+known evidence shapes. Untracked or unexpected files below
+``tmp/acceptance/`` remain product dirt.
 """
 
 from __future__ import annotations
@@ -302,6 +306,95 @@ def test_cli_require_clean_product_exit_codes(git_repo: Path) -> None:
         ["--repo", str(git_repo), "--json", "--require-clean-product"]
     )
     assert rc == 2
+
+
+def _evidence_fixture(git_repo: Path) -> tuple[Path, Path, Path]:
+    freeze_sha = "a" * 40
+    evidence_dir = (
+        git_repo / "tmp" / "acceptance" / "P0-TEST-01" / freeze_sha / "AC-ONE"
+    )
+    logs_dir = evidence_dir / "logs"
+    logs_dir.mkdir(parents=True)
+    log_path = logs_dir / "stdout.txt"
+    log_path.write_text("original log\n", encoding="utf-8")
+    custom_artifact = evidence_dir / "result.json"
+    custom_artifact.write_text('{"result": "original"}\n', encoding="utf-8")
+    custom_rel = custom_artifact.relative_to(git_repo).as_posix()
+    manifest_path = evidence_dir / "evidence-manifest.json"
+    manifest_path.write_text(
+        json.dumps({"status": "pass", "artifacts": [{"path": custom_rel}]})
+        + "\n",
+        encoding="utf-8",
+    )
+    return manifest_path, log_path, custom_artifact
+
+
+def test_s8_tracked_known_evidence_shapes_remain_exempt(git_repo: Path) -> None:
+    """Re-attested manifests, logs, and committed manifest-referenced
+    in-directory artifacts are evidence rather than product code."""
+    manifest_path, log_path, custom_artifact = _evidence_fixture(git_repo)
+    _commit(git_repo, "tracked evidence")
+
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "status": "pass",
+                "artifacts": [
+                    {"path": custom_artifact.relative_to(git_repo).as_posix()}
+                ],
+                "attestation": "new",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    log_path.write_text("new log\n", encoding="utf-8")
+    custom_artifact.write_text('{"result": "new"}\n', encoding="utf-8")
+
+    snap = _snapshot_paths(git_repo)
+    expected = sorted(
+        path.relative_to(git_repo).as_posix()
+        for path in (manifest_path, log_path, custom_artifact)
+    )
+    assert snap["dirty_evidence"] == expected
+    assert snap["dirty_product"] == []
+    assert snap["evidence_only_dirty"] is True
+    assert source_control.main(
+        ["--repo", str(git_repo), "--require-clean-product"]
+    ) == 0
+
+
+def test_s8_untracked_file_under_acceptance_is_product_dirt(git_repo: Path) -> None:
+    (git_repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+    _commit(git_repo, "baseline")
+    evil_path = git_repo / "tmp" / "acceptance" / "evil.py"
+    evil_path.parent.mkdir(parents=True)
+    evil_path.write_text("raise SystemExit('bypass')\n", encoding="utf-8")
+
+    snap = _snapshot_paths(git_repo)
+    assert snap["dirty_evidence"] == []
+    assert snap["dirty_product"] == ["tmp/acceptance/evil.py"]
+    assert source_control.main(
+        ["--repo", str(git_repo), "--require-clean-product"]
+    ) == 2
+
+
+def test_s8_tracked_unexpected_acceptance_file_is_product_dirt(
+    git_repo: Path,
+) -> None:
+    manifest_path, _log_path, _custom_artifact = _evidence_fixture(git_repo)
+    unexpected = manifest_path.parent / "unexpected.bin"
+    unexpected.write_bytes(b"original")
+    _commit(git_repo, "evidence plus unexpected tracked file")
+    unexpected.write_bytes(b"changed")
+
+    snap = _snapshot_paths(git_repo)
+    rel = unexpected.relative_to(git_repo).as_posix()
+    assert snap["dirty_evidence"] == []
+    assert snap["dirty_product"] == [rel]
+    assert source_control.main(
+        ["--repo", str(git_repo), "--require-clean-product"]
+    ) == 2
 
 
 def test_parser_rejects_malformed_and_incomplete_records() -> None:
