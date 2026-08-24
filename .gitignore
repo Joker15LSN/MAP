@@ -238,7 +238,13 @@ reasonix.toml
 #   - e2e/tmp/: E2E report JSONs, browser reports/screenshots, compose log
 #     dumps (may contain request payloads)
 #   - tmp/gate-logs/: release gate step logs
+#   - tmp/evidence-report*.json: transient validator reports (the durable
+#     copies live under tmp/gate-logs/)
 #   - vite incremental build info
 e2e/tmp/
 tmp/gate-logs/
+tmp/evidence-report*.json
+# S4-03: the evidence signing key is never committed; only the public key in
+# TODO/evidence-trust/trusted_keys.json is. CI injects this key via a secret.
+tmp/evidence-signing-key/
 *.tsbuildinfo

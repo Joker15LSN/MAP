@@ -92,8 +92,8 @@ export const conversationApi = {
     });
   },
 
-  stop(messageId: string): Promise<MessageView> {
-    return postJson<MessageView>(`/api/v1/messages/${messageId}:stop`, {});
+  stop(messageId: string, init?: RequestInit): Promise<MessageView> {
+    return postJson<MessageView>(`/api/v1/messages/${messageId}:stop`, {}, init);
   },
 
   submitFeedback(messageId: string, input: FeedbackInput): Promise<FeedbackView> {

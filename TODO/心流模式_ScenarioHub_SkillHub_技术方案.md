@@ -17,6 +17,8 @@ HGT 2.0 心流模式建议保持现有大框架不变：
 - 跨多个 Sub-Agent 的复杂业务场景不挂在某个 Sub-Agent 下，而是以 `Scenario Pack` 的形式被 Master 在规划阶段激活。
 - POD 不是架构专有模块，只是第一个 `Scenario Pack` 示例，例如 `order_revenue_confirmation`。
 - 原有 replan 逻辑保留，但 replan 输入从自然语言失败原因升级为 `BusinessExecutionGraph + StepVerdict + RepairCandidates`。
+- 代码/命令/文件执行固定通过独立 OpenSandbox Server 的 HTTP API 请求；算法进程不内建沙箱 runtime，不存在宿主 fallback。
+- 记忆/上下文检索固定通过独立 OpenViking Server 的 HTTP API 请求；PG 对话/Run 是业务真相，OpenViking 仅作可检索上下文与长期记忆服务。
 
 ---
 
@@ -183,7 +185,9 @@ flowchart TB
     end
 
     MEM["FlowMemoryGateway"]
-    OV[("OpenViking / Context DB")]
+    OV[("OpenViking Server\nHTTP Memory / Context API")]
+    OSC["OpenSandbox Client\nAgentScope Workspace adapter"]
+    OS["OpenSandbox Server\nHTTP lifecycle / command / file"]
     TRACE[("Trace / Audit Store")]
 
     U --> API --> M
@@ -212,6 +216,12 @@ flowchart TB
     DA --> DS
     DA --> DT
 
+    FT --> OSC
+    ST --> OSC
+    CT --> OSC
+    DT --> OSC
+    OSC -->|"authenticated HTTP"| OS
+
     FA --> J
     SA --> J
     CA --> J
@@ -223,6 +233,12 @@ flowchart TB
     CA --> TRACE
     DA --> TRACE
 ```
+
+部署和调用约束：
+
+- OpenSandbox 与 OpenViking 都是算法链路外的独立 Server；Master/Sub-Agent 只经 MAP client adapter 发起异步 HTTP 请求，不直接读写两个服务的底层存储/运行时。
+- OpenSandbox 请求绑定 `workspace_id/run_id/step_id/attempt_id/invocation_id`；OpenViking 将 `workspace_id` 映射为 account、principal 映射为 user，并保留 agent/thread/run provenance。
+- 两个 client 统一执行 service auth、timeout、有界 retry、circuit breaker、trace propagation 和 typed errors。OpenSandbox 不可用时 fail-closed/paused；OpenViking retrieve 不可用时只能显式 paused 或 `memory_degraded=true`，不得静默切到本地/Mongo provider。
 
 ---
 
@@ -241,6 +257,8 @@ sequenceDiagram
     participant T as Skill/Tool
     participant J as Judge-Agent
     participant MEM as MemoryGateway
+    participant OV as OpenViking Server
+    participant OS as OpenSandbox Server
 
     U->>API: query + tool_context + flow_config
     API->>M: create flow task
@@ -255,12 +273,22 @@ sequenceDiagram
 
     loop graph execution until done or budget exhausted
         M->>A: dispatch executable graph node
+        A->>MEM: retrieve context(namespace + query)
+        MEM->>OV: authenticated HTTP find/read
+        OV-->>MEM: memories + provenance + scores
+        MEM-->>A: budgeted context
         A->>A: decide skill/tool strategy locally
         A->>T: invoke selected skill/tool
+        opt code / command / file capability
+            T->>OS: authenticated HTTP create/execute/stream
+            OS-->>T: typed output + artifact refs
+        end
         T-->>A: local result + evidence refs + confidence
         A-->>J: submit NodeExecutionResult
         J-->>M: StepVerdict(pass/fail/uncertain) + missing evidence + repair candidates
-        M->>MEM: commit node result and evidence
+        M->>MEM: enqueue memory write after durable checkpoint
+        MEM->>OV: authenticated HTTP append/commit
+        OV-->>MEM: memory version / digest
         alt pass
             M->>M: unlock next graph nodes
         else uncertain or fail
@@ -514,7 +542,7 @@ Skill/Tool 必须做两阶段鉴权：
 | 现有模块 | 新方案中的角色 |
 |---|---|
 | `AgentDispatcher` | 仍负责选择并发 Sub-Agent，可增加 ScenarioGraph 上下文注入 |
-| `ToolCallAgent` | 继续作为 Sub-Agent 执行主体 |
+| AgentScope Runtime | 作为唯一 Sub-Agent 执行主体；旧 `ToolCallAgent` 仅是有退出门槛的迁移路径 |
 | `ToolExecutor` | 继续执行 Skill/Tool，增加权限校验和标准化结果 |
 | `ToolRegistry` | 本地静态 Skill/Tool 注册中心，可被 SkillHub 扩展 |
 | `SceneAgentConfig.tool_names` | Sub-Agent 能力挂载白名单 |
@@ -533,6 +561,8 @@ Skill/Tool 必须做两阶段鉴权：
 | `SkillHubClient` | 按 agent_code 获取授权后的 Skill/Tool 描述 |
 | `RemoteSkillTool` | 将远程 Skill 包装成现有 Tool 协议 |
 | `SkillPolicyChecker` | 执行时二次鉴权 |
+| `OpenSandboxClient` | 通过 AgentScope OpenSandbox Workspace 调用独立 OpenSandbox Server，管理 sandbox lifecycle/command/file 与 durable mapping |
+| `OpenVikingMemoryClient` | 通过认证异步 HTTP 调用 OpenViking Server，负责 namespace、retrieve/store/delete/export 和 context assembly adapter |
 
 ### 10.3 最小改造路径
 
@@ -593,6 +623,8 @@ GET  /skill_hub/v1/skills/{skill_id}
 
 ### Phase 1：框架打通
 
+- 将 AgentScope 升级到已验证的 2.0.6，以独立 Server 形式部署 OpenSandbox/OpenViking，打通认证 HTTP client、health、namespace 和 OTel 传递。
+- 生产代码/命令执行切换到 AgentScope OpenSandbox Workspace；记忆 retrieve/store 切换到 `OpenVikingMemoryClient`，两者都禁止静默本地 fallback。
 - 引入 `ScenarioPack` 和 `BusinessExecutionGraph` schema。
 - 支持 Master 根据静态 Scenario Pack 生成执行图。
 - Sub-Agent 仍使用现有 Tool/AgentTool。

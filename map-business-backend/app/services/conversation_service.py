@@ -36,6 +36,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core_client import MapCoreClient
 from ..db.models import Conversation
 from ..repositories.conversations import ConversationRepository
+from ..runtime.event_envelope import EventEnvelopeError
+from .run_event_stream import is_run_event_frame, parse_run_event_data
 from .runtime_payloads import build_runtime_chat_payload
 from .sse import SseParseError, SseStreamParser, frame_data_json
 from .stream_registry import StreamRegistry, drain_cancelled
@@ -230,6 +232,22 @@ async def stream_conversation_message(
 
                 parsed = parser.feed(chunk)  # raises SseParseError on bad UTF-8
                 for frame in parsed.frames:
+                    if is_run_event_frame(frame.event):
+                        # S2-02: run events are contract-validated before
+                        # forwarding - the runtime contract's production
+                        # call path (unknown version/type, reserved-field
+                        # shadowing, oversized payloads all fail the stream
+                        # with a stable typed error).
+                        data = frame_data_json(frame)  # raises SseParseError on bad JSON
+                        try:
+                            parse_run_event_data(frame.event, data)
+                        except EventEnvelopeError as exc:
+                            raise SseParseError(
+                                exc.code,
+                                f"run event {frame.event!r} violates the contract: {exc.message}",
+                            ) from exc
+                        yield {"event": frame.event, "data": data}
+                        continue
                     data = frame_data_json(frame)  # raises SseParseError on bad JSON
                     if frame.event == "content_delta" and isinstance(data.get("content"), str):
                         accumulated += data["content"]

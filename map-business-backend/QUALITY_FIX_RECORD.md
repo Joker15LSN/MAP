@@ -624,3 +624,71 @@ import `app.main` 零文件系统副作用（PEP 562 惰性单例，修复前 OS
   绿；两个 P2 分工作包独立提交；final gate 23/23 全绿且 artifact
   同时证明 worktree 与 committed-range；final PR E2E 一轮 PASS；证
   据回填本节，交付后不再修改产品/测试/gate/质量记录。
+
+## 15. S7 第七轮代码审查整改收口记录（针对《第六轮修复_7a50d808_第七轮代码审查报告》）
+
+### 15.1 S7-01 [P0] protected CI final 证据重写与 clean-product 自阻塞
+
+- 真实重放（干净 worktree @ `7a50d808`，workflow 原样）：证据生成器以
+  evidence 提交为 `git_head`，把 1599 个历史 manifest 标记 superseded 并在
+  `7a50d808` 下重建 145 个 manifest；`source_control.py
+  --require-clean-product` exit 2（dirty_product=1622）；
+  `RELEASE_GATE_FINAL=1 bash scripts/release_gate.sh` 在第一个门禁步骤前
+  exit 1。
+- 修复：
+  - `scripts/resolve_evidence_implementation_sha.py`（新）：从 HEAD 向前
+    遍历，返回第一个变更路径不全是 `tmp/acceptance/**` 的提交（即
+    validator 自身的 freeze 模型，不依赖提交消息约定）；CI
+    `gate-final` 新增 “Resolve evidence implementation commit” 步骤并
+    注入 `MAP_EVIDENCE_IMPLEMENTATION_SHA`。
+  - `scripts/generate_acceptance_evidence.py`：新增
+    `--implementation-sha` / `MAP_EVIDENCE_IMPLEMENTATION_SHA`，校验其
+    为 HEAD 或祖先（fail-closed）后冻结到该实现提交；已
+    superseded 的历史 manifest 保持原样，不再每次 CI 重跑改写数千文件。
+  - `scripts/source_control.py`：新增 `is_evidence_path`（
+    `tmp/acceptance/**`）与 `dirty_evidence`/`evidence_only_dirty` 字段，
+    `dirty_product` 同时排除 docs 与 evidence——CI 每次运行重新签名
+    pass manifest 是合法的 evidence 重写，由 release validator 保证完整
+    性，而不是 clean-product 检查的职责。
+  - `scripts/release_gate.sh`：final 启动检查容忍
+    docs/evidence-only dirtiness；新增 `GATE_STARTUP_CHECK_ONLY=1`
+    测试钩子（生产不设置）。
+- 回归测试 `map-business-backend/tests/test_ci_final_sequence.py`：
+  合成 git 仓库（实现提交 + 仅含 `tmp/acceptance/**` 的 evidence 提交）
+  → 以 CI 环境运行真实生成器 → `--require-clean-product` →
+  `RELEASE_GATE_FINAL=1` 启动检查全链路通过；并验证历史 superseded
+  manifest 逐字节不变、产品文件 dirty 仍被启动检查拒绝、注入非法
+  implementation sha fail-closed。
+- 干净 worktree @ `7a50d808` 独立复现（修复后脚本）：生成器输出
+  `0 created, 0 already present, 145 re-attested`，git status 仅 3 个
+  pass manifest 被重签名，历史 1454 个 superseded 记录零改写。
+- 说明：本轮修复只消除“尚未跑到 eligibility 就自爆”的阻塞；当前证据
+  状态为 3 pass + 142 blocked，final eligibility 仍按设计
+  not-releasable，不改变 142 blocked 的范围结论。
+
+### 15.2 S7-01 之外的验收缺口（S7-02 / S7-03 / S7-04）
+
+- S7-02：`RealPgReconcilerTests` → `TestRealPgReconciler`（pytest 默认
+  收集），`_claim` 改为同一事件循环内 `await`（消除嵌套
+  `asyncio.run`）；新增收集哨兵测试（真实 `pytest --collect-only`
+  子进程断言三个 node id）。真实 PG 定向 8/8 通过，三个真实 PG
+  reconciler 反例（pending/created/malformed JSONB）全部进入门禁。
+- S7-03：Core 每个 success=false 响应统一携带
+  `data_source.error_code`。capability-disabled 的机器码改为
+  `CAPABILITY_DISABLED`（不再是 `OPENSANDBOX_CONFIG_MISSING`）；
+  `_replay` 按 `record.status/record.error` 派生——
+  unknown→`OPENSANDBOX_UNKNOWN_OUTCOME`，failed/conflict→对应 typed
+  code，其余 failed→新增 typed terminal `OPENSANDBOX_FAILED`；
+  worker terminal 集合同步增加 `OPENSANDBOX_FAILED`。真实 Core
+  router 形状测试（capability disabled 200/success=false、预置
+  unknown/failed 后 replay）+ 真实 HTTP Core double 的 worker 终态
+  测试（CAPABILITY_DISABLED / UNKNOWN_OUTCOME /
+  IDEMPOTENCY_CONFLICT / OPENSANDBOX_FAILED 均为一次 attempt 直接
+  终态，绝不 HANDLER_ERROR 重试）。
+- S7-04：凭据 schema 增加 `expires_at`（必填）与可选 `not_before`，
+  解析校验 ISO-8601 UTC 并 fail-closed；每条 credential 必须显式
+  非空 `audience`（不再继承 `MAP_SANDBOX_SERVICE_AUDIENCE` 默认值）；
+  Bearer scheme 大小写不敏感（RFC 7235）。新增 expired token HTTP
+  401 反例（零 ledger row、零远端字节）与
+  `test_sandbox_auth.py` 11 例时间/audience 单测；e2e 注入凭据、
+  compose prod 测试凭据与 `.env.example` 同步增加 `expires_at`。

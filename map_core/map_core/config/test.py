@@ -2,11 +2,15 @@
 ubddev 201
 """
 
+import os
+
 NUM_WORK = 2
 
 
+# P0-SEC-01: no hardcoded credentials in the repository. The URI (including
+# its password) MUST be injected via environment; an unset value fails closed.
 MONGODB_CONFIG = {
-    "uri": "mongodb://root:48f#7fQuk6!@10.50.56.29:27017,10.50.56.33:27017,10.50.56.34:27017/admin?replicaSet=rs0",
+    "uri": os.getenv("MONGODB_URI", ""),
     "database": "map_db_dev",
 }
 

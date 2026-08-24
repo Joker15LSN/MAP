@@ -66,6 +66,12 @@ ADMIN_DSN = os.getenv(
     "postgresql+asyncpg://map_admin:map-admin-local@127.0.0.1:15432/map",
 )
 
+# Non-integration tests (test_principal, test_flow_*, ...) exercise the app's
+# global engine through create_app(). Production code deliberately has no
+# repository DSN default (P0-SEC-01), so the test suite injects the local
+# test DSN explicitly; CI overrides it via MAP_CONTROL_TEST_DSN if needed.
+os.environ.setdefault("MAP_CONTROL_DB_DSN", APP_DSN)
+
 
 async def run_alembic_upgrade() -> None:
     """Upgrade to head in a worker thread (alembic runs its own loop)."""

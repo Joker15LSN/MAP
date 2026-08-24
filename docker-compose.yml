@@ -3,19 +3,19 @@ name: map-platform
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: map-postgres
     environment:
       # R2-P1-04 three-role separation: the bootstrap user is superuser and
       # is NEVER used by services; init creates the non-superuser app role
-      # (map) and migration role (map_migrator). Repository password defaults
-      # are local-profile only — override them in production (.env.example).
+      # (map) and migration role (map_migrator). P0-SEC-01: passwords have
+      # no repository defaults — they MUST come from .env (compose fails
+      # fast when unset).
       POSTGRES_USER: ${MAP_POSTGRES_ADMIN_USER:-map_admin}
-      POSTGRES_PASSWORD: ${MAP_POSTGRES_ADMIN_PASSWORD:-map-admin-local}
+      POSTGRES_PASSWORD: ${MAP_POSTGRES_ADMIN_PASSWORD:?MAP_POSTGRES_ADMIN_PASSWORD is required (copy .env.example to .env and set it)}
       POSTGRES_DB: map
       MAP_POSTGRES_APP_USER: ${MAP_POSTGRES_APP_USER:-map}
-      MAP_POSTGRES_APP_PASSWORD: ${MAP_POSTGRES_APP_PASSWORD:-map}
+      MAP_POSTGRES_APP_PASSWORD: ${MAP_POSTGRES_APP_PASSWORD:?MAP_POSTGRES_APP_PASSWORD is required (copy .env.example to .env and set it)}
       MAP_POSTGRES_MIGRATOR_USER: ${MAP_POSTGRES_MIGRATOR_USER:-map_migrator}
-      MAP_POSTGRES_MIGRATOR_PASSWORD: ${MAP_POSTGRES_MIGRATOR_PASSWORD:-map-migrator-local}
+      MAP_POSTGRES_MIGRATOR_PASSWORD: ${MAP_POSTGRES_MIGRATOR_PASSWORD:?MAP_POSTGRES_MIGRATOR_PASSWORD is required (copy .env.example to .env and set it)}
     volumes:
       - map_postgres_data:/var/lib/postgresql/data
       # One-time init (fresh volumes only): create app/migrator roles, demote
@@ -32,39 +32,101 @@ services:
 
   mongo:
     image: mongo:7
-    container_name: map-mongo
     environment:
-      MONGO_INITDB_ROOT_USERNAME: map
-      MONGO_INITDB_ROOT_PASSWORD: map
+      MONGO_INITDB_ROOT_USERNAME: ${MAP_MONGO_ROOT_USER:-map}
+      # P0-SEC-01: no repository password defaults — must come from .env.
+      MONGO_INITDB_ROOT_PASSWORD: ${MAP_MONGO_ROOT_PASSWORD:?MAP_MONGO_ROOT_PASSWORD is required (copy .env.example to .env and set it)}
     command: ["--bind_ip_all"]
     volumes:
       - map_mongo_data:/data/db
     ports:
       - "${MAP_MONGO_PORT:-27017}:27017"
     healthcheck:
+      # R-03: the healthcheck uses the SAME credentials the container was
+      # started with ($$ so compose interpolation passes the literal text
+      # to the container, where the shell resolves the env vars at runtime).
+      # No fixed credentials and no host-side interpolation of the password.
       test:
         [
           "CMD-SHELL",
-          "mongosh --quiet -u map -p map --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1",
+          "mongosh --quiet -u \"$${MONGO_INITDB_ROOT_USERNAME}\" -p \"$${MONGO_INITDB_ROOT_PASSWORD}\" --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1",
         ]
       interval: 10s
       timeout: 8s
       retries: 12
+
+  # OpenSandbox Server (P0-SEC-01 action 5, review R-02). Opt-in profile:
+  #   docker compose --profile sandbox up -d opensandbox-server
+  # The algorithm link only talks to it via the authenticated HTTP client
+  # (map_core.service.opensandbox_client); there is NO docker socket mount,
+  # kubeconfig mount or host-exec fallback in any service.
+  # NOTE: the exact image digest and OpenAPI contract are pinned during the
+  # OpenSandbox deployment task; until then AC-SEC-12 stays blocked.
+  opensandbox-server:
+    image: ghcr.io/opensandbox-group/opensandbox:0.2.2
+    profiles: ["sandbox"]
+    environment:
+      OPENSANDBOX_API_KEY: ${MAP_OPENSANDBOX_API_KEY:-}
+      OPENSANDBOX_MAX_SANDBOXES_PER_WORKSPACE: "16"
+    ports:
+      - "${MAP_OPENSANDBOX_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()\"",
+        ]
+      interval: 15s
+      timeout: 8s
+      retries: 10
 
   algorithm-service:
     platform: ${MAP_ALGO_PLATFORM:-linux/amd64}
     build:
       context: ./map_core
       dockerfile: Dockerfile
-    container_name: map-algorithm-service
     environment:
-      ENV: dev
-      POSTGRES_DSN: postgresql://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:-map}@postgres:5432/map
-      MONGODB_URI: mongodb://map:map@mongo:27017/?authSource=admin
+      # S3-04: ONE frozen environment signal - MAP_ENV. ENV is mirrored for
+      # legacy readers inside map_core; both come from the single variable.
+      ENV: ${MAP_ENV:-dev}
+      MAP_ENV: ${MAP_ENV:-dev}
+      # S2-07: shared CORS policy (same contract as the BFF). Production
+      # (MAP_ENV=prod) refuses wildcard + credentials at startup.
+      MAP_CORS_ORIGINS: ${MAP_CORS_ORIGINS:-*}
+      MAP_CORS_ALLOW_CREDENTIALS: ${MAP_CORS_ALLOW_CREDENTIALS:-true}
+      POSTGRES_DSN: postgresql://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:?MAP_POSTGRES_APP_PASSWORD is required}@postgres:5432/map
+      MONGODB_URI: mongodb://${MAP_MONGO_ROOT_USER:-map}:${MAP_MONGO_ROOT_PASSWORD:?MAP_MONGO_ROOT_PASSWORD is required}@mongo:27017/?authSource=admin
       MONGODB_DATABASE: map_db_dev
       MAP_LLM_BASE_URL: ${MAP_LLM_BASE_URL:-https://api.deepseek.com}
       MAP_LLM_MODEL: ${MAP_LLM_MODEL:-deepseek-v4-flash}
       MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
+      # R-07: downstream capability secrets come exclusively from the secret
+      # provider (.env for local dev). No repository defaults; capabilities
+      # whose required values are unset fail closed before any network call.
+      MAP_RERANK_BASE_URL: ${MAP_RERANK_BASE_URL:-}
+      MAP_RERANK_MODEL_NAME: ${MAP_RERANK_MODEL_NAME:-}
+      MAP_RERANK_AUTH_TOKEN: ${MAP_RERANK_AUTH_TOKEN:-}
+      MAP_INDUSTRY_CHAT_URL: ${MAP_INDUSTRY_CHAT_URL:-}
+      MAP_INDUSTRY_CHAT_API_KEY: ${MAP_INDUSTRY_CHAT_API_KEY:-}
+      MAP_MILVUS_USER: ${MAP_MILVUS_USER:-}
+      MAP_MILVUS_PASSWORD: ${MAP_MILVUS_PASSWORD:-}
+      MAP_MINIO_BASE_URL: ${MAP_MINIO_BASE_URL:-}
+      MAP_MINIO_ACCESS_KEY: ${MAP_MINIO_ACCESS_KEY:-}
+      MAP_MINIO_SECRET_KEY: ${MAP_MINIO_SECRET_KEY:-}
+      MAP_MINIO_BUCKET: ${MAP_MINIO_BUCKET:-}
+      # OpenSandbox (R-02): empty by default - the capability is unavailable
+      # until a server is deployed (see the sandbox profile below).
+      MAP_OPENSANDBOX_URL: ${MAP_OPENSANDBOX_URL:-}
+      MAP_OPENSANDBOX_API_KEY: ${MAP_OPENSANDBOX_API_KEY:-}
+      # S6-03 / S7-04: internal service credentials for POST /sandbox/exec.
+      # The worker presents a Bearer token that MUST match this deployment
+      # registry (explicit audience map-core + sandbox:execute scope +
+      # unexpired expires_at); the six identity headers are correlation
+      # only. Empty registry = endpoint rejects every caller (fail-closed).
+      # Credentials come ONLY from the secret provider - no repository
+      # defaults.
+      MAP_SANDBOX_SERVICE_CREDENTIALS: ${MAP_SANDBOX_SERVICE_CREDENTIALS:-}
+      MAP_SANDBOX_SERVICE_AUDIENCE: ${MAP_SANDBOX_SERVICE_AUDIENCE:-map-core}
       MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
       MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
       # Highest-priority kill switch, always passed through: OTEL_SDK_DISABLED
@@ -88,7 +150,11 @@ services:
       mongo:
         condition: service_healthy
     ports:
-      - "${MAP_ALGO_PORT:-10000}:10000"
+      # S6-03: bind to the loopback interface only - the sandbox execution
+      # endpoint must never be reachable from outside the host in ANY
+      # environment; production additionally removes the port entirely
+      # (docker-compose.prod.yml).
+      - "127.0.0.1:${MAP_ALGO_PORT:-10000}:10000"
     healthcheck:
       test:
         [
@@ -106,10 +172,9 @@ services:
     build:
       context: ./map-business-backend
       dockerfile: Dockerfile
-    container_name: map-migrate
     command: ["uv", "run", "alembic", "upgrade", "head"]
     environment:
-      MAP_CONTROL_MIGRATION_DSN: postgresql+asyncpg://${MAP_POSTGRES_MIGRATOR_USER:-map_migrator}:${MAP_POSTGRES_MIGRATOR_PASSWORD:-map-migrator-local}@postgres:5432/map
+      MAP_CONTROL_MIGRATION_DSN: postgresql+asyncpg://${MAP_POSTGRES_MIGRATOR_USER:-map_migrator}:${MAP_POSTGRES_MIGRATOR_PASSWORD:?MAP_POSTGRES_MIGRATOR_PASSWORD is required}@postgres:5432/map
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,11 +183,16 @@ services:
     build:
       context: ./map-business-backend
       dockerfile: Dockerfile
-    container_name: map-backend-service
     environment:
       MAP_CORE_API_ORIGIN: http://algorithm-service:10000
+      # S3-04: one frozen environment signal for the BFF too
+      MAP_ENV: ${MAP_ENV:-dev}
+      # S2-07: shared CORS policy (same contract as map_core). Production
+      # (MAP_ENV=prod) refuses wildcard + credentials at startup.
+      MAP_CORS_ORIGINS: ${MAP_CORS_ORIGINS:-*}
+      MAP_CORS_ALLOW_CREDENTIALS: ${MAP_CORS_ALLOW_CREDENTIALS:-true}
       MAP_BFF_STATE_FILE: /app/data/admin_state.json
-      MAP_CONTROL_DB_DSN: postgresql+asyncpg://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:-map}@postgres:5432/map
+      MAP_CONTROL_DB_DSN: postgresql+asyncpg://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:?MAP_POSTGRES_APP_PASSWORD is required}@postgres:5432/map
       MAP_DEFAULT_WORKSPACE_ID: ${MAP_DEFAULT_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
       # R3-P1-02 secure profile: dev by default (unchanged behaviour for
       # the local dev stack). The E2E runner recreates this service with
@@ -167,13 +237,18 @@ services:
     build:
       context: ./map-business-backend
       dockerfile: Dockerfile
-    container_name: map-worker-service
     command: ["uv", "run", "python", "-m", "app.workers.main"]
     environment:
-      MAP_CONTROL_DB_DSN: postgresql+asyncpg://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:-map}@postgres:5432/map
+      MAP_ENV: ${MAP_ENV:-dev}
+      MAP_CONTROL_DB_DSN: postgresql+asyncpg://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:?MAP_POSTGRES_APP_PASSWORD is required}@postgres:5432/map
       MAP_CORE_API_ORIGIN: http://algorithm-service:10000
       MAP_BFF_STATE_FILE: /app/data/admin_state.json
       MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
+      # S6-03 / S7-04: the Bearer credential the worker presents to Core's
+      # POST /sandbox/exec (must be registered in algorithm-service's
+      # MAP_SANDBOX_SERVICE_CREDENTIALS with the sandbox:execute scope, an
+      # explicit audience and an unexpired expires_at).
+      MAP_SANDBOX_CORE_TOKEN: ${MAP_SANDBOX_CORE_TOKEN:-}
       MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
       MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
@@ -188,7 +263,6 @@ services:
 
   frontend-service:
     image: node:22-bookworm-slim
-    container_name: map-frontend-service
     working_dir: /workspace/map-business-frontend
     environment:
       VITE_MAP_BFF_API_ORIGIN: http://backend-service:18080
@@ -216,9 +290,9 @@ services:
     build:
       context: ./map-observability/map-observability-backend
       dockerfile: Dockerfile
-    container_name: map-observability-backend-service
     environment:
-      MONGO_URI: mongodb://map:map@mongo:27017/?authSource=admin
+      # P0-SEC-01: credentials come from .env (no repository defaults).
+      MONGO_URI: mongodb://${MAP_MONGO_ROOT_USER:-map}:${MAP_MONGO_ROOT_PASSWORD:?MAP_MONGO_ROOT_PASSWORD is required}@mongo:27017/?authSource=admin
       MONGO_DB: map_db_dev
       API_PREFIX: /api/v1
       TIMEZONE: Asia/Shanghai
@@ -245,7 +319,6 @@ services:
 
   observability-frontend-service:
     image: node:22-bookworm-slim
-    container_name: map-observability-frontend-service
     working_dir: /workspace/map-observability/map-observability-frontend
     environment:
       VITE_API_BASE_URL: /api/v1
@@ -272,7 +345,6 @@ services:
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.104.0
-    container_name: map-otel-collector
     profiles: ["otel"]
     command: ["--config", "/etc/otel-collector-config.yaml"]
     volumes:
@@ -285,7 +357,6 @@ services:
 
   jaeger:
     image: jaegertracing/all-in-one:1.58
-    container_name: map-jaeger
     profiles: ["otel"]
     environment:
       COLLECTOR_OTLP_ENABLED: "true"

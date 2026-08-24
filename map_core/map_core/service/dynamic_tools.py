@@ -1,17 +1,22 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 import re
 from typing import Any
 
-import httpx
 from opentelemetry.propagate import inject as otel_inject
 
 from ..utils.llm_engine import LLMEngine
+from ..utils.sensitive_data import make_redactor
 from .agent.base import AgentRequest, ToolResult
 from .agent.tool_runtime import Tool
+from .mcp_egress import (
+    EgressPolicy,
+    MCPEgressError,
+    ResolvedHeaders,
+    post_json_stream_guarded,
+    validate_mcp_url,
+)
 
 
 def _slugify(value: str, *, prefix: str) -> str:
@@ -45,11 +50,35 @@ async def _call_http_mcp_tool(
             name=tool_name,
             error="MCP server url is empty.",
         )
-    headers = {
-        str(key): str(value)
-        for key, value in (server.get("headers") or {}).items()
-        if value
-    }
+
+    # S2-04: the single egress policy gate - scheme, allowlist and
+    # post-resolution IP policy are all enforced BEFORE any connection.
+    policy = EgressPolicy.from_env()
+    url_problems, allowed_ips = validate_mcp_url(url, policy)
+    if url_problems:
+        return ToolResult(
+            success=False,
+            name=tool_name,
+            error=(
+                "MCP_EGRESS_POLICY_DENIED: "
+                + "; ".join(url_problems)
+            ),
+            data_source={"source": "mcp", "error_code": "MCP_EGRESS_POLICY_DENIED"},
+        )
+
+    # S2-04: request headers must come from secret references; literal
+    # header values in server config are rejected outright.
+    try:
+        resolved_headers = ResolvedHeaders.from_config(server.get("headers"))
+    except MCPEgressError as exc:
+        return ToolResult(
+            success=False,
+            name=tool_name,
+            error=str(exc),
+            data_source={"source": "mcp", "error_code": exc.code},
+        )
+
+    headers = dict(resolved_headers.headers)
     # Propagate the current Tool span to the MCP service. Business headers
     # configured by admins win, but W3C propagation fields must always be
     # generated dynamically: a statically configured traceparent would pin
@@ -72,89 +101,90 @@ async def _call_http_mcp_tool(
         "method": "tools/call",
         "params": {"name": tool_name, "arguments": args},
     }
+    # S2-04: every response fragment (content, raw, error) goes through the
+    # same redactor seeded with the resolved secret values, so an upstream
+    # echo in an ordinary answer/message/error field cannot leak.
+    redactor = make_redactor(resolved_headers.secret_values)
     timeout_s = max(5, int(server.get("timeout_s") or 30))
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=5.0)) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+    try:
+        response = await post_json_stream_guarded(
+            url=url,
+            json_payload=payload,
+            headers=headers,
+            timeout_s=timeout_s,
+            max_response_bytes=policy.max_response_bytes,
+            allowed_ips=allowed_ips,
+        )
+    except MCPEgressError as exc:
+        return ToolResult(
+            success=False,
+            name=tool_name,
+            error=redactor.redact_text(str(exc)),
+            data_source={"source": "mcp", "error_code": exc.code},
+        )
+    try:
         data = response.json()
+    except json.JSONDecodeError:
+        return ToolResult(
+            success=False,
+            name=tool_name,
+            error="MCP server returned non-JSON response.",
+        )
+    if response.status_code >= 400:
+        return ToolResult(
+            success=False,
+            name=tool_name,
+            error=redactor.redact_text(
+                json.dumps(data, ensure_ascii=False)[:2000]
+            ),
+            data_source={"source": "mcp", "http_status": response.status_code},
+        )
     if isinstance(data, dict) and data.get("error"):
         return ToolResult(
             success=False,
             name=tool_name,
-            error=json.dumps(data.get("error"), ensure_ascii=False),
-            data_source={"raw": data},
+            error=redactor.redact_text(
+                json.dumps(data.get("error"), ensure_ascii=False)
+            ),
+            data_source=redactor.redact_mapping(
+                {"source": "mcp", "raw": data}
+            ),
         )
     result = data.get("result") if isinstance(data, dict) else data
     return ToolResult(
         name=tool_name,
-        content=_stringify_mcp_result(result),
-        data_source={"source": "mcp", "server_id": server.get("server_id"), "raw": result},
+        content=redactor.redact_text(_stringify_mcp_result(result)),
+        data_source=redactor.redact_mapping(
+            {"source": "mcp", "server_id": server.get("server_id"), "raw": result}
+        ),
     )
 
 
-async def _call_stdio_mcp_tool(
+def _stdio_mcp_disabled_result(
     *,
     server: dict[str, Any],
     tool_name: str,
-    args: dict[str, Any],
 ) -> ToolResult:
-    command = str(server.get("command") or "").strip()
-    if not command:
-        return ToolResult(
-            success=False,
-            name=tool_name,
-            error="MCP stdio command is empty.",
-        )
-    env = os.environ.copy()
-    for env_name, env_ref in (server.get("env_refs") or {}).items():
-        if env_ref in os.environ:
-            env[str(env_name)] = os.environ[str(env_ref)]
-    proc = await asyncio.create_subprocess_exec(
-        command,
-        *[str(item) for item in server.get("args") or []],
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    request = {
-        "jsonrpc": "2.0",
-        "id": "map-mcp-tool-call",
-        "method": "tools/call",
-        "params": {"name": tool_name, "arguments": args},
-    }
-    assert proc.stdin is not None
-    proc.stdin.write((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
-    await proc.stdin.drain()
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=max(5, int(server.get("timeout_s") or 30)),
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        return ToolResult(
-            success=False,
-            name=tool_name,
-            error="MCP stdio tool call timeout.",
-        )
-    if proc.returncode not in {0, None} and stderr:
-        return ToolResult(
-            success=False,
-            name=tool_name,
-            error=stderr.decode("utf-8", errors="ignore")[:1000],
-        )
-    text = stdout.decode("utf-8", errors="ignore").strip()
-    try:
-        parsed = json.loads(text.splitlines()[-1]) if text else {}
-    except json.JSONDecodeError:
-        parsed = {"content": text}
-    result = parsed.get("result") if isinstance(parsed, dict) else parsed
+    """Fail-closed stdio MCP result (P0-SEC-01, review R-02).
+
+    stdio MCP servers would run as in-process subprocesses on the host with
+    command/args from the request body. That boundary is closed until stdio
+    MCP is moved into the OpenSandbox Server; no process is ever spawned and
+    no host environment variable is forwarded.
+    """
     return ToolResult(
+        success=False,
         name=tool_name,
-        content=_stringify_mcp_result(result),
-        data_source={"source": "mcp", "server_id": server.get("server_id"), "raw": result},
+        error=(
+            "CAPABILITY_DISABLED: stdio MCP servers are disabled until they "
+            "run inside the OpenSandbox Server"
+        ),
+        data_source={
+            "source": "mcp",
+            "server_id": server.get("server_id"),
+            "transport": "stdio",
+            "error_code": "CAPABILITY_DISABLED",
+        },
     )
 
 
@@ -207,10 +237,11 @@ def build_mcp_tools(servers: list[dict[str, Any]]) -> dict[str, Tool]:
                         tool_name=current_tool_name,
                         args=args,
                     )
-                return await _call_stdio_mcp_tool(
+                # P0-SEC-01 (review R-02): stdio transport is fail-closed;
+                # no host subprocess is ever spawned.
+                return _stdio_mcp_disabled_result(
                     server=current_server,
                     tool_name=current_tool_name,
-                    args=args,
                 )
 
             tools[runtime_name] = Tool(

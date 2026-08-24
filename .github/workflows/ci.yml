@@ -4,9 +4,15 @@
 # frontends, and finally the bundle size gate. No locally installed tool
 # can satisfy this job — everything is resolved from lockfiles.
 #
+# S2-01: the `gate` job below is STRUCTURE-ONLY — it proves evidence
+# coverage/integrity but is explicitly NOT release evidence. Only the
+# `gate-final` job (push to main/master/release*, FINAL mode with the fixed
+# baseline from TODO/release-baseline.sha) may be cited as release evidence.
+#
 # R3-P1-02: the Compose E2E is part of CI. Every push/PR runs the stable
 # subset (--suite pr: real browser happy path through frontend -> BFF ->
-# core plus the secure identity boundary); the full fault matrix
+# core plus the secure identity boundary) and the concurrent fresh-volume
+# compose smoke test (S2-03); the full fault matrix
 # (--suite full: BFF restart, PostgreSQL interruption, worker kill +
 # lease takeover, ...) runs nightly and on demand. Both use fresh named
 # volumes and never read the developer's .env.
@@ -38,20 +44,70 @@ jobs:
       # map-business-backend integration tests require the three-role setup
       # normally created by docker-compose on a fresh volume
       # (map-business-backend/db/init/01-roles.sh).
+      # R-03: one-shot random test credentials, generated per run and
+      # exported through $GITHUB_ENV so the compose config step, the
+      # database setup and the BFF test DSNs all agree. No credential is
+      # committed to the repository and nothing is printed to the log.
+      - name: Generate one-shot test credentials
+        run: |
+          ADMIN_PW=$(openssl rand -hex 16)
+          APP_PW=$(openssl rand -hex 16)
+          MIG_PW=$(openssl rand -hex 16)
+          MONGO_PW=$(openssl rand -hex 16)
+          cat >> "$GITHUB_ENV" <<EOF
+          MAP_POSTGRES_ADMIN_USER=map_admin
+          MAP_POSTGRES_ADMIN_PASSWORD=$ADMIN_PW
+          MAP_POSTGRES_APP_USER=map
+          MAP_POSTGRES_APP_PASSWORD=$APP_PW
+          MAP_POSTGRES_MIGRATOR_USER=map_migrator
+          MAP_POSTGRES_MIGRATOR_PASSWORD=$MIG_PW
+          MAP_MONGO_ROOT_USER=map
+          MAP_MONGO_ROOT_PASSWORD=$MONGO_PW
+          MAP_CONTROL_TEST_DSN=postgresql+asyncpg://map:$APP_PW@127.0.0.1:15432/map
+          MAP_CONTROL_MIGRATION_TEST_DSN=postgresql+asyncpg://map_migrator:$MIG_PW@127.0.0.1:15432/map
+          MAP_CONTROL_ADMIN_TEST_DSN=postgresql+asyncpg://map_admin:$ADMIN_PW@127.0.0.1:15432/map
+          EOF
+
       - name: Start PostgreSQL with the three application roles
         run: |
           docker run -d --name map-ci-postgres \
             -e POSTGRES_USER=map_admin \
-            -e POSTGRES_PASSWORD=map-admin-local \
+            -e POSTGRES_PASSWORD="$MAP_POSTGRES_ADMIN_PASSWORD" \
             -e POSTGRES_DB=map \
             -p 15432:5432 postgres:16
           until docker exec map-ci-postgres pg_isready -U map_admin -d map; do
             sleep 1
           done
           docker cp map-business-backend/db/init/01-roles.sh map-ci-postgres:/tmp/01-roles.sh
-          docker exec map-ci-postgres bash /tmp/01-roles.sh
+          # P0-SEC-01: role passwords are required by the init script and
+          # come from the per-run generated values (CI postgres is ephemeral).
+          # S2-03: they are passed INTO the container via `docker exec -e` —
+          # docker exec does not inherit the host environment, so the
+          # previous in-container `export "$VAR"` form left the variables
+          # unset and produced roles with no usable password.
+          docker exec \
+            -e MAP_POSTGRES_APP_USER=map \
+            -e MAP_POSTGRES_MIGRATOR_USER=map_migrator \
+            -e MAP_POSTGRES_APP_PASSWORD="$MAP_POSTGRES_APP_PASSWORD" \
+            -e MAP_POSTGRES_MIGRATOR_PASSWORD="$MAP_POSTGRES_MIGRATOR_PASSWORD" \
+            map-ci-postgres bash /tmp/01-roles.sh
+          # S2-03: assert the app and migrator roles can actually log in
+          # with the generated passwords (a role init that silently failed
+          # would otherwise only surface in the BFF tests).
+          docker exec -e PGPASSWORD="$MAP_POSTGRES_APP_PASSWORD" map-ci-postgres \
+            psql -U map -d map -tAc "SELECT 1" | grep -q 1
+          docker exec -e PGPASSWORD="$MAP_POSTGRES_MIGRATOR_PASSWORD" map-ci-postgres \
+            psql -U map_migrator -d map -tAc "SELECT 1" | grep -q 1
+          # S2-03: the app role must have no superuser / role / DB-creation
+          # rights and no CREATE privilege on the database (DDL-free).
+          docker exec map-ci-postgres psql -U map_admin -d map -tAc \
+            "SELECT rolsuper || '|' || rolcreaterole || '|' || rolcreatedb FROM pg_roles WHERE rolname='map'" \
+            | grep -q "f|f|f"
+          docker exec map-ci-postgres psql -U map_admin -d map -tAc \
+            "SELECT has_database_privilege('map', 'map', 'CREATE')" \
+            | grep -q "f"
 
-      - name: Release gate
+      - name: Release gate (structure-only, NOT release evidence)
         run: bash scripts/release_gate.sh
 
       - name: Upload gate artifacts
@@ -60,6 +116,17 @@ jobs:
         with:
           name: gate-logs
           path: tmp/gate-logs
+
+  # S2-03: the fresh-volume compose smoke test runs on EVERY PR/push
+  # (concurrent with the gate job), not only in the nightly matrix.
+  compose-smoke:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compose fresh-volume smoke test
+        run: bash scripts/compose_smoke_test.sh
 
   e2e-browser-pr:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -91,6 +158,149 @@ jobs:
             e2e/tmp/logs-*.txt
           if-no-files-found: warn
 
+  # S2-01: the FINAL release gate — the ONLY CI job whose green result is
+  # release evidence. Runs exclusively on push to main/master/release* with
+  # FINAL mode and the review-approved baseline pinned in
+  # TODO/release-baseline.sha (never auto-derived, so it cannot drift).
+  gate-final:
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' ||
+       github.ref == 'refs/heads/master' ||
+       startsWith(github.ref, 'refs/heads/release'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Generate one-shot test credentials
+        run: |
+          ADMIN_PW=$(openssl rand -hex 16)
+          APP_PW=$(openssl rand -hex 16)
+          MIG_PW=$(openssl rand -hex 16)
+          MONGO_PW=$(openssl rand -hex 16)
+          cat >> "$GITHUB_ENV" <<EOF
+          MAP_POSTGRES_ADMIN_USER=map_admin
+          MAP_POSTGRES_ADMIN_PASSWORD=$ADMIN_PW
+          MAP_POSTGRES_APP_USER=map
+          MAP_POSTGRES_APP_PASSWORD=$APP_PW
+          MAP_POSTGRES_MIGRATOR_USER=map_migrator
+          MAP_POSTGRES_MIGRATOR_PASSWORD=$MIG_PW
+          MAP_MONGO_ROOT_USER=map
+          MAP_MONGO_ROOT_PASSWORD=$MONGO_PW
+          MAP_CONTROL_TEST_DSN=postgresql+asyncpg://map:$APP_PW@127.0.0.1:15432/map
+          MAP_CONTROL_MIGRATION_TEST_DSN=postgresql+asyncpg://map_migrator:$MIG_PW@127.0.0.1:15432/map
+          MAP_CONTROL_ADMIN_TEST_DSN=postgresql+asyncpg://map_admin:$ADMIN_PW@127.0.0.1:15432/map
+          EOF
+
+      - name: Start PostgreSQL with the three application roles
+        run: |
+          docker run -d --name map-ci-postgres \
+            -e POSTGRES_USER=map_admin \
+            -e POSTGRES_PASSWORD="$MAP_POSTGRES_ADMIN_PASSWORD" \
+            -e POSTGRES_DB=map \
+            -p 15432:5432 postgres:16
+          until docker exec map-ci-postgres pg_isready -U map_admin -d map; do
+            sleep 1
+          done
+          docker cp map-business-backend/db/init/01-roles.sh map-ci-postgres:/tmp/01-roles.sh
+          # S2-03: credentials are injected via `docker exec -e` (docker
+          # exec does not inherit the host environment).
+          docker exec \
+            -e MAP_POSTGRES_APP_USER=map \
+            -e MAP_POSTGRES_MIGRATOR_USER=map_migrator \
+            -e MAP_POSTGRES_APP_PASSWORD="$MAP_POSTGRES_APP_PASSWORD" \
+            -e MAP_POSTGRES_MIGRATOR_PASSWORD="$MAP_POSTGRES_MIGRATOR_PASSWORD" \
+            map-ci-postgres bash /tmp/01-roles.sh
+          docker exec -e PGPASSWORD="$MAP_POSTGRES_APP_PASSWORD" map-ci-postgres \
+            psql -U map -d map -tAc "SELECT 1" | grep -q 1
+          docker exec -e PGPASSWORD="$MAP_POSTGRES_MIGRATOR_PASSWORD" map-ci-postgres \
+            psql -U map_migrator -d map -tAc "SELECT 1" | grep -q 1
+          docker exec map-ci-postgres psql -U map_admin -d map -tAc \
+            "SELECT rolsuper || '|' || rolcreaterole || '|' || rolcreatedb FROM pg_roles WHERE rolname='map'" \
+            | grep -q "f|f|f"
+          docker exec map-ci-postgres psql -U map_admin -d map -tAc \
+            "SELECT has_database_privilege('map', 'map', 'CREATE')" \
+            | grep -q "f"
+
+      - name: Resolve fixed release baseline (review-pinned, no drift)
+        run: |
+          BASELINE="$(grep -oE '^[0-9a-f]{40}' TODO/release-baseline.sha | head -1)"
+          if [ -z "$BASELINE" ]; then
+            echo "TODO/release-baseline.sha contains no 40-hex baseline" >&2
+            exit 1
+          fi
+          echo "GATE_BASELINE_SHA=$BASELINE" >> "$GITHUB_ENV"
+
+      # R7-P2-03: attestation must freeze at the IMPLEMENTATION commit, not
+      # at HEAD (which on a protected-branch push is normally the evidence
+      # re-freeze commit). Walking back to the first commit that changes
+      # anything outside tmp/acceptance/** is the release validator's own
+      # freeze model, so the two can never disagree.
+      - name: Resolve evidence implementation commit (code freeze)
+        run: |
+          IMPLEMENTATION_SHA="$(python3 scripts/resolve_evidence_implementation_sha.py)"
+          echo "MAP_EVIDENCE_IMPLEMENTATION_SHA=$IMPLEMENTATION_SHA" >> "$GITHUB_ENV"
+
+      # S5-02: ONLY this protected-branch job attests pass evidence. The
+      # signing key comes from the EVIDENCE_SIGNING_KEY secret, the trust
+      # anchor from the MAP_EVIDENCE_TRUST_DIGEST variable - both live
+      # OUTSIDE the reviewed checkout, so a developer swapping the in-repo
+      # trust mirror and self-signing can never produce a releasable pass.
+      - name: Attest pass evidence (protected CI only)
+        run: |
+          test -n "$MAP_EVIDENCE_IMPLEMENTATION_SHA" || {
+            echo "MAP_EVIDENCE_IMPLEMENTATION_SHA is empty - refusing to freeze evidence at HEAD" >&2
+            exit 1
+          }
+          python3 scripts/generate_acceptance_evidence.py \
+            --profile TODO/acceptance-profile.yaml \
+            --implementation-sha "$MAP_EVIDENCE_IMPLEMENTATION_SHA"
+        env:
+          MAP_EVIDENCE_CI: "1"
+          MAP_EVIDENCE_IMPLEMENTATION_SHA: ${{ env.MAP_EVIDENCE_IMPLEMENTATION_SHA }}
+          EVIDENCE_SIGNING_KEY: ${{ secrets.EVIDENCE_SIGNING_KEY }}
+          MAP_EVIDENCE_REPOSITORY: ${{ github.repository }}
+          MAP_EVIDENCE_GIT_REF: ${{ github.ref }}
+          MAP_EVIDENCE_RUN_ID: ${{ github.run_id }}
+          MAP_EVIDENCE_RUN_ATTEMPT: ${{ github.run_attempt }}
+
+      - name: Final release gate (eligibility — release evidence)
+        run: RELEASE_GATE_FINAL=1 bash scripts/release_gate.sh
+        env:
+          GATE_BASELINE_SHA: ${{ env.GATE_BASELINE_SHA }}
+          MAP_EVIDENCE_TRUST_DIGEST: ${{ vars.MAP_EVIDENCE_TRUST_DIGEST }}
+          # S6-04: the CURRENT protected-CI run identity, injected from
+          # OUTSIDE the artifacts - the validator compares attestations
+          # against it so an older run's replay can never pass.
+          MAP_EVIDENCE_EXPECTED_RUN_ID: ${{ github.run_id }}
+          MAP_EVIDENCE_EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+
+      - name: Upload gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-logs-final
+          path: tmp/gate-logs
+
+      # S5-02: the CI-attested evidence is the offline-verifiable release
+      # attestation artifact (verify with MAP_EVIDENCE_TRUST_DIGEST).
+      - name: Upload attested evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attested-evidence
+          path: tmp/acceptance/**
+
   e2e-full-nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -107,6 +317,13 @@ jobs:
           python3 -m pip install playwright
           python3 -m playwright install --with-deps chromium
 
+      # R-03: fresh-volume compose smoke test with one-shot non-default
+      # credentials (config parse + healthy postgres/mongo + dependency
+      # connectivity); no credential ever enters the log. Also runs on
+      # every PR/push in the compose-smoke job above.
+      - name: Compose fresh-volume smoke test
+        run: bash scripts/compose_smoke_test.sh
+
       - name: Full E2E (fault matrix)
         run: python3 e2e/run_e2e.py --suite full
 
@@ -115,6 +332,46 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-report-full
+          path: |
+            e2e/tmp/report-*.json
+            e2e/tmp/browser-*.json
+            e2e/tmp/logs-*.txt
+          if-no-files-found: warn
+
+  # S5-04: browser/HTTP stop stability gate. 20 rounds with a FRESH
+  # message/run identity per round, per-round assertions (stop API success,
+  # SSE termination, reloaded history terminal state, PG final state) and a
+  # per-round timeout that fails the whole run. The suite is executed TWICE
+  # in a row - BOTH runs must finish 20/20 for the job to pass. Each run
+  # uploads its report (20 independent iterations, latencies, terminal
+  # states) as a CI artifact.
+  stop-stability:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright + Chromium
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install playwright
+          python3 -m playwright install --with-deps chromium
+
+      - name: Stop stability run 1 (20 rounds HTTP + 20 rounds browser)
+        run: python3 e2e/run_e2e.py --suite stop-stability
+
+      - name: Stop stability run 2 (20 rounds HTTP + 20 rounds browser)
+        run: python3 e2e/run_e2e.py --suite stop-stability
+
+      - name: Upload stop stability reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stop-stability-reports
           path: |
             e2e/tmp/report-*.json
             e2e/tmp/browser-*.json

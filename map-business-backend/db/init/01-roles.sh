@@ -9,9 +9,9 @@
 #   map_migrator               - owns map_control schema, runs Alembic DDL
 #   map                        - business/app role: DML only, NEVER superuser
 #
-# Passwords are injected via environment references (compose interpolation);
-# the repository defaults are local-profile only and MUST be overridden in
-# production (see .env.example).
+# Passwords are injected via environment references (compose interpolation).
+# P0-SEC-01: no repository defaults — the script fails fast when a password
+# variable is unset (see .env.example for local profile values).
 #
 # R3-P2-03 injection safety: role names are validated as simple identifiers
 # and interpolated ONLY through format('%I'); passwords travel through psql
@@ -23,12 +23,10 @@
 set -euo pipefail
 
 APP_USER="${MAP_POSTGRES_APP_USER:-map}"
-APP_PASSWORD="${MAP_POSTGRES_APP_PASSWORD:-map}"
 MIGRATOR_USER="${MAP_POSTGRES_MIGRATOR_USER:-map_migrator}"
-MIGRATOR_PASSWORD="${MAP_POSTGRES_MIGRATOR_PASSWORD:-map-migrator-local}"
 
-# Fail closed on non-simple role names BEFORE any SQL runs; the message
-# intentionally contains no secret material.
+# Fail closed on non-simple role names BEFORE any secret handling or SQL
+# runs; the message intentionally contains no secret material.
 valid_role_name() {
     [[ "$1" =~ ^[a-z_][a-z0-9_]{0,62}$ ]]
 }
@@ -38,6 +36,10 @@ for role_name in "$APP_USER" "$MIGRATOR_USER"; do
         exit 1
     fi
 done
+
+# P0-SEC-01: passwords have no repository defaults — fail fast when unset.
+APP_PASSWORD="${MAP_POSTGRES_APP_PASSWORD:?MAP_POSTGRES_APP_PASSWORD is required}"
+MIGRATOR_PASSWORD="${MAP_POSTGRES_MIGRATOR_PASSWORD:?MAP_POSTGRES_MIGRATOR_PASSWORD is required}"
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
     -v app_user="$APP_USER" \

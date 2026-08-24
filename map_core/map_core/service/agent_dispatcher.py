@@ -83,6 +83,7 @@ class AgentDispatcher:
         # importing it at module level would create a dispatcher <-> dynamic_tools
         # import cycle when dynamic_tools is imported first.
         from .dynamic_tools import build_mcp_tools, build_prompt_skill_tools
+        from .sandbox_tools import build_sandbox_tools
 
         dynamic_tools = {}
         dynamic_tools.update(build_mcp_tools(config.mcp_servers or []))
@@ -93,6 +94,9 @@ class AgentDispatcher:
                 llm=self.llm,
             )
         )
+        # S2-06: the OpenSandbox execution tool is part of the production
+        # registry (no host fallback; CAPABILITY_DISABLED when unconfigured).
+        dynamic_tools.update(build_sandbox_tools())
         if not dynamic_tools:
             return
         self.tool_registry.update(dynamic_tools)

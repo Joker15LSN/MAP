@@ -14,6 +14,10 @@ from ...schema.tool_extra_result_schema import ToolExtraResultSchema
 from ...utils.llm_trace_context import llm_trace_context
 from ..tool_extra_result_collector import ToolExtraResultCollector
 from .base import AgentRequest, BaseAgent, ExecutionResult
+from .disabled_capabilities import (
+    build_capability_disabled_result,
+    is_disabled_capability,
+)
 from .skill_policy_checker import SkillPolicyChecker
 from .tool_runtime import AgentTool, ToolSet
 from .traceable_agent import TraceableAgent
@@ -190,8 +194,38 @@ class ToolExecutor:
         step_index: int,
         tool_call_id: str | None = None,
     ) -> Any:
-        tool = self.toolset.resolve(tool_name)
         log_tag = self.log_tag_getter()
+        # P0-SEC-01: host-execution capabilities are globally disabled until
+        # served by OpenSandbox. Fail closed with a stable result so callers
+        # never fall through to a host-exec path.
+        if is_disabled_capability(tool_name):
+            disabled_result = build_capability_disabled_result(tool_name)
+            logger.warning(
+                f"{log_tag}[Step {step_index}] Tool '{tool_name}' is disabled: CAPABILITY_DISABLED"
+            )
+            await self._emit_action(
+                action="tool_result",
+                step_index=step_index,
+                message=f"工具“{tool_name}”已被禁用（CAPABILITY_DISABLED）",
+                payload={
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "result": disabled_result,
+                },
+            )
+            self.owner.record_tool_result(
+                tool_name=tool_name,
+                result=disabled_result,
+                step_index=step_index,
+                meta={
+                    "tool_id": tool_call_id,
+                    "error": "CAPABILITY_DISABLED",
+                    "code": disabled_result.get("code"),
+                },
+            )
+            return disabled_result
+
+        tool = self.toolset.resolve(tool_name)
         if tool is None:
             logger.warning(
                 f"{log_tag} Tool '{tool_name}' not found at step {step_index}"
@@ -251,8 +285,17 @@ class ToolExecutor:
                 meta = {**tool_meta, "tool_id": tool_call_id}
             else:
                 tool_request = request.model_copy()
+                # Isolate the per-call extra so concurrent tool calls within a
+                # step never race on a shared dict.
+                tool_request.extra = dict(tool_request.extra)
                 if self.owner.name:
                     tool_request.extra["caller_agent_name"] = self.owner.name
+
+            # S4-01: carry the per-tool-call durable identity (step + invocation)
+            # so the sandbox tool can fail closed on a complete identity chain.
+            tool_request.extra["step_id"] = f"step-{step_index}"
+            if tool_call_id:
+                tool_request.extra["invocation_id"] = str(tool_call_id)
 
             tool_display_name = self._resolve_tool_display_name(tool_name)
             tool_query_preview = self._resolve_tool_query_preview(

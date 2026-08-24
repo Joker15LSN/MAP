@@ -44,7 +44,7 @@ async def _demo() -> None:
             "rerank_model_config": {
                     "rerank_model_name": "qwen3z6b",
                     "rerank_model_url":"http://10.50.56.243/v1/rerank",
-                    "rerank_auth_token": "gpustack_de6adf356d53ae9f_c803a9395068e4879708f267852629cb",
+                    "rerank_auth_token": os.getenv("MAP_LLM_AUTH_TOKEN", ""),
                     "rerank_score_threshold": 0.1
                 },
             "tool_context": {
@@ -161,7 +161,7 @@ async def _demo() -> None:
                                     {
                                         "model_name": "bge",
                                         "model_url":"http://10.50.56.243/v1/embeddings",
-                                        "auth_token": "gpustack_c60ea7b6efa4784c_22039bb6f38836e6a955588a5df04306"
+                                        "auth_token": os.getenv("MAP_RERANK_AUTH_TOKEN", "")
                                     }
                                 ]
                             },
@@ -179,7 +179,7 @@ async def _demo() -> None:
                                     {
                                         "model_name": "bge",
                                         "model_url": "http://10.50.56.243/v1/embeddings",
-                                        "auth_token": "gpustack_de6adf356d53ae9f_c803a9395068e4879708f267852629cb"
+                                        "auth_token": os.getenv("MAP_LLM_AUTH_TOKEN", "")
                                     }
                                 ],
                                 "rpt_mkt_file_code_getter_api": "",

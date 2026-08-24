@@ -13,6 +13,7 @@ __pycache__/
 *.so
 .Python
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
@@ -37,7 +38,8 @@ logs/
 
 # Documentation
 docs/
-README.md
+# README.md is intentionally NOT ignored: the Dockerfile copies it
+# (uv sync requires the project readme).
 
 # Development
 debugs/
@@ -49,3 +51,8 @@ test_api.http
 
 # Other
 .python-version
+
+# P0-SEC-01: never ship local credential files into the build context
+.env
+.env.*
+!.env.example

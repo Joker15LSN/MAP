@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.1.0",
+  "task_id": "P0-SEC-01",
+  "ac_id": "AC-SEC-13",
+  "status": "superseded",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "c5a3a03e6ed04ffc5d2eba7ec9a6e6cddcfa5565",
+  "environment_digest": "4e384ad564f3dceb10a2984b87d072221d7d97a882fdf4382799e4ba23dbbab5",
+  "started_at": "2026-08-14T17:24:32.729441+00:00",
+  "finished_at": "2026-08-14T17:24:32.729462+00:00",
+  "command": "python3 scripts/validate_acceptance_evidence.py --profile TODO/acceptance-profile.yaml --task P0-SEC-01 --ac AC-SEC-13 --require-final",
+  "exit_code": 1,
+  "artifacts": [
+    {
+      "path": "TODO/acceptance-profile.yaml",
+      "sha256": "dca9d1a85a44acbd08bd53d97d8b5a2fbd8b82f88966032fe93464aaf089e8e7",
+      "media_type": "text/yaml"
+    },
+    {
+      "path": "SPEC/contracts/run.md",
+      "sha256": "7f56da7979911c39db29a4b661c31f424de4b063f05c3b46f8af01a5a9875985",
+      "media_type": "text/markdown"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "implementation_complete",
+      "expected": "P0-SEC-01 AC-SEC-13 acceptance per the golden taskbook and acceptance-profile",
+      "actual": "not implemented in this change set; see blocked_reason",
+      "result": "fail"
+    }
+  ],
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P0-SEC-01/d7a1c346be890aae9418ef248c0b0675bd80b6c2/AC-SEC-13/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha d7a1c346be890aae9418ef248c0b0675bd80b6c2",
+  "producer": {
+    "agent": "developer-agent",
+    "version": "1.0.0"
+  },
+  "attestation": null
+}

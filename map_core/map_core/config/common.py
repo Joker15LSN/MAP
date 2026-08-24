@@ -168,17 +168,17 @@ SUMMARIZATION_LLM_CONFIG = LLMConfig(
 # }
 
 # PostgreSQL 配置（可通过环境变量覆盖，便于容器化部署）
-DEFAULT_POSTGRES_DSN = "postgresql://map:map@127.0.0.1:15432/map"
+# P0-SEC-01: no hardcoded default credentials. The DSN must be injected via
+# environment (docker-compose maps it from .env); unset fails closed.
 POSTGRES_CONFIG = {
-    "dsn": os.getenv("POSTGRES_DSN", DEFAULT_POSTGRES_DSN),
+    "dsn": os.getenv("POSTGRES_DSN", ""),
 }
 
 # MongoDB 配置（可通过环境变量覆盖，便于容器化部署）
-DEFAULT_MONGODB_URI = "mongodb://map:map@127.0.0.1:27017/?authSource=admin"
-DEFAULT_MONGODB_DATABASE = "map_db_dev"
+# P0-SEC-01: same policy — the URI must be injected via environment.
 MONGODB_CONFIG = {
-    "uri": os.getenv("MONGODB_URI", DEFAULT_MONGODB_URI),
-    "database": os.getenv("MONGODB_DATABASE", DEFAULT_MONGODB_DATABASE),
+    "uri": os.getenv("MONGODB_URI", ""),
+    "database": os.getenv("MONGODB_DATABASE", "map_db_dev"),
 }
 
 MONGODB_STATE_RECORD_COLLECTION = "agent_call_states"  # legacy, kept for reference

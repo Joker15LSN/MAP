@@ -31,7 +31,7 @@ from app.settings import Settings
 pytestmark = pytest.mark.asyncio
 
 WORKSPACE = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
-SECRET = "Bearer eyJhbGciOiJIUzI1NiJ9.secret-token-value"
+SECRET = "Bearer fake.eyJhbGciOiJIUzI1NiJ9.fake-token-value"
 
 
 class FakeStreamCoreClient:

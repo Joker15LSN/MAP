@@ -62,7 +62,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -74,6 +74,7 @@ COMPOSE_FILES = [
 SERVICES = [
     "postgres",
     "mongo",
+    "opensandbox-double",
     "fake-llm",
     "migrate",
     "algorithm-service",
@@ -95,6 +96,7 @@ RUNNING_REQUIRED = HEALTHY_REQUIRED | {
     "frontend-service",
     "otel-collector",
     "jaeger",
+    "opensandbox-double",
 }
 
 ANSWER = "这是 MAP 端到端测试的确定性回答。"
@@ -147,6 +149,7 @@ class Ctx:
         self.frontend: str = ""
         self.jaeger: str = ""
         self.fake_llm: str = ""
+        self.sandbox_double: str = ""
         self.postgres_container = f"{self.prefix}-postgres"
         self.mongo_container = f"{self.prefix}-mongo"
         self.algo_container = f"{self.prefix}-algorithm-service"
@@ -289,15 +292,19 @@ def psql(ctx: Ctx, sql: str) -> str:
 
 
 def mongosh_eval(ctx: Ctx, expr: str) -> str:
+    # R-03: the query must use the SAME one-shot credentials the stack was
+    # started with (ctx.env), never fixed user/password literals.
+    mongo_user = ctx.env.get("MAP_MONGO_ROOT_USER") or "map"
+    mongo_password = ctx.env.get("MAP_MONGO_ROOT_PASSWORD") or ""
     result = docker_exec(
         ctx.mongo_container,
         [
             "mongosh",
             "--quiet",
             "-u",
-            "map",
+            mongo_user,
             "-p",
-            "map",
+            mongo_password,
             "--authenticationDatabase",
             "admin",
             "map_db_dev",
@@ -661,34 +668,42 @@ def scenario_duplicate_request(ctx: Ctx, happy: dict) -> None:
     )
 
 
-def scenario_stop_mid_stream(ctx: Ctx) -> dict:
-    # Slow the fake LLM down so the stream is still open when we stop it.
-    status, _ = http_json(
-        "POST", f"{ctx.fake_llm}/__e2e/config", {"stream_token_delay_s": 0.35}
-    )
-    expect(status == 200, f"fake-llm config returned {status}")
+STOP_ROUND_BUDGET_S = 90.0
 
+
+def _stop_round(ctx: Ctx, round_num: int, token: str) -> dict:
+    """Run ONE HTTP-layer mid-stream stop round with a fresh message/run
+    identity (S5-04). Each round asserts: the stop API succeeds with
+    abort=true, the SSE terminates after stop (done event, at most one
+    late content_delta), and the message's PG terminal status is stopped."""
+    query = f"stop 稳定性第 {round_num} 轮"
     trace_id = uuid.uuid4().hex
+    run_id = f"stop-stab-{round_num}-{token}"
+    attempt_id = f"att-{round_num}"
     request_id = f"e2e-stop-{secrets.token_hex(4)}"
+    client_request_id = f"creq-{round_num}-{token}"
     headers = {
         "X-Request-ID": request_id,
+        "X-Run-ID": run_id,
+        "X-Attempt-ID": attempt_id,
+        "X-Client-Request-ID": client_request_id,
         "X-Workspace-ID": WORKSPACE_ID,
         "traceparent": traceparent_for(trace_id),
     }
     status, created = http_json(
         "POST",
         f"{ctx.bff}/api/v1/conversations",
-        {"mode": "global", "title": "E2E stop 场景"},
+        {"mode": "global", "title": f"E2E stop 稳定性 {round_num}"},
         headers,
     )
-    expect(status == 201, f"stop conversation create returned {status}")
+    expect(status == 201, f"stop stability conversation create returned {status}")
     conversation_id = created["id"]
 
     sse = SseCollector(
         "127.0.0.1",
         ctx.ports["MAP_BFF_PORT"],
         f"/api/v1/conversations/{conversation_id}/messages:stream",
-        {"query": "慢慢回答我", "request_id": request_id},
+        {"query": query, "request_id": request_id},
         headers,
     ).start()
     expect(sse.first_delta.wait(30.0), "no content_delta before stop")
@@ -696,6 +711,7 @@ def scenario_stop_mid_stream(ctx: Ctx) -> dict:
     message_id = start_data["message_id"]
     stop_index = len(sse.events)
 
+    t_stop = time.monotonic()
     status, stop_body = http_json(
         "POST", f"{ctx.bff}/api/v1/messages/{message_id}:stop", None, headers
     )
@@ -703,6 +719,7 @@ def scenario_stop_mid_stream(ctx: Ctx) -> dict:
     expect(stop_body.get("abort") is True, f"stop did not hit the registry: {stop_body}")
 
     expect(sse.finished.wait(15.0), "stream did not close within 15s after stop")
+    stop_to_done_s = time.monotonic() - t_stop
     tail = sse.deltas_after(stop_index)
     late_deltas = [d for name, d in tail if name == "content_delta"]
     expect(
@@ -718,8 +735,73 @@ def scenario_stop_mid_stream(ctx: Ctx) -> dict:
     )
     expect(final_status == "stopped", f"stopped message final status={final_status!r}")
 
-    http_json("POST", f"{ctx.fake_llm}/__e2e/config", {"stream_token_delay_s": 0.0})
-    return {"conversation_id": conversation_id, "message_id": message_id, "request_id": request_id}
+    return {
+        "iteration": round_num,
+        "query": query,
+        "conversation_id": conversation_id,
+        "message_id": message_id,
+        "request_id": request_id,
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "client_request_id": client_request_id,
+        "stop_to_done_s": round(stop_to_done_s, 3),
+        "pg_status": final_status,
+    }
+
+
+def scenario_stop_mid_stream(ctx: Ctx, repeat: int = 1) -> dict:
+    """HTTP-layer mid-stream stop; repeat>1 runs the S5-04 stability loop.
+    Each round uses a fresh message/run identity and unique query, has a
+    per-round wall-clock budget, and records per-round evidence in
+    ctx.report["stop_stability"]. Returns the FIRST round's ids for
+    backwards compatibility with the full-suite report fields."""
+    token = secrets.token_hex(4)
+    status, _ = http_json(
+        "POST", f"{ctx.fake_llm}/__e2e/config", {"stream_token_delay_s": 0.35}
+    )
+    expect(status == 200, f"fake-llm config returned {status}")
+
+    iterations: list[dict] = []
+    first: dict | None = None
+    try:
+        for round_num in range(1, repeat + 1):
+            round_start = time.monotonic()
+            evidence = _stop_round(ctx, round_num, token)
+            evidence["round_elapsed_s"] = round(time.monotonic() - round_start, 3)
+            expect(
+                evidence["round_elapsed_s"] <= STOP_ROUND_BUDGET_S,
+                f"stop stability round {round_num} exceeded the "
+                f"{STOP_ROUND_BUDGET_S:.0f}s budget "
+                f"({evidence['round_elapsed_s']}s)",
+            )
+            iterations.append(evidence)
+            if first is None:
+                first = evidence
+            log(
+                f"stop stability round {round_num}/{repeat} OK "
+                f"(message_id={evidence['message_id']}, "
+                f"stop->done={evidence['stop_to_done_s']}s, "
+                f"round={evidence['round_elapsed_s']}s)"
+            )
+    finally:
+        http_json("POST", f"{ctx.fake_llm}/__e2e/config", {"stream_token_delay_s": 0.0})
+
+    latencies = [i["stop_to_done_s"] for i in iterations]
+    ctx.report["stop_stability"] = {
+        "iterations": iterations,
+        "summary": {
+            "repeat": repeat,
+            "passed": len(iterations),
+            "total_elapsed_s": round(sum(i["round_elapsed_s"] for i in iterations), 3),
+            "avg_stop_to_done_s": round(sum(latencies) / len(latencies), 3),
+            "max_stop_to_done_s": round(max(latencies), 3),
+        },
+    }
+    return {
+        "conversation_id": first["conversation_id"],
+        "message_id": first["message_id"],
+        "request_id": first["request_id"],
+    }
 
 
 def scenario_core_restart(ctx: Ctx) -> dict:
@@ -893,11 +975,130 @@ def scenario_worker_reconcile(ctx: Ctx, happy: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+
+def scenario_sandbox_worker_exactly_once(ctx: Ctx) -> None:
+    """S6-02/S6-03 acceptance with REAL workers, REAL PostgreSQL, REAL Core
+    and a REAL HTTP OpenSandbox contract double:
+
+    1. forged / unauthenticated requests to Core's POST /sandbox/exec are
+       rejected BEFORE any ledger write or any provider byte;
+    2. a sandbox_exec job whose worker is killed AFTER the remote execute
+       landed but BEFORE the job complete is taken over by a second worker
+       with the SAME deterministic invocation identity; the provider's
+       create/execute action counts stay EXACTLY 1 and the job reaches
+       succeeded at attempt 2.
+    """
+    algo = f"http://127.0.0.1:{ctx.ports['MAP_ALGO_PORT']}"
+    detail: dict = {}
+    forged_headers = {
+        "X-Workspace-ID": WORKSPACE_ID,
+        "X-Run-ID": "run-forged",
+        "X-Step-ID": "step-forged",
+        "X-Attempt-ID": "att-1",
+        "X-Invocation-ID": "inv-forged",
+        "X-Client-Request-ID": "creq-forged",
+    }
+
+    # ---------------- Phase 0: auth boundary costs nothing -------------
+    http_json("POST", f"{ctx.sandbox_double}/__reset", {})
+    ledger_before = int(psql(ctx, "SELECT count(*) FROM map_control.sandbox_invocations"))
+    status, _ = http_json(
+        "POST", f"{algo}/sandbox/exec", {"command": "echo forged"}, forged_headers
+    )
+    expect(status == 401, f"no-Authorization sandbox exec returned {status}, want 401")
+    status, _ = http_json(
+        "POST",
+        f"{algo}/sandbox/exec",
+        {"command": "echo forged"},
+        {**forged_headers, "Authorization": "Bearer forged-token"},
+    )
+    expect(status == 401, f"forged-token sandbox exec returned {status}, want 401")
+    status, counts = http_json("GET", f"{ctx.sandbox_double}/__counts")
+    expect(status == 200, f"double counts returned {status}")
+    expect(
+        counts.get("request_bytes") == 0 and counts.get("create_actions") == 0,
+        f"forged requests reached the provider: {counts!r}",
+    )
+    expect(
+        int(psql(ctx, "SELECT count(*) FROM map_control.sandbox_invocations")) == ledger_before,
+        "forged requests wrote ledger rows",
+    )
+    detail["forged_requests_cost_zero"] = True
+
+    # ---------------- Phase 1: kill worker A after remote execute --------
+    _recreate_worker(
+        ctx,
+        {
+            "MAP_WORKER_ID": "worker-sandbox-a",
+            "MAP_E2E_SANDBOX_AFTER_CORE_BARRIER_S": "30",
+        },
+    )
+    job_id = psql(
+        ctx,
+        "INSERT INTO map_control.jobs "
+        "(workspace_id, job_type, status, priority, attempt, max_attempts, payload_json) "
+        f"VALUES ('{WORKSPACE_ID}', 'sandbox_exec', 'queued', 0, 0, 3, "
+        "'{\"command\": \"echo e2e-once\"}'::jsonb) RETURNING id",
+    )
+    expect(bool(job_id), "failed to enqueue sandbox_exec job")
+    invocation_id = f"inv-{job_id}"
+
+    # Core completes the remote create+execute inside the HTTP call; the
+    # worker A handler is then held at the barrier BEFORE the job complete.
+    def _remote_landed():
+        row = psql(
+            ctx,
+            "SELECT status FROM map_control.sandbox_invocations "
+            f"WHERE workspace_id = '{WORKSPACE_ID}' "
+            f"AND invocation_id = '{invocation_id}'",
+        )
+        return row == "succeeded"
+
+    poll_until(_remote_landed, timeout_s=90.0, what="Core settled the sandbox invocation")
+    status, attempt, owner = _job_lease_row(ctx, job_id)
+    expect(
+        status == "running" and attempt == 1 and owner == "worker-sandbox-a",
+        f"worker A did not hold the job at the barrier: {(status, attempt, owner)!r}",
+    )
+    _kill_worker(ctx)
+
+    # ---------------- Phase 2: worker B takeover, exactly once -----------
+    _recreate_worker(
+        ctx,
+        {"MAP_WORKER_ID": "worker-sandbox-b", "MAP_E2E_SANDBOX_AFTER_CORE_BARRIER_S": "0"},
+    )
+
+    def _job_done():
+        return _job_lease_row(ctx, job_id)[0] == "succeeded"
+
+    poll_until(_job_done, timeout_s=120.0, what="sandbox_exec job succeeded after takeover")
+    status, attempt, _owner = _job_lease_row(ctx, job_id)
+    expect(status == "succeeded" and attempt == 2, f"job final {(status, attempt)!r}")
+    status, counts = http_json("GET", f"{ctx.sandbox_double}/__counts")
+    expect(status == 200, f"double counts returned {status}")
+    expect(
+        counts.get("create_actions") == 1 and counts.get("execute_actions") == 1,
+        f"provider actions not exactly-once after takeover: {counts!r}",
+    )
+    expect(
+        psql(
+            ctx,
+            "SELECT status FROM map_control.sandbox_invocations "
+            f"WHERE workspace_id = '{WORKSPACE_ID}' AND invocation_id = '{invocation_id}'",
+        )
+        == "succeeded",
+        "sandbox invocation not terminal after takeover",
+    )
+    detail["provider_exactly_once"] = counts
+    detail["job_attempts"] = attempt
+    ctx.report["faults"]["sandbox_worker_exactly_once"] = detail
+
+
 # browser E2E (R3-P1-02: browser -> frontend -> BFF -> core)
 # ---------------------------------------------------------------------------
 
 
-def scenario_browser(ctx: Ctx) -> dict:
+def scenario_browser(ctx: Ctx, repeat_stop: int = 1) -> dict:
     """Run the Playwright scenarios in a subprocess and cross-check the
     captured conversation/session IDs against PostgreSQL and MongoDB."""
     out_path = REPO_ROOT / "e2e" / "tmp" / f"browser-{ctx.project}.json"
@@ -912,6 +1113,8 @@ def scenario_browser(ctx: Ctx) -> dict:
         WORKSPACE_ID,
         "--out",
         str(out_path),
+        "--repeat-stop",
+        str(repeat_stop),
     ]
     proc = subprocess.run(
         cmd, capture_output=True, text=True, timeout=1200.0, cwd=REPO_ROOT
@@ -972,6 +1175,46 @@ def scenario_browser(ctx: Ctx) -> dict:
     parts = msg_row.split("|", 1)
     expect(parts[0] == "completed", f"browser assistant message status={parts[0]!r}")
     expect(ANSWER in (parts[1] if len(parts) > 1 else ""), f"browser answer mismatch: {msg_row!r}")
+
+    # S4-05 / S6-05: the browser stop scenario must have issued the server
+    # stop API for EVERY round, and EACH round's message must be
+    # persisted as stopped in PG - cross-checked by the message_id frozen
+    # from the stop URL (never just the conversation's last row).
+    stop_requests = browser_report.get("stop_requests") or []
+    expect(bool(stop_requests), "browser report missing stop_requests")
+    stop_repeat = browser_report.get("stop_repeat") or []
+    expect(bool(stop_repeat), "browser report missing stop_repeat evidence")
+    message_ids = [entry.get("message_id") for entry in stop_repeat]
+    expect(
+        all(message_ids) and len(set(message_ids)) == len(message_ids),
+        f"stop rounds must carry unique non-empty message_ids: {message_ids!r}",
+    )
+    for entry in stop_repeat:
+        expect(
+            entry.get("stop_http_status") == 200,
+            f"round {entry.get('iteration')} stop HTTP status "
+            f"{entry.get('stop_http_status')!r} != 200",
+        )
+        expect(
+            entry.get("sse_terminal") is True,
+            f"round {entry.get('iteration')} missing SSE terminal evidence "
+            f"(events={entry.get('sse_events')!r})",
+        )
+        pg_status = psql(
+            ctx,
+            "SELECT status FROM map_control.messages "
+            f"WHERE id = '{entry['message_id']}'",
+        )
+        expect(
+            pg_status == "stopped",
+            f"round {entry.get('iteration')} message {entry['message_id']} "
+            f"PG status={pg_status!r}, want stopped",
+        )
+        entry["pg_status"] = pg_status
+    expect(
+        len(stop_repeat) == repeat_stop,
+        f"stop_repeat rounds {len(stop_repeat)} != requested {repeat_stop}",
+    )
 
     # Mongo cross-check: the browser's X-Session-ID reached map_core.
     mongo_doc = poll_until(
@@ -1625,6 +1868,7 @@ def start_stack(ctx: Ctx) -> None:
         "MAP_JAEGER_UI_PORT",
         "MAP_JAEGER_OTLP_GRPC_PORT",
         "E2E_FAKE_LLM_PORT",
+        "E2E_SANDBOX_DOUBLE_PORT",
     ]
     for key in port_env_keys:
         ctx.ports[key] = free_port()
@@ -1637,12 +1881,45 @@ def start_stack(ctx: Ctx) -> None:
         "MAP_LLM_API_KEY": "e2e-fake-key",
         "MAP_LLM_BASE_URL": "http://fake-llm:9999/v1",
         "MAP_LLM_MODEL": "fake-e2e-model",
+        # P0-SEC-01: compose has no password defaults anymore; E2E runs on
+        # random project names / fresh volumes / free ports, so fixed
+        # local-only passwords are safe here.
+        "MAP_POSTGRES_ADMIN_PASSWORD": "e2e-local-only",
+        "MAP_POSTGRES_APP_PASSWORD": "e2e-local-only",
+        "MAP_POSTGRES_MIGRATOR_PASSWORD": "e2e-local-only",
+        "MAP_MONGO_ROOT_PASSWORD": "e2e-local-only",
+        # S6-02/S6-03: the sandbox execution link - one-shot credential
+        # registry for Core's /sandbox/exec and the matching worker
+        # Bearer token; the provider is the in-compose contract double.
+        "MAP_SANDBOX_SERVICE_CREDENTIALS": json.dumps(
+            [
+                {
+                    "key_id": "k-e2e-sandbox",
+                    "token": "svc-e2e-sandbox-token",
+                    "service_name": "map-worker",
+                    "audience": "map-core",
+                    "scopes": ["sandbox:execute"],
+                    # S7-04: credentials must carry an explicit expiry.
+                    "expires_at": (
+                        datetime.now(timezone.utc) + timedelta(days=1)
+                    ).isoformat().replace("+00:00", "Z"),
+                }
+            ]
+        ),
+        "MAP_SANDBOX_SERVICE_AUDIENCE": "map-core",
+        "MAP_SANDBOX_CORE_TOKEN": "svc-e2e-sandbox-token",
+        "MAP_OPENSANDBOX_URL": "http://opensandbox-double:8099",
+        "MAP_OPENSANDBOX_API_KEY": "e2e-sandbox-double-key",
+        "MAP_E2E_SANDBOX_AFTER_CORE_BARRIER_S": "0",
     }
     ctx.bff = f"http://127.0.0.1:{ctx.ports['MAP_BFF_PORT']}"
     ctx.frontend = f"http://127.0.0.1:{ctx.ports['MAP_FRONTEND_PORT']}"
     ctx.jaeger = f"http://127.0.0.1:{ctx.ports['MAP_JAEGER_UI_PORT']}"
     ctx.fake_llm = f"http://127.0.0.1:{ctx.ports['E2E_FAKE_LLM_PORT']}"
     ctx.fake_llm_container = f"{ctx.prefix}-fake-llm"
+    ctx.sandbox_double = (
+        f"http://127.0.0.1:{ctx.ports['E2E_SANDBOX_DOUBLE_PORT']}"
+    )
 
     log(f"project={ctx.project} bff={ctx.bff} jaeger_port={ctx.ports['MAP_JAEGER_UI_PORT']}")
     compose(ctx, ["up", "-d", "--build", *SERVICES], timeout=1800.0)
@@ -1721,7 +1998,7 @@ def print_report(ctx: Ctx, success: bool, failure: str | None) -> None:
         print(f"FAILURE: {failure}")
 
 
-def run_pr_suite(ctx: Ctx) -> None:
+def run_pr_suite(ctx: Ctx, repeat_browser_stop: int = 1) -> None:
     """Stable CI subset: browser happy path + identity boundary."""
     scenario_versions(ctx)
     scenario_model_center_redirect(ctx)
@@ -1736,7 +2013,7 @@ def run_pr_suite(ctx: Ctx) -> None:
     ctx.report["scenarios"]["happy_path"] = "PASS"
     log(f"happy path OK (request_id={happy['request_id']}, trace_id={happy['trace_id']})")
 
-    scenario_browser(ctx)
+    scenario_browser(ctx, repeat_browser_stop)
     ctx.report["scenarios"]["browser"] = "PASS"
     log("browser E2E OK (create/stream/reload/stop/feedback/withdraw)")
 
@@ -1745,12 +2022,12 @@ def run_pr_suite(ctx: Ctx) -> None:
     log("secure identity boundary OK")
 
 
-def run_full_suite(ctx: Ctx) -> None:
-    run_pr_suite(ctx)
-    run_fault_and_legacy_scenarios(ctx)
+def run_full_suite(ctx: Ctx, repeat_stop: int = 1, repeat_browser_stop: int = 1) -> None:
+    run_pr_suite(ctx, repeat_browser_stop)
+    run_fault_and_legacy_scenarios(ctx, repeat_stop)
 
 
-def run_fault_and_legacy_scenarios(ctx: Ctx) -> None:
+def run_fault_and_legacy_scenarios(ctx: Ctx, repeat_stop: int = 1) -> None:
     """Full-suite additions: fault matrix + the original HTTP scenarios."""
     happy = ctx.report["happy_ids"]
 
@@ -1758,7 +2035,7 @@ def run_fault_and_legacy_scenarios(ctx: Ctx) -> None:
     ctx.report["scenarios"]["duplicate_request_replay"] = "PASS"
     log("duplicate request_id replay OK")
 
-    stopped = scenario_stop_mid_stream(ctx)
+    stopped = scenario_stop_mid_stream(ctx, repeat_stop)
     ctx.report["request_ids"]["stop"] = stopped["request_id"]
     ctx.report["final_states"]["stop_message"] = "stopped"
     ctx.report["scenarios"]["stop_mid_stream"] = "PASS"
@@ -1776,6 +2053,15 @@ def run_fault_and_legacy_scenarios(ctx: Ctx) -> None:
     ctx.report["scenarios"]["worker_kill_lease_takeover"] = "PASS"
     log("worker kill + lease takeover OK")
 
+    # S6-02/S6-03: real worker kill between the remote OpenSandbox execute
+    # and the job complete - the taken-over attempt must reuse the SAME
+    # invocation identity and the provider counts must stay EXACTLY one;
+    # forged requests to /sandbox/exec must cost zero provider bytes and
+    # zero ledger rows.
+    scenario_sandbox_worker_exactly_once(ctx)
+    ctx.report["scenarios"]["sandbox_worker_exactly_once"] = "PASS"
+    log("sandbox worker kill + exactly-once + auth boundary OK")
+
     restarted = scenario_core_restart(ctx)
     ctx.report["request_ids"]["restart"] = restarted["request_id"]
     ctx.report["scenarios"]["core_restart_recovery"] = "PASS"
@@ -1790,16 +2076,66 @@ def run_fault_and_legacy_scenarios(ctx: Ctx) -> None:
     log("worker claim + message_reconcile OK")
 
 
+def run_stop_stability_suite(ctx: Ctx, repeat_stop: int, repeat_browser_stop: int) -> None:
+    """S5-04 stop-stability gate: reproduce the PR topology (fake-llm
+    required) and run ONLY the stop scenarios — the HTTP-layer stop N
+    rounds + the browser-layer stop N rounds — skipping happy path,
+    identity boundary and the fault matrix."""
+    # The model-center redirect is still required: the BFF embeds the
+    # model-center row into each core request, so without it the stop
+    # stream would not resolve to the fake LLM.
+    scenario_model_center_redirect(ctx)
+    ctx.report["scenarios"]["model_center_redirect"] = "PASS"
+
+    stopped = scenario_stop_mid_stream(ctx, repeat_stop)
+    ctx.report["request_ids"]["stop"] = stopped["request_id"]
+    ctx.report["final_states"]["stop_message"] = "stopped"
+    ctx.report["scenarios"]["stop_mid_stream"] = "PASS"
+    log(f"stop/abort mid-stream stability OK ({repeat_stop} round(s))")
+
+    scenario_browser(ctx, repeat_browser_stop)
+    ctx.report["scenarios"]["browser_stop_stability"] = "PASS"
+    log(f"browser stop stability OK ({repeat_browser_stop} round(s))")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="MAP Compose E2E runner")
     parser.add_argument(
         "--suite",
-        choices=["full", "pr"],
+        choices=["full", "pr", "stop-stability"],
         default="full",
         help="pr = browser happy path + identity boundary (CI); "
-        "full = everything incl. the fault matrix (default)",
+        "full = everything incl. the fault matrix (default); "
+        "stop-stability = stop scenarios only (S5-04 reproducible gate)",
+    )
+    parser.add_argument(
+        "--repeat-stop",
+        type=int,
+        default=None,
+        help="HTTP-layer stop scenario rounds (default: 1, or 20 for "
+        "--suite stop-stability)",
+    )
+    parser.add_argument(
+        "--repeat-browser-stop",
+        type=int,
+        default=None,
+        help="browser-layer stop scenario rounds (default: 1, or 20 for "
+        "--suite stop-stability)",
     )
     args = parser.parse_args()
+
+    # S5-04: --suite stop-stability implicitly sets both repeat counts to
+    # 20 unless the caller overrides them explicitly on the command line.
+    repeat_stop = args.repeat_stop if args.repeat_stop is not None else (
+        20 if args.suite == "stop-stability" else 1
+    )
+    repeat_browser_stop = args.repeat_browser_stop if args.repeat_browser_stop is not None else (
+        20 if args.suite == "stop-stability" else 1
+    )
+    if repeat_stop < 1:
+        parser.error(f"--repeat-stop must be >= 1 (got {repeat_stop})")
+    if repeat_browser_stop < 1:
+        parser.error(f"--repeat-browser-stop must be >= 1 (got {repeat_browser_stop})")
 
     ctx = Ctx()
     ctx.report["suite"] = args.suite
@@ -1823,10 +2159,12 @@ def main() -> int:
             if source["dirty"]:
                 log(f"final mode: docs-only dirtiness tolerated: {source['dirty_files']}")
         start_stack(ctx)
-        if args.suite == "pr":
-            run_pr_suite(ctx)
+        if args.suite == "stop-stability":
+            run_stop_stability_suite(ctx, repeat_stop, repeat_browser_stop)
+        elif args.suite == "pr":
+            run_pr_suite(ctx, repeat_browser_stop)
         else:
-            run_full_suite(ctx)
+            run_full_suite(ctx, repeat_stop, repeat_browser_stop)
         collect_db_counts(ctx)
     except E2EFailure as exc:
         failure = str(exc)

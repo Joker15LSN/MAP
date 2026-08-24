@@ -1,0 +1,40 @@
+tree:map-business-backend/tests/test_cors_schema.py:75: uri_embedded_password sha256:fbddae166ead16d1
+tree:map_core/tests/test_cors_schema.py:57: uri_embedded_password sha256:fbddae166ead16d1
+tree:map_core/tests/test_mcp_egress_guard.py:37: openai_key sha256:3ffa01e518c4680f
+tree:map_core/tests/test_mcp_egress_guard.py:182: openai_key sha256:0e3b7d6dfa4cd4f9
+tree:map_core/tests/test_mcp_egress_guard.py:186: openai_key sha256:0e3b7d6dfa4cd4f9
+tree:map_core/tests/test_mcp_egress_guard.py:187: openai_key sha256:0e3b7d6dfa4cd4f9
+tree:map_core/tests/test_sandbox_integration.py:102: literal_secret_assignment sha256:5ee001bc1d740c5c
+tree:map_core/tests/test_sandbox_ledger.py:113: uri_embedded_password sha256:f384c1854ca16e74
+tree:scripts/security_scan.py:435: literal_secret_assignment sha256:4bf2d836b57b25b7
+tree:scripts/test_security_scan.py:354: literal_secret_assignment sha256:971bca7ecd0e3e0e
+tree:scripts/test_security_scan.py:355: literal_password_assignment sha256:1829e9620b17def0
+index:map-business-backend/tests/test_cors_schema.py:75: uri_embedded_password sha256:fbddae166ead16d1
+index:map_core/tests/test_cors_schema.py:57: uri_embedded_password sha256:fbddae166ead16d1
+index:map_core/tests/test_mcp_egress_guard.py:37: openai_key sha256:3ffa01e518c4680f
+index:map_core/tests/test_mcp_egress_guard.py:182: openai_key sha256:0e3b7d6dfa4cd4f9
+index:map_core/tests/test_mcp_egress_guard.py:186: openai_key sha256:0e3b7d6dfa4cd4f9
+index:map_core/tests/test_mcp_egress_guard.py:187: openai_key sha256:0e3b7d6dfa4cd4f9
+index:map_core/tests/test_sandbox_integration.py:102: literal_secret_assignment sha256:5ee001bc1d740c5c
+index:map_core/tests/test_sandbox_ledger.py:113: uri_embedded_password sha256:f384c1854ca16e74
+index:scripts/security_scan.py:435: literal_secret_assignment sha256:4bf2d836b57b25b7
+index:scripts/test_security_scan.py:354: literal_secret_assignment sha256:971bca7ecd0e3e0e
+index:scripts/test_security_scan.py:355: literal_password_assignment sha256:1829e9620b17def0
+security scan: 22 hit(s) in tree,index,build-context
+security scan: 0 third-party hit(s) (dependency code, reported only)
+security scan: exemption .env.example:34 (env_password_literal; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption .env.example:38 (env_password_literal; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sensitive_data.py:9 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_mcp_egress_guard.py:34 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_mcp_egress_guard.py:179 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_mcp_egress_guard.py:183 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_mcp_egress_guard.py:184 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_industry_chat_canary.py:14 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map-business-backend/tests/integration/test_config_audit.py:42 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map-business-backend/tests/integration/test_feedback.py:34 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map-business-backend/tests/integration/test_v1_error_matrix.py:39 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map-business-backend/tests/test_auth_boundary.py:28 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sensitive_data.py:32 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption README.md:335 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption README.md:336 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption README.md:352 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)

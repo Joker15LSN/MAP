@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -55,17 +56,26 @@ for _path in (_PACKAGE_DIR, _PROJECT_ROOT):
         sys.path.insert(0, _path)
 
 
-def _ensure_env() -> str:
-    env = os.environ.get("ENV")
-    if env:
-        return env
+def _resolve_env() -> str:
+    """S3-04: ONE frozen environment variable across services - MAP_ENV.
 
-    env = "dev"
+    ENV is accepted as a fallback for pre-unification deployments, then
+    both names are kept in sync so legacy readers (config, routers) see
+    the same value.
+    """
+    env = os.environ.get("MAP_ENV") or os.environ.get("ENV") or "dev"
+    os.environ["MAP_ENV"] = env
     os.environ["ENV"] = env
-    print(
-        "[main] ENV 未设置，默认使用 'dev'。如需指定环境: `ENV=prod`",
-        file=sys.stderr,
-    )
+    return env
+
+
+def _ensure_env() -> str:
+    env = _resolve_env()
+    if not os.environ.get("MAP_ENV"):
+        print(
+            "[main] MAP_ENV 未设置，默认使用 'dev'。如需指定环境: `MAP_ENV=prod`",
+            file=sys.stderr,
+        )
     return env
 
 
@@ -205,7 +215,9 @@ async def lifespan(app: FastAPI):
     from .routers.global_domain_router import global_domain_router
     from .routers.master_pipeline_router import master_pipeline_router
     from .routers.openapi_router import openapi_router
+    from .routers.sandbox_router import sandbox_router
     from .routers.system_router import system_router
+    from .service import sandbox_tools
     from .service.state_store import GlobalAgentStateStore
 
     app.include_router(system_router)
@@ -213,9 +225,30 @@ async def lifespan(app: FastAPI):
     app.include_router(flow_domain_router)
     app.include_router(master_pipeline_router)
     app.include_router(openapi_router)
+    app.include_router(sandbox_router)
 
     GlobalAgentStateStore.instance().start()
     logger.info("[PID: {}] EventDispatcher started.", os.getpid())
+
+    # S5-01: the durable OpenSandbox reconciler converges crashed
+    # non-terminal invocations (owner died between a remote create/execute
+    # and the ledger write). It runs in every Core process; the takeover
+    # CAS in the ledger guarantees exactly one process drives each row.
+    # Started best-effort: without POSTGRES_DSN it stays a no-op and never
+    # blocks startup.
+    sandbox_reconciler = sandbox_tools.create_sandbox_reconciler()
+    sandbox_reconciler_stop: asyncio.Event | None = None
+    sandbox_reconciler_task: asyncio.Task | None = None
+    if sandbox_reconciler is not None:
+        sandbox_reconciler_stop = asyncio.Event()
+        sandbox_reconciler_task = asyncio.create_task(
+            sandbox_reconciler.run_forever(sandbox_reconciler_stop)
+        )
+        app.state.sandbox_reconciler_task = sandbox_reconciler_task
+        app.state.sandbox_reconciler_stop = sandbox_reconciler_stop
+        logger.info(
+            "[PID: {}] SandboxInvocation reconciler started.", os.getpid()
+        )
 
     try:
         yield
@@ -223,6 +256,18 @@ async def lifespan(app: FastAPI):
         state_store = GlobalAgentStateStore.maybe_instance()
         if state_store is not None:
             await state_store.close()
+
+        # S5-01: stop the reconciler first, then close the sandbox ledger
+        # pool so a stopping process never leaks pooled connections.
+        if sandbox_reconciler_task is not None:
+            if sandbox_reconciler_stop is not None:
+                sandbox_reconciler_stop.set()
+            sandbox_reconciler_task.cancel()
+            try:
+                await sandbox_reconciler_task
+            except asyncio.CancelledError:
+                pass
+        await sandbox_tools.close_sandbox_ledger()
 
         pg_client = getattr(app.state, "postgres_client", None)
         if pg_client is not None:
@@ -238,6 +283,24 @@ async def lifespan(app: FastAPI):
         if app_logger is not None:
             app_logger.complete()
             app_logger.remove()
+
+
+def build_cors_kwargs(env: str | None = None) -> dict:
+    """S2-07: build the CORS middleware kwargs from the SHARED policy.
+
+    The same contract as the BFF (MAP_CORS_ORIGINS / MAP_CORS_ALLOW_
+    CREDENTIALS): malformed origins and production wildcard+credentials
+    fail closed here, at startup, before any request can be served.
+    """
+    from .utils.cors_policy import load_cors_policy
+
+    policy = load_cors_policy(env)
+    return {
+        "allow_origins": list(policy.origins),
+        "allow_credentials": policy.allow_credentials,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
 
 
 app = FastAPI(
@@ -404,11 +467,8 @@ class RequestContextMiddleware:
 
 
 app.add_middleware(
-    CORSMiddleware,  # type: ignore
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware,  # S2-07: shared policy via build_cors_kwargs (fail-closed)
+    **build_cors_kwargs(_ensure_env()),
 )
 app.add_middleware(RequestContextMiddleware)
 # OTel SERVER span middleware wraps the whole request lifecycle (outermost).
@@ -479,6 +539,7 @@ def cli_main(argv: list[str] | None) -> None:
     args = parser.parse_args(argv)
 
     if args.env:
+        os.environ["MAP_ENV"] = args.env
         os.environ["ENV"] = args.env
 
     default_workers = _resolve_default_workers()

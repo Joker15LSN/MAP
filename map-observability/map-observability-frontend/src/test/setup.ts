@@ -8,7 +8,9 @@ import { afterEach } from 'vitest';
 
 /**
  * R2-P2-02: 仅隔离已知、不可在本仓库修复的第三方告警,其余 console.error
- * 全部保留(不吞错误)。每条过滤均记录来源包与精确版本:
+ * 全部保留(不吞错误)。每条过滤均记录来源包、精确版本与到期时间
+ * (expiresAt): 到期后过滤自动失效,告警重新落入 fail-on-unexpected-error,
+ * 使 E2E/单测自动失败,倒逼完成升级/修复 (S2-08)。
  *  1. `[antd: Tooltip] overlayClassName deprecated`
  *     来源: antd@5.29.3 内部经 @agentscope-ai/design@1.0.32 调用;
  *     待上游升级至 classNames API 后移除本过滤。
@@ -17,14 +19,35 @@ import { afterEach } from 'vitest';
  *     内部 forwardRef 用法)的告警。
  * 过滤边界: 仅按完整告警前缀匹配,任何其它文本一律放行。
  */
-const KNOWN_THIRD_PARTY_WARNINGS = [
-  'Warning: [antd: Tooltip] `overlayClassName` is deprecated',
-  'Warning: forwardRef render functions accept exactly two parameters',
+const KNOWN_THIRD_PARTY_WARNINGS: Array<{ prefix: string; expiresAt: string }> = [
+  {
+    prefix: 'Warning: [antd: Tooltip] `overlayClassName` is deprecated',
+    expiresAt: '2026-12-31',
+  },
+  {
+    prefix: 'Warning: forwardRef render functions accept exactly two parameters',
+    expiresAt: '2026-12-31',
+  },
   // R3-P2-01: @emotion/cache@11.14.0 的 SSR 伪类告警（部分构建经
   // console.error 通道输出）；jsdom 客户端环境从不 SSR，无意义且
   // 不可在上游关闭，按完整前缀精确隔离。
-  'The pseudo class ":first-child" is potentially unsafe',
+  {
+    prefix: 'The pseudo class ":first-child" is potentially unsafe',
+    expiresAt: '2026-12-31',
+  },
 ];
+
+function quarantineFor(message: string): { prefix: string; expiresAt: string } | null {
+  const entry = KNOWN_THIRD_PARTY_WARNINGS.find((item) =>
+    message.startsWith(item.prefix),
+  );
+  if (!entry) {
+    return null;
+  }
+  // S2-08: an expired quarantine no longer suppresses the warning, so the
+  // fail-on-unexpected-error hook trips and the suite fails.
+  return new Date(entry.expiresAt).getTime() > Date.now() ? entry : null;
+}
 
 const originalConsoleError = console.error.bind(console);
 // R3-P2-01: 未预期的 console.error 直接 fail 当前用例，不再只“保留输出”。
@@ -32,12 +55,68 @@ const originalConsoleError = console.error.bind(console);
 const unexpectedConsoleErrors: string[] = [];
 console.error = (...args: unknown[]) => {
   const first = typeof args[0] === 'string' ? args[0] : '';
-  if (KNOWN_THIRD_PARTY_WARNINGS.some((prefix) => first.startsWith(prefix))) {
+  if (quarantineFor(first) !== null) {
     return;
   }
   unexpectedConsoleErrors.push(args.map((item) => String(item)).join(' '));
   originalConsoleError(...args);
 };
+
+// ---- S2-08: no undeclared network access in tests ---------------------------
+// 单测必须离线运行。@agentscope-ai/design 的空态插图 (Empty/Illustrate)
+// 从 gw.alicdn.com 拉取 SVG：这里将其本地化(mock 为最小合法 SVG),
+// 消除外网请求、DNS 错误 stderr 噪声与离线环境的不稳定性；其余任何
+// 对真实外部资源的 fetch/XHR 请求一律立即失败 (fail-loudly)。需要在
+// 用例内声明网络行为的，必须自行 mock。
+const LOCALIZED_EXTERNAL_SVG = /^https:\/\/gw\.alicdn\.com\/.*\.svg($|\?)/;
+const MINIMAL_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>';
+
+if (typeof globalThis.fetch !== 'undefined') {
+  globalThis.fetch = ((input: unknown) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : String((input as { url?: string })?.url ?? input);
+    if (LOCALIZED_EXTERNAL_SVG.test(url)) {
+      return Promise.resolve(
+        new Response(MINIMAL_SVG, {
+          status: 200,
+          headers: { 'Content-Type': 'image/svg+xml' },
+        }),
+      );
+    }
+    throw new Error(
+      `tests must not fetch external resources (undeclared network access): ${url}`,
+    );
+  }) as typeof fetch;
+}
+if (typeof window !== 'undefined' && window.XMLHttpRequest) {
+  const OriginalXHR = window.XMLHttpRequest;
+  const BlockedXHR = function (this: XMLHttpRequest) {
+    const xhr = new OriginalXHR();
+    const originalOpen = xhr.open.bind(xhr) as (
+      ...args: unknown[]
+    ) => unknown;
+    xhr.open = function (
+      method: string,
+      url: string | URL,
+      ...rest: unknown[]
+    ) {
+      const target = String(url);
+      if (!target.startsWith('/') && !target.startsWith('http://localhost')) {
+        throw new Error(
+          `tests must not open external resources (undeclared network access): ${target}`,
+        );
+      }
+      return originalOpen(method, url, ...rest) as void;
+    } as XMLHttpRequest['open'];
+    return xhr;
+  } as unknown as typeof XMLHttpRequest;
+  window.XMLHttpRequest = BlockedXHR;
+}
 
 /**
  * R3-P2-01: console.warn 通道同样精确隔离 SSR 伪类告警（来源同上）。

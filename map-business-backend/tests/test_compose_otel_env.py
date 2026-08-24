@@ -60,6 +60,17 @@ _OTEL_ENV_KEYS = (
     *tuple(_ALGORITHM_LOG_TUNING),
 )
 
+# R-03 / P0-SEC-01: compose passwords are :?required (no repository
+# defaults). The hermetic subprocess must therefore inject fake one-shot
+# values - otherwise docker compose config fails closed, which is the
+# deployed behavior but not what these OTel assertions exercise.
+_FAKE_COMPOSE_CREDENTIALS = {
+    "MAP_POSTGRES_ADMIN_PASSWORD": "fake-admin-pw-for-compose-test",
+    "MAP_POSTGRES_APP_PASSWORD": "fake-app-pw-for-compose-test",
+    "MAP_POSTGRES_MIGRATOR_PASSWORD": "fake-migrator-pw-for-compose-test",
+    "MAP_MONGO_ROOT_PASSWORD": "fake-mongo-pw-for-compose-test",
+}
+
 
 def _compose_config(*extra_args: str, env_override: dict[str, str] | None = None) -> dict:
     """Resolve ``docker compose config`` with a hermetic environment.
@@ -73,6 +84,10 @@ def _compose_config(*extra_args: str, env_override: dict[str, str] | None = None
       ``${MAP_OTEL_ENABLED:-false}`` resolve deterministically.
     """
     env = {k: v for k, v in os.environ.items() if k not in _OTEL_ENV_KEYS}
+    # strip any host value first, then inject the fake one-shot credentials
+    for key in _FAKE_COMPOSE_CREDENTIALS:
+        env.pop(key, None)
+    env.update(_FAKE_COMPOSE_CREDENTIALS)
     env.update(env_override or {})
     cmd = [
         "docker",

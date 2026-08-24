@@ -61,7 +61,10 @@ async def test_readiness_fails_without_seed_and_passes_after_seed(_engine, sessi
         response = await client.get("/ready")
         assert response.status_code == 503
         body = response.json()
-        assert body["checks"]["database"] is True
+        # R-06: the database check reports a structured ok flag (the fixed
+        # 503 envelope shape); True for reachable DB, {"ok": False, ...} on
+        # failures.
+        assert body["checks"]["database"]["ok"] is True
         assert body["checks"]["seed"]["ok"] is False
 
         await session.execute(

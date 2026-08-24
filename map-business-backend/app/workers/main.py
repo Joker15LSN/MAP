@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import signal
 
 from sqlalchemy import text
@@ -23,6 +24,25 @@ from .job_runner import JobHandler, JobRunner
 
 logger = logging.getLogger(__name__)
 
+# S6-02: shared ID contract for the logical step/invocation identity
+# (mirrors the Core/BFF ID pattern; the Core endpoint rejects anything
+# outside it, so the worker fails fast BEFORE the HTTP call).
+_SANDBOX_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
+
+# S6-02 / S7-03: Core success=false error codes and their job-state
+# mapping: terminal (authoritative, never retry) vs uncertain (never
+# replay) vs everything else (retryable handler error). Every Core
+# success=false response must carry data_source.error_code; OPENSANDBOX_FAILED
+# is the typed terminal code for replay of a definitively failed row.
+_SANDBOX_TERMINAL_CODES = {
+    "OPENSANDBOX_IDEMPOTENCY_CONFLICT",
+    "OPENSANDBOX_FAILED",
+    "CAPABILITY_DISABLED",
+}
+_SANDBOX_UNCERTAIN_CODES = {
+    "OPENSANDBOX_UNKNOWN_OUTCOME",
+}
+
 
 def build_runner() -> JobRunner:
     # Handlers are registered here as job types are introduced. The
@@ -30,6 +50,10 @@ def build_runner() -> JobRunner:
     # a BFF crash; enqueue a job of this type per interval to trigger it.
     handlers: dict[str, JobHandler] = {
         "message_reconcile": _message_reconcile_handler,
+        # S5-01: real worker -> Core sandbox execution with the complete
+        # six-field durable identity carried as request headers; Core
+        # validates every field (fail-closed) before the sandbox tool runs.
+        "sandbox_exec": _sandbox_exec_handler,
     }
     # R4-P1-01: the effect probe is an E2E-only handler (never registered
     # unless the fault matrix explicitly opts in) that drives the full
@@ -78,6 +102,93 @@ async def _message_reconcile_handler(job: Job, session: AsyncSession) -> dict | 
     stale_after_s = int(os.getenv("MAP_RECONCILE_STALE_AFTER_S", "300"))
     count = await reconcile_stale_streaming_messages(session, stale_after_s=stale_after_s)
     return {"reconciled": count}
+
+
+async def _sandbox_exec_handler(job: Job, session: AsyncSession) -> dict | None:
+    """S5-01: execute a remote OpenSandbox command through map_core.
+
+    The request carries the COMPLETE six-field durable identity
+    (workspace/run/step/attempt/invocation/client_request) as headers, built
+    by the runner-owned context: the worker owns run/attempt/client_request,
+    step/invocation are minted here per job attempt. Core validates every
+    field and fails closed when any is missing. The command comes from the
+    job payload; a missing command fails the job (typed error).
+    """
+    from ..core_client import MapCoreClient
+    from .job_runner import (
+        EffectUncertainError,
+        JobTerminalError,
+        get_current_job_context,
+    )
+
+    ctx = get_current_job_context()
+    if ctx is not None and not ctx.lease_ok:
+        # Lease already lost before we started: produce no side effects.
+        return None
+    payload = job.payload_json or {}
+    command = str(payload.get("command") or "").strip()
+    if not command:
+        raise ValueError("sandbox_exec: job payload requires a non-empty command")
+    # S6-02: the logical step/invocation identity is DETERMINISTIC per job -
+    # workspace_id + job_id + logical step. Retries, process restarts and
+    # lease takeovers MUST reuse the same ids (the OpenSandbox ledger key),
+    # otherwise exactly-once breaks across attempts. attempt_id still varies
+    # per attempt (it describes the execution attempt, not the logical step).
+    step_id = str(payload.get("step_id") or "").strip() or f"step-{job.id}"
+    invocation_id = (
+        str(payload.get("invocation_id") or "").strip() or f"inv-{job.id}"
+    )
+    if not _SANDBOX_ID_RE.fullmatch(step_id) or not _SANDBOX_ID_RE.fullmatch(
+        invocation_id
+    ):
+        raise ValueError(
+            "sandbox_exec: step_id/invocation_id must match the shared ID "
+            "contract ([A-Za-z0-9._:-]{1,128})"
+        )
+    if ctx is None:  # pragma: no cover - the runner always sets the context
+        raise RuntimeError("sandbox_exec: missing job execution context")
+    identity = ctx.sandbox_identity_extra(step_id=step_id, invocation_id=invocation_id)
+    headers = {
+        "X-Workspace-ID": identity["workspace_id"] or "",
+        "X-Run-ID": identity["run_id"] or "",
+        "X-Step-ID": identity["step_id"] or "",
+        "X-Attempt-ID": identity["attempt_id"] or "",
+        "X-Invocation-ID": identity["invocation_id"] or "",
+        "X-Client-Request-ID": identity["client_request_id"] or "",
+    }
+    # S6-03: the six identity fields are correlation/idempotency ONLY; the
+    # service principal is asserted with an injected deployment credential
+    # carrying the sandbox:execute scope.
+    core_token = (os.getenv("MAP_SANDBOX_CORE_TOKEN") or "").strip()
+    if core_token:
+        headers["Authorization"] = f"Bearer {core_token}"
+    core_origin = os.getenv("MAP_CORE_API_ORIGIN", "http://127.0.0.1:10000")
+    result = await MapCoreClient(core_origin).chat_by_path(
+        "/sandbox/exec", {"command": command}, headers
+    )
+
+    # R4-P1-01-style E2E crash-window barrier (S6-02): holds AFTER the Core
+    # call returned (remote execute already landed) and BEFORE the job
+    # complete, so the fault matrix can kill exactly the live lease owner.
+    # Never set in production/dev compose; default 0 = no behavior change.
+    barrier_s = float(os.getenv("MAP_E2E_SANDBOX_AFTER_CORE_BARRIER_S", "0") or 0)
+    if barrier_s > 0:
+        await asyncio.sleep(barrier_s)
+        if ctx is not None and not ctx.lease_ok:
+            return None
+
+    # S6-02: Core answers HTTP 200 with success=false for a definitively
+    # failed/unknown invocation - the job must NEVER be marked succeeded.
+    if result.get("success") is False:
+        data_source = result.get("data_source") or {}
+        code = str(data_source.get("error_code") or "")
+        error = str(result.get("error") or "sandbox_exec failed")
+        if code in _SANDBOX_TERMINAL_CODES:
+            raise JobTerminalError(f"SANDBOX_EXEC_{code}", error)
+        if code in _SANDBOX_UNCERTAIN_CODES:
+            raise EffectUncertainError(f"sandbox_exec outcome unknown: {error}")
+        raise RuntimeError(f"{code or 'SANDBOX_EXEC_FAILED'}: {error}")
+    return {"sandbox": result}
 
 
 class _E2eFactProvider:

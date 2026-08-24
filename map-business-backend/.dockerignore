@@ -1,0 +1,44 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node (frontend artifacts never belong in the backend image)
+node_modules/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs and runtime data
+logs/
+*.log
+app/data/
+
+# Tests and local tooling
+tests/
+e2e/
+test_api.http
+
+# Credentials must never enter the build context
+.env
+.env.*
+!.env.example

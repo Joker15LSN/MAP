@@ -72,10 +72,39 @@ class JobExecutionContext:
     lease_lost: asyncio.Event
     cancel: asyncio.Event
     session_factory: async_sessionmaker[AsyncSession] | None = None
+    run_id: str | None = None
+    client_request_id: str | None = None
 
     @property
     def lease_ok(self) -> bool:
         return not self.lease_lost.is_set() and not self.cancel.is_set()
+
+    @property
+    def attempt_id(self) -> str:
+        """Stable attempt identity for the durable run chain."""
+        return f"att-{self.attempt}"
+
+    def sandbox_identity_extra(
+        self, *, step_id: str, invocation_id: str
+    ) -> dict[str, str | None]:
+        """Build the six-field durable identity a Core tool invocation needs.
+
+        S4-01: the run worker owns run/attempt/client_request; Core mints
+        step/invocation per tool call and fails closed if any field is missing.
+        """
+        return {
+            "workspace_id": str(self.workspace_id),
+            "run_id": self.run_id or str(self.job_id),
+            "step_id": step_id,
+            "attempt_id": self.attempt_id,
+            "invocation_id": invocation_id,
+            # S5-01: all six fields must ALWAYS be present in the worker
+            # chain; fall back to the job id (stable, unique) so a missing
+            # idempotency key can never strip the client_request_id.
+            "client_request_id": (
+                self.client_request_id or self.idempotency_key or str(self.job_id)
+            ),
+        }
 
 
 _current_ctx: ContextVar[JobExecutionContext | None] = ContextVar("map_job_ctx", default=None)
@@ -101,6 +130,22 @@ class EffectUncertainError(Exception):
     reported as succeeded. The ledger row stays ``uncertain`` as the
     observable terminal state for operators.
     """
+class JobTerminalError(Exception):
+    """S6-02: a handler outcome that MUST terminate the job (retryable=
+    False) with a typed error code - retrying the same job can never help.
+
+    Used by handlers that receive an authoritative failure from a
+    downstream capability (e.g. an idempotency conflict on a stable
+    invocation identity, or a permanently disabled capability). The runner
+    fails the job TERMINALLY with error_code instead of returning it to
+    the queue or faking success.
+    """
+
+    def __init__(self, error_code: str, message: str) -> None:
+        self.error_code = error_code
+        super().__init__(f"{error_code}: {message}")
+
+
 
 
 @runtime_checkable
@@ -958,6 +1003,8 @@ class JobRunner:
             attempt=attempt,
             lease_expires_at=job.lease_expires_at,
             idempotency_key=job.idempotency_key,
+            run_id=str(job.id),
+            client_request_id=job.idempotency_key,
             lease_lost=asyncio.Event(),
             cancel=asyncio.Event(),
             session_factory=self._session_factory,
@@ -992,6 +1039,26 @@ class JobRunner:
             await session.commit()
             logger.error(
                 "job failed with uncertain external effect",
+                extra={**self._log_fields(job, attempt), "error": str(exc)[:500]},
+            )
+            return
+        except JobTerminalError as exc:
+            # S6-02: an authoritative downstream failure (stable-invocation
+            # idempotency conflict, permanently disabled capability): the
+            # job must terminate with the typed code, never retry forever
+            # and never be faked as succeeded.
+            await session.rollback()
+            await repo.fail(
+                job.id,
+                error_code=exc.error_code,
+                error_message=str(exc)[:2000],
+                retryable=False,
+                owner=self.worker_id,
+                attempt=attempt,
+            )
+            await session.commit()
+            logger.error(
+                "job failed terminally",
                 extra={**self._log_fields(job, attempt), "error": str(exc)[:500]},
             )
             return

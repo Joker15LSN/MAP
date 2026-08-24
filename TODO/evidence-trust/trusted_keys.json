@@ -1,0 +1,17 @@
+{
+  "schema_version": "2.0.0",
+  "expected_issuer": "map-release-evidence-ci",
+  "expected_workflow": "release-gate/gate-final",
+  "expected_repository": "Joker15LSN/MAP",
+  "allowed_refs": [
+    "refs/heads/main",
+    "refs/heads/master",
+    "refs/heads/release*"
+  ],
+  "keys": {
+    "map-acceptance-evidence-2026-08": {
+      "algorithm": "ed25519",
+      "public_key": "e7feae79ff822dd93d5e6b1068c65d28db81d606ad4c6d26d6829536771d134d"
+    }
+  }
+}

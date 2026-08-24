@@ -28,6 +28,7 @@ from .global_domain_helpers import (
     serialize_tool_extra_results,
     stream_event_data_as_dict,
 )
+from .run_identity import resolve_run_identity
 from .state_store import GlobalAgentStateStore, fire_and_forget
 from .tool_extra_result_collector import ToolExtraResultCollector
 
@@ -57,6 +58,17 @@ class MasterPipeline:
         self.workspace_id: str | None = (
             getattr(http_request.state, "workspace_id", None) if http_request else None
         )
+        # S4-01: freeze the request-level durable run identity (run/attempt/
+        # client_request). step_id and invocation_id are injected per tool
+        # call by ToolExecutor.
+        _run_identity = resolve_run_identity(
+            http_request,
+            request_id=self.request_id,
+            workspace_id=self.workspace_id,
+        )
+        self.run_id: str | None = _run_identity["run_id"]
+        self.attempt_id: str | None = _run_identity["attempt_id"]
+        self.client_request_id: str | None = _run_identity["client_request_id"]
         raw_request_token = (
             getattr(http_request.state, "request_token", None) if http_request else None
         )
@@ -128,6 +140,9 @@ class MasterPipeline:
             "request_id": self.request_id,
             "session_id": self.session_id,
             "workspace_id": self.workspace_id,
+            "run_id": self.run_id,
+            "attempt_id": self.attempt_id,
+            "client_request_id": self.client_request_id,
             "staff_code": self.staff_code,
             "original_query": original_query,
             "backend_env": request.backend_env,

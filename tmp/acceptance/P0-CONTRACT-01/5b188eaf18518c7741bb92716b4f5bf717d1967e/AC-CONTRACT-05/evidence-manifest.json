@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.1.0",
+  "task_id": "P0-CONTRACT-01",
+  "ac_id": "AC-CONTRACT-05",
+  "status": "superseded",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "5b188eaf18518c7741bb92716b4f5bf717d1967e",
+  "environment_digest": "0d58da78eeff131f7c9c62f96a6733357b6b43d339c2a4ff50ad4a8a50296c42",
+  "started_at": "2026-08-13T15:56:33.852648+00:00",
+  "finished_at": "2026-08-13T15:56:33.858564+00:00",
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P0-CONTRACT-01/d7a1c346be890aae9418ef248c0b0675bd80b6c2/AC-CONTRACT-05/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha d7a1c346be890aae9418ef248c0b0675bd80b6c2",
+  "producer": {
+    "agent": "reasonix",
+    "version": "1.0.0"
+  },
+  "command": "map-business-backend/.venv/bin/python -m pytest map-business-backend/tests/contracts/test_run_contract.py -q -k 'payload or boundary'",
+  "exit_code": 0,
+  "artifacts": [
+    {
+      "path": "map-business-backend/app/runtime/event_envelope.py",
+      "sha256": "4fb2e82668d5a9b535753f2b353922458540f30b708d0b66dd89e6214c460800",
+      "media_type": "text/x-python"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "boundary_65536_inline",
+      "expected": "payload of exactly 65536 bytes stays inline",
+      "actual": "validate_payload_size returns 65536 without raising",
+      "result": "pass"
+    },
+    {
+      "name": "over_limit_rejected",
+      "expected": "65537 bytes -> ARTIFACT_PAYLOAD_TOO_LARGE",
+      "actual": "EventEnvelopeError raised with ARTIFACT_PAYLOAD_TOO_LARGE",
+      "result": "pass"
+    },
+    {
+      "name": "artifact_ref_manifest_complete",
+      "expected": "oversized data travels via ArtifactRef with required manifest fields",
+      "actual": "artifact_id/workspace_id/sha256/size_bytes/content_type/created_at/expires_at/policy_labels present",
+      "result": "pass"
+    },
+    {
+      "name": "pytest_suite_green",
+      "expected": "pytest exit 0",
+      "actual": "exit 0: ..                                                                       [100%]",
+      "result": "pass"
+    }
+  ],
+  "attestation": null
+}

@@ -18,7 +18,7 @@ def load_actual_config():
         logger.warning("环境配置已加载，跳过重复加载。")
         return
 
-    env_value = os.environ.get("ENV") or "dev"
+    env_value = os.environ.get("MAP_ENV") or os.environ.get("ENV") or "dev"
 
     module_to_load_name = None
     if env_value == "dev":

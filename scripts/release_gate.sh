@@ -97,7 +97,10 @@ if [ "${RELEASE_GATE_FINAL:-0}" = "1" ]; then
         exit 1
     fi
     if [ "${#DIRTY_FILES[@]}" -gt 0 ]; then
-        echo "[gate] final mode: docs-only dirtiness tolerated (${#DIRTY_FILES[@]} file(s))"
+        # R7-P2-03: evidence-only rewrites (the protected-CI attest step
+        # re-signs pass manifests in place) are tolerated - the release
+        # validator is their integrity control.
+        echo "[gate] final mode: docs/evidence-only dirtiness tolerated (${#DIRTY_FILES[@]} file(s))"
     fi
 fi
 
@@ -105,6 +108,15 @@ echo "[gate] log dir: $LOG_DIR"
 echo "[gate] source control: sha=$GIT_SHA tree=$GIT_TREE branch=$GIT_BRANCH dirty=${#DIRTY_FILES[@]} product_dirty=${#DIRTY_PRODUCT[@]}"
 if [ -n "$GATE_BASELINE_SHA" ]; then
     echo "[gate] baseline sha: $GATE_BASELINE_SHA"
+fi
+
+# R7-P2-03 regression hook: the CI-sequence test runs the REAL startup
+# checks above (source-control snapshot + final-mode baseline validation +
+# clean-product refusal) against a synthetic repository and exits here,
+# before any heavyweight gate step starts. Production/CI never sets this.
+if [ "${GATE_STARTUP_CHECK_ONLY:-0}" = "1" ]; then
+    echo "[gate] STARTUP CHECK PASSED (GATE_STARTUP_CHECK_ONLY=1 - gate steps not executed)"
+    exit 0
 fi
 
 # run <step-name> <workdir> <command...>
@@ -182,6 +194,40 @@ else
 fi
 run compose-config "$ROOT" docker compose config --quiet
 
+# ---- R-01 / R-08 / S2-01: unified credential scanner and evidence validator.
+# The scanner covers tree/index/build-context and always redacts output;
+# the evidence validator checks coverage/integrity/currentness from the
+# profile registry (no hand-counted totals). The machine-readable evidence
+# report (coverage + per-status counts + releasable flag) is written into
+# the log dir and embedded in gate-summary.json below.
+#
+# S2-01: FINAL mode runs the validator in eligibility mode - every required
+# AC must be pass / unexpired not-applicable-approved; blocked/fail/running/
+# not-run/superseded fail the release. Non-final runs stay structure-only
+# and are explicitly NOT release evidence.
+run security-scan "$ROOT" python3 scripts/security_scan.py --scope tree,index,build-context --redact --fail-on-hit
+# S2-05: the scanner's own failure matrix runs before trusting it with a
+# gate decision (substring allowlist, exact exemptions, streaming scans,
+# explicit-commit tree scope, fail-closed unscanned members, redaction).
+run security-scan-self-test "$ROOT" python3 scripts/test_security_scan.py
+if [ "$FINAL_MODE" = "1" ]; then
+    # S2-05: the FINAL gate must also build and scan the shipping images.
+    # The image scope fails closed (exit 2) when docker is unavailable -
+    # an unavailable scan is never recorded as pass. DOCKER_BUILDKIT=0
+    # keeps the build deterministic on hosts where the buildx activity
+    # store is unavailable (CI runners use the same legacy path).
+    run security-scan-image "$ROOT" env DOCKER_BUILDKIT=0 python3 scripts/security_scan.py --scope image --build-image --redact --fail-on-hit --json
+fi
+# S2-01: the validator's own failure matrix runs before trusting it with
+# release evidence (blocked evidence, stale sha, wrong dirs, extra fields,
+# expired waivers, hash tampering, dependency cycles, ancestry rules).
+run evidence-validator-self-test "$ROOT" python3 scripts/test_validate_acceptance_evidence.py
+if [ "$FINAL_MODE" = "1" ]; then
+    run evidence-validate "$ROOT" python3 scripts/validate_acceptance_evidence.py --profile TODO/acceptance-profile.yaml --require-final --report-json "$LOG_DIR/evidence-report.json"
+else
+    run evidence-validate "$ROOT" python3 scripts/validate_acceptance_evidence.py --profile TODO/acceptance-profile.yaml --report-json "$LOG_DIR/evidence-report.json"
+fi
+
 # ---- Python backends: frozen sync, then the unified ruff + pytest commands
 run bff-deps "$ROOT/map-business-backend" uv sync --frozen
 run bff-lint "$ROOT/map-business-backend" uv run ruff check app tests
@@ -220,15 +266,19 @@ run py-dep-audit "$ROOT" bash scripts/dependency_audit.sh
 run biz-fe-audit "$ROOT/map-business-frontend" npm audit --omit=dev --audit-level=high
 run obs-fe-audit "$ROOT/map-observability/map-observability-frontend" npm audit --omit=dev --audit-level=high
 
-# ---- R4-P2-03 / R5-P2-02: machine-readable summary artifact (self-contained
-#      SHA proof). source_control comes VERBATIM from the shared snapshot
-#      artifact (tmp/gate-logs/source-control.json) — same bytes the E2E
-#      runner records, so gate and E2E can never classify differently.
+# ---- R4-P2-03 / R5-P2-02 / S2-01: machine-readable summary artifact
+#      (self-contained SHA proof). source_control comes VERBATIM from the
+#      shared snapshot artifact (tmp/gate-logs/source-control.json) — same
+#      bytes the E2E runner records, so gate and E2E can never classify
+#      differently. The evidence report (coverage + per-status counts +
+#      releasable flag) is embedded so the release summary records BOTH
+#      coverage and eligibility — never a bare PASS.
 GATE_END_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 GATE_START_UTC="$GATE_START_UTC" GATE_END_UTC="$GATE_END_UTC" \
     GATE_BASELINE_SHA="$GATE_BASELINE_SHA" FINAL_MODE="$FINAL_MODE" \
     SUMMARY="$SUMMARY" STEPS_JSONL="$STEPS_JSONL" \
     SOURCE_CONTROL_JSON="$SOURCE_CONTROL_JSON" \
+    EVIDENCE_REPORT="$LOG_DIR/evidence-report.json" \
     GATE_FAILED="${#FAILURES[@]}" GATE_STEPS="$STEP_TOTAL" \
     GATE_SKIPPED="$STEPS_SKIPPED" python3 -c '
 import json, os
@@ -240,24 +290,59 @@ with open(os.environ["STEPS_JSONL"], encoding="utf-8") as fh:
     for line in fh:
         if line.strip():
             steps.append(json.loads(line))
+evidence = None
+evidence_path = os.environ["EVIDENCE_REPORT"]
+try:
+    with open(evidence_path, encoding="utf-8") as fh:
+        report = json.load(fh)
+    evidence = {
+        "mode": report.get("mode"),
+        "freeze_sha": report.get("freeze_sha"),
+        "required_ac_total": report.get("required_ac_total"),
+        "status_counts": report.get("status_counts"),
+        "releasable": report.get("releasable"),
+        "not_releasable": report.get("not_releasable"),
+        "problems": report.get("problems"),
+    }
+except (OSError, ValueError):
+    evidence = None
+final_mode = os.environ["FINAL_MODE"] == "1"
+steps_failed = int(os.environ["GATE_FAILED"])
+# S2-01: in FINAL mode a missing or non-releasable evidence report fails
+# the release summary even if no step individually failed (defense in
+# depth - the evidence-validate step itself must have failed first).
+evidence_blocked = final_mode and (
+    evidence is None or evidence.get("releasable") is not True
+)
+result = "FAIL" if (steps_failed or evidence_blocked) else "PASS"
 summary = {
     "source_control": source_control,
-    "final_mode": os.environ["FINAL_MODE"] == "1",
+    "final_mode": final_mode,
     "started_utc": os.environ["GATE_START_UTC"],
     "finished_utc": os.environ["GATE_END_UTC"],
     "steps_total": int(os.environ["GATE_STEPS"]),
-    "steps_failed": int(os.environ["GATE_FAILED"]),
+    "steps_failed": steps_failed,
     "steps_skipped": int(os.environ["GATE_SKIPPED"]),
-    "result": "PASS" if os.environ["GATE_FAILED"] == "0" else "FAIL",
+    "result": result,
+    "evidence": evidence,
     "steps": steps,
 }
 with open(os.environ["SUMMARY"], "w", encoding="utf-8") as fh:
     json.dump(summary, fh, ensure_ascii=False, indent=2)
+if evidence_blocked:
+    print("[gate] summary result=FAIL: final evidence not releasable")
 '
 echo "[gate] summary artifact: $SUMMARY (sha=$GIT_SHA tree=$GIT_TREE)"
 
 echo "========================================================================"
 echo "[gate] steps=$STEP_TOTAL skipped=$STEPS_SKIPPED failed=${#FAILURES[@]} artifacts=$LOG_DIR"
+if [ "${#FAILURES[@]}" -eq 0 ] && [ -f "$LOG_DIR/evidence-report.json" ]; then
+    EVIDENCE_RELEASABLE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("releasable"))' "$LOG_DIR/evidence-report.json")"
+    if [ "$FINAL_MODE" = "1" ] && [ "$EVIDENCE_RELEASABLE" != "True" ]; then
+        echo "[gate] RELEASE GATE FAILED: final evidence is not releasable (see evidence-report.json)"
+        exit 1
+    fi
+fi
 if [ "${#FAILURES[@]}" -eq 0 ]; then
     echo "[gate] RELEASE GATE PASSED (all $STEP_TOTAL steps exit=0, $STEPS_SKIPPED skipped, artifacts in $LOG_DIR)"
     exit 0

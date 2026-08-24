@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.1.0",
+  "task_id": "P0-CONTRACT-01",
+  "ac_id": "AC-CONTRACT-01",
+  "status": "superseded",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "5b188eaf18518c7741bb92716b4f5bf717d1967e",
+  "environment_digest": "0d58da78eeff131f7c9c62f96a6733357b6b43d339c2a4ff50ad4a8a50296c42",
+  "started_at": "2026-08-13T15:56:33.554233+00:00",
+  "finished_at": "2026-08-13T15:56:33.560130+00:00",
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P0-CONTRACT-01/d7a1c346be890aae9418ef248c0b0675bd80b6c2/AC-CONTRACT-01/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha d7a1c346be890aae9418ef248c0b0675bd80b6c2",
+  "producer": {
+    "agent": "reasonix",
+    "version": "1.0.0"
+  },
+  "command": "map-business-backend/.venv/bin/python -m pytest map-business-backend/tests/contracts/test_run_contract.py -q",
+  "exit_code": 0,
+  "artifacts": [
+    {
+      "path": "map-business-backend/app/runtime/state_machine.py",
+      "sha256": "b1fd634fdb2aec6beea362e81503dd613cbe615b7dbfa0d085e3d3ab45594a30",
+      "media_type": "text/x-python"
+    },
+    {
+      "path": "map-business-backend/tests/contracts/test_run_contract.py",
+      "sha256": "1c5260e44c67c457da254da2a18075036c332d6c6dcab70df49153b56ee16632",
+      "media_type": "text/x-python"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "legal_transitions_all_pass",
+      "expected": "every legal transition validates for all five machines",
+      "actual": "parameterized over all_transitions(); no exception raised",
+      "result": "pass"
+    },
+    {
+      "name": "illegal_transitions_fail_closed",
+      "expected": "every non-legal (current,target) pair raises STATE_TRANSITION_VIOLATION",
+      "actual": "exhaustive cross-product over all_states()",
+      "result": "pass"
+    },
+    {
+      "name": "terminal_out_edges_zero",
+      "expected": "terminal states have no out-edges",
+      "actual": "verified for all five machines",
+      "result": "pass"
+    },
+    {
+      "name": "cancel_done_timeout_race_converges",
+      "expected": "loser of terminal race fails closed; cancelling only -> cancelled",
+      "actual": "completed -> cancelling rejected; cancelling -> completed rejected",
+      "result": "pass"
+    },
+    {
+      "name": "canonical_states_parse_real_profile",
+      "expected": "CANONICAL_STATES equals parsed TODO/acceptance-profile.yaml (no hand-copied mirror)",
+      "actual": "yaml parsed directly at test time; all five machines match",
+      "result": "pass"
+    },
+    {
+      "name": "pytest_suite_green",
+      "expected": "pytest exit 0",
+      "actual": "exit 0: ..............................                                           [100%]",
+      "result": "pass"
+    }
+  ],
+  "attestation": null
+}

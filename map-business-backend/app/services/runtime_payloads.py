@@ -52,6 +52,9 @@ KNOWN_TOOL_NAMES: set[str] = {
     "industry_chat_agent",
     "search_mounted_kb_agent",
     "search_uploaded_file",
+    # P0-SEC-01: host-execution tools are removed from the core production
+    # registry. The names stay known so legacy scene configs keep validating;
+    # map_core resolves any invocation to a stable CAPABILITY_DISABLED result.
     "bash_tool",
     "python_exec_tool",
     "attachment_file_read_tool",

@@ -33,6 +33,7 @@ from .api.readiness import router as readiness_router
 from .core.identity import AuthMode, parse_optional_id, parse_request_id
 from .core.permissions import PermissionService
 from .core_client import MapCoreClient
+from .cors_policy import is_production, normalize_env, parse_origins
 from .repositories.config import ConfigRepository
 from .services.stream_registry import StreamRegistry
 from .settings import Settings, load_settings
@@ -43,8 +44,11 @@ logger = logging.getLogger(__name__)
 
 
 def validate_settings(settings: Settings) -> None:
-    """Fail fast on unsafe identity configurations (FIX-P0-AUTH-01)."""
-    if settings.auth_mode == AuthMode.DEV and settings.env in {"prod", "production"}:
+    """Fail fast on unsafe identity/env/CORS configurations (fail-closed)."""
+    # S3-04 / S4-06: strict environment schema - unknown MAP_ENV fails
+    # closed instead of silently running as dev.
+    env = normalize_env(settings.env)
+    if settings.auth_mode == AuthMode.DEV and is_production(env):
         raise RuntimeError(
             "MAP_AUTH_MODE=dev is forbidden in production; "
             "set MAP_AUTH_MODE=trusted_header and MAP_TRUSTED_PROXY_REQUIRED=true"
@@ -60,6 +64,19 @@ def validate_settings(settings: Settings) -> None:
                 "MAP_TRUSTED_PROXY_SECRET is required when "
                 "MAP_AUTH_MODE=trusted_header (fail-closed)"
             )
+    # AC-SEC-11 / R-10 / S3-04 / S4-06: shared CORS schema (single source of
+    # truth: packages/cors_policy/cors_policy.py, vendored as app/cors_policy.py).
+    # Every origin must be '*' or a well-formed http(s)://host[:port] with a
+    # real hostname and no userinfo/path/query/fragment - malformed entries
+    # fail at startup in EVERY environment, and wildcard CORS combined with
+    # credentials is refused in production (fail-closed at startup).
+    origins = parse_origins(settings.cors_origins)
+    if is_production(env) and "*" in origins and settings.cors_allow_credentials:
+        raise RuntimeError(
+            "wildcard CORS with credentials is forbidden in production; "
+            "set MAP_CORS_ORIGINS to explicit origins or "
+            "MAP_CORS_ALLOW_CREDENTIALS=false (fail-closed)"
+        )
 
 
 def create_app(
@@ -107,10 +124,11 @@ def create_app(
     # MAP_OTEL_ENABLED is truthy). Must run before requests are served.
     configure_bff_telemetry(app)
 
+    cors_origins = list(parse_origins(settings.cors_origins))
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=settings.cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -172,6 +190,20 @@ def create_app(
         request.state.workspace_id = (
             parse_optional_id(request.headers.get("X-Workspace-ID"))
             or settings.default_workspace_id
+        )
+        # S4-01: freeze the durable run identity the map_core sandbox tool
+        # needs (run/attempt/client_request). step/invocation are minted per
+        # tool call inside map_core.
+        request.state.run_id = (
+            parse_optional_id(request.headers.get("X-Run-ID"))
+            or request.state.request_id
+        )
+        request.state.attempt_id = (
+            parse_optional_id(request.headers.get("X-Attempt-ID")) or "att-1"
+        )
+        request.state.client_request_id = (
+            parse_optional_id(request.headers.get("X-Client-Request-ID"))
+            or request.state.run_id
         )
         response = await call_next(request)
         response.headers["X-Request-ID"] = request.state.request_id

@@ -62,6 +62,7 @@ from .global_domain_helpers import (
     serialize_tool_extra_results,
     stream_event_data_as_dict,
 )
+from .run_identity import resolve_run_identity
 from .scene_agent_config_provider import SceneAgentConfigProvider
 from .state_store import (
     GlobalAgentStateStore,
@@ -155,6 +156,17 @@ class GlobalDomain:
         self.workspace_id: str | None = (
             getattr(http_request.state, "workspace_id", None) if http_request else None
         )
+        # S4-01: freeze the request-level durable run identity (run/attempt/
+        # client_request). step_id and invocation_id are injected per tool
+        # call by ToolExecutor.
+        _run_identity = resolve_run_identity(
+            http_request,
+            request_id=self.request_id,
+            workspace_id=self.workspace_id,
+        )
+        self.run_id: str | None = _run_identity["run_id"]
+        self.attempt_id: str | None = _run_identity["attempt_id"]
+        self.client_request_id: str | None = _run_identity["client_request_id"]
         raw_request_token = (
             getattr(http_request.state, "request_token", None) if http_request else None
         )
@@ -307,6 +319,9 @@ class GlobalDomain:
             "request_id": self.request_id,
             "session_id": self.session_id,
             "workspace_id": self.workspace_id,
+            "run_id": self.run_id,
+            "attempt_id": self.attempt_id,
+            "client_request_id": self.client_request_id,
             "intention_id": AGENT_MEMORY_DEFAULT_INTENTION_ID,
             "staff_code": self.staff_code,
             "original_query": original_query,

@@ -43,6 +43,7 @@ _parse_tool_context() 分支字段定义：
 
 import asyncio
 import json
+import os
 import time
 from typing import Any, Literal, cast
 
@@ -157,12 +158,6 @@ class WenshuAgent(TraceableAgent):
     description = "查询公司经营相关指标数据"
     CONNECTOR_QUERY_PATH = "/msService/map-data-connector/algorithm/query"
     _api_url = "http://10.50.56.47:15173/metric-payload"
-    # _token_url = "https://essendata.supcon.com/api-uaa/oauth/token"
-    # _metrics_url = "https://essendata.supcon.com/api-analysis/open/metrics/query"
-    # _token_auth = "Basic d2ViQXBwOndlYkFwcA=="
-    # _token_cookie = "SESSION_ESSENDATA=NTU1NjgyM2MtNDVkMC00MWE2LTk5MjMtOTJhOWUxNjQ3ZWIz"
-    # _token_username = "jarvis_dev"
-    # _token_password = "Zwzj0h0z"
     timeout = 60.0
 
     tool_name = name
@@ -497,64 +492,6 @@ class WenshuAgent(TraceableAgent):
                         if _data:
                             data_sources.append(_data)
 
-                # 判断是否需要调用 calculate_metric_result
-                #! 先关闭计算工具
-                # from map_core.database.milvus import MilvusClient
-
-                # from ._result_calculator.calculate_metric_result import (
-                #     calculate_final_metric_result,
-                # )
-                # from ._result_calculator.extractor import extract_intent
-
-                # try:
-                #     intent = await extract_intent(request.query, self.llm)
-                #     if (
-                #         intent.calculation_type != "unknown"
-                #         and not intent.has_multiple_types
-                #     ):
-                #         logger.info(
-                #             f"{MSG_HEADER} 计算工具 Calculation intent detected: {intent.calculation_type}"
-                #         )
-                #         flat_executed_results = []
-                #         for ds in data_sources:
-                #             flat_executed_results.extend(ds)
-
-                #         if flat_executed_results:
-                #             milvus_client = MilvusClient(
-                #                 uri=METRIC_MILVUS_URI,
-                #                 user="root",
-                #                 password="password",
-                #                 db_name=f"{MILVUS_DB_NAME_PREFIX}{_context.agent_id}",
-                #             )
-                #             await milvus_client.connect()
-                #             try:
-                #                 calc_res = await calculate_final_metric_result(
-                #                     original_question=request.query,
-                #                     executed_results=flat_executed_results,
-                #                     milvus_client=milvus_client,
-                #                     llm=self.llm,
-                #                     query_mode=_context.query_mode,  # type: ignore
-                #                 )
-                #                 debug_msg = f"[WenshuAgent] 计算工具 result：{calc_res}"
-                #                 logger.debug(debug_msg)
-                #                 if "error" not in calc_res and calc_res.get("results"):
-                #                     calc_summary = "\n### 进阶计算结果\n"
-                #                     calc_summary += (
-                #                         f"- 指标: {calc_res.get('metric')}\n"
-                #                     )
-                #                     calc_summary += f"- 计算类型: {calc_res.get('calculation_type')}\n"
-                #                     for k, v in calc_res.get("results", {}).items():
-                #                         calc_summary += f"- **{k}**: {v:.3f}\n"
-                #                     result_list.append(calc_summary)
-                #                 else:
-                #                     logger.warning(
-                #                         f"[WenshuAgent] calculate_final_metric_result returned error or empty: {calc_res.get('error')}"
-                #                     )
-                #             finally:
-                #                 await milvus_client.close()
-                # except Exception as e:
-                #     logger.error(f"[WenshuAgent] Error during calculation: {e}")
-
                 if error_list and not result_list and not data_sources:
                     error_message = "\n".join(error_list)
                     logger.error(
@@ -720,10 +657,23 @@ class WenshuAgent(TraceableAgent):
 
         #! legacy business_domain will become agent_id
 
+        # P0-SEC-01 / R-07: no hardcoded credentials, no defaults and no
+        # empty-token network calls. Missing user/password fails closed
+        # BEFORE any connection attempt (capability unavailable).
+        milvus_user = (os.getenv("MAP_MILVUS_USER") or "").strip()
+        milvus_password = (os.getenv("MAP_MILVUS_PASSWORD") or "").strip()
+        if not milvus_user or not milvus_password:
+            logger.warning(
+                f"{MSG_HEADER} Milvus capability unavailable: "
+                "MAP_MILVUS_USER/MAP_MILVUS_PASSWORD not configured "
+                "(CAPABILITY_CONFIG_MISSING)"
+            )
+            return [query]
+
         milvus_client = MilvusClient(
             uri=METRIC_MILVUS_URI,
-            user="root",
-            password="password",
+            user=milvus_user,
+            password=milvus_password,
             db_name=f"{MILVUS_DB_NAME_PREFIX}{agent_id}",
         )
         await milvus_client.connect()

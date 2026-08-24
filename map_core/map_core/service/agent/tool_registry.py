@@ -8,10 +8,12 @@ from ...utils.llm_engine import LLMEngine
 from .annual_performance_agent import AnnualPerformanceAgent
 from .ask_database_agent import AskDatabaseAgent
 from .base import BaseAgent
-from .bash_tool import create_bash_tool
+from .disabled_capabilities import (
+    DISABLED_HOST_EXEC_CAPABILITIES,
+    build_capability_disabled_result,
+    is_disabled_capability,
+)
 from .efficiency_pi_agent import EfficiencyPiAgent
-from .file_read_tool import create_attachment_file_read_tool
-from .file_write_tool import create_attachment_file_write_tool
 from .general_qa_agent import GeneralQAAgent
 from .industry_chat_agent import IndustryChatAgent
 from .kb_tools import (
@@ -20,12 +22,18 @@ from .kb_tools import (
     create_search_kb_chunk_tool,
     create_search_uploaded_file_chunk_tool,
 )
-from .python_exec_tool import create_python_exec_tool
 from .tool_runtime import AgentTool, Tool
 from .traceable_agent import TraceableAgent
 from .web_search_agent import WebSearchAgent
 from .wenshu_agent import WenshuAgent
 from .zhiwen_agent import ZhiwenAgent
+
+# P0-SEC-01 re-exports (kept here for import-compatibility with existing
+# callers); the canonical definitions live in ``disabled_capabilities``
+# because ``tool_executor`` must import them without an import cycle.
+# ``DISABLED_HOST_EXEC_CAPABILITIES`` / ``is_disabled_capability`` /
+# ``build_capability_disabled_result`` are available as attributes of this
+# module.
 
 
 @dataclass(frozen=True)
@@ -86,11 +94,12 @@ def _tool_registrations() -> list[ToolRegistration]:
 
 
 def _standalone_tools() -> dict[str, Tool]:
+    # P0-SEC-01 (review R-02): attachment_file_read_tool and
+    # attachment_file_write_tool are removed from the production registry
+    # (host file IO) and stay known-but-disabled via
+    # DISABLED_HOST_EXEC_CAPABILITIES; any invocation fails closed in
+    # ToolExecutor before touching the filesystem.
     return {
-        "python_exec_tool": create_python_exec_tool(),
-        "attachment_file_read_tool": create_attachment_file_read_tool(),
-        "attachment_file_write_tool": create_attachment_file_write_tool(),
-        "bash_tool": create_bash_tool(),
         create_query_kb_chunk_tool().name: create_query_kb_chunk_tool(),  # TODO other strategy to align name and tool
         create_search_uploaded_file_chunk_tool().name: create_search_uploaded_file_chunk_tool(),
         create_search_kb_chunk_tool().name: create_search_kb_chunk_tool(),
@@ -106,6 +115,12 @@ def list_registered_tool_agent_names() -> list[str]:
 def list_registered_tool_names() -> list[str]:
     names = list_registered_tool_agent_names()
     names.extend(_standalone_tools().keys())
+    # S3-01: the sandbox execution capability is part of the single
+    # capability/tool schema - scenario configs may legally declare it
+    # (lazy import avoids a registry <-> sandbox_tools import cycle).
+    from ...service.sandbox_tools import SANDBOX_TOOL_NAME
+
+    names.append(SANDBOX_TOOL_NAME)
     return names
 
 
@@ -123,7 +138,7 @@ def find_invalid_tool_names(tool_names: Sequence[str] | None) -> list[str]:
     if not tool_names:
         return []
 
-    valid_tool_names = set(list_registered_tool_names())
+    valid_tool_names = set(list_registered_tool_names()) | DISABLED_HOST_EXEC_CAPABILITIES
     return sorted(
         {
             tool_name

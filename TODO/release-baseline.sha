@@ -1,0 +1,13 @@
+# S2-01: FIXED release baseline for the FINAL release gate.
+#
+# The FINAL gate (scripts/release_gate.sh with RELEASE_GATE_FINAL=1) checks
+# the committed range baseline..HEAD for whitespace defects and uses the
+# baseline as the auditable start of the release delta. The baseline is
+# pinned in this review-approved file and must NEVER be auto-derived in CI
+# (auto-derivation lets the baseline drift and erodes the audit boundary).
+#
+# To change it: open a PR that updates this file and get it reviewed; the
+# new baseline must be an ancestor of the release HEAD.
+#
+# Format: one full 40-hex git OID on the first non-comment line.
+faccaf90180766aa6c7b2a6492b9e01c328e9295

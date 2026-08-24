@@ -36,7 +36,7 @@ from app.settings import DEFAULT_WORKSPACE_CODE, DEFAULT_WORKSPACE_ID, Settings
 pytestmark = pytest.mark.asyncio
 
 STATE_FILE = "/tmp/map_bff_error_matrix_state.json"
-SECRET = "matrix-secret-1"
+SECRET = "matrix-secret-fake-1"
 RANDOM_ID = str(uuid.uuid4())
 ENVELOPE_KEYS = {"code", "message", "details", "request_id"}
 
