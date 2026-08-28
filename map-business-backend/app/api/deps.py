@@ -42,6 +42,32 @@ def get_permissions(request: Request) -> PermissionService:
     return request.app.state.permissions
 
 
+def get_run_application(request: Request):
+    """Canonical Run application wired by ``create_app`` (lazy if absent)."""
+    application = getattr(request.app.state, "run_application", None)
+    if application is None:
+        from ..db.session import get_session_factory
+        from ..runs import PgRunStore, RunApplication
+
+        application = RunApplication(PgRunStore(get_session_factory()))
+        request.app.state.run_application = application
+    return application
+
+
+def get_turn_application(request: Request):
+    """Turn application (Step 4) wired lazily over the Run application."""
+    application = getattr(request.app.state, "turn_application", None)
+    if application is None:
+        from ..db.session import get_session_factory
+        from ..turns import TurnApplication
+
+        application = TurnApplication(
+            get_session_factory(), get_run_application(request)
+        )
+        request.app.state.turn_application = application
+    return application
+
+
 def _parse_roles(raw: str | None) -> tuple[str, ...]:
     if not raw:
         return ()

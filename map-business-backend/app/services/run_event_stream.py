@@ -40,6 +40,7 @@ RUN_EVENT_PREFIXES: tuple[str, ...] = (
     "artifact.",
     "checkpoint.",
     "effect.",
+    "message.",
 )
 
 # Durable-row columns (P1-RUN-01). The full envelope JSON is stored in

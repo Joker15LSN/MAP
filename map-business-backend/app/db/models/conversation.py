@@ -83,6 +83,14 @@ class Message(Base):
     task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     decision_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     config_snapshot_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Step 4 / PR-F1: canonical run that owns this message's turn. Old rows
+    # stay NULL; new turns are written atomically with their run.
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("map_control.runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # FIX-P1-CONV-01: stable stream facts (fallback must not erase the
     # original error). stream_error is a stable error code, e.g.
     # STREAM_EOF_WITHOUT_DONE / STREAM_PARSE_ERROR / STREAM_INTERRUPTED.

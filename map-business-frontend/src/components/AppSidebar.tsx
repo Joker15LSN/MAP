@@ -1,6 +1,5 @@
 import { Button } from '@agentscope-ai/design';
 import type { ChatHistoryItem, ViewMode } from '../api/types';
-import { extractAgentNamesFromDetail } from '../features/chat/chatReducer';
 
 export interface AppSidebarProps {
   viewMode: ViewMode;

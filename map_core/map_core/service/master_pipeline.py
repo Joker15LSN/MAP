@@ -19,7 +19,7 @@ from ..utils.llm_engine import LLMEngine
 from .agent.base import AgentActionEvent, AgentRequest, AgentResult
 from .agent.tool_call_agent import Tool
 from .agent.tool_registry import build_tool_registry
-from .agent_runtime import AgentExecutionSpec, AgentRuntime
+from .agent_execution import AgentExecutionSpec, AgentRuntime
 from .attachment_collector import AttachmentCollector
 from .global_domain_helpers import (
     normalize_attachment_results,
@@ -228,7 +228,6 @@ class MasterPipeline:
 
         try:
             spec = self._build_master_spec(request)
-            agent = self.agent_runtime.build_agent(spec)
             agent_request = self._build_agent_request(request)
 
             yield MasterPipelineStreamEvent(
@@ -245,7 +244,7 @@ class MasterPipeline:
             )
 
             result: AgentResult | None = None
-            async for item in self.agent_runtime.run_stream([agent], agent_request):
+            async for item in self.agent_runtime.stream([spec], agent_request):
                 if isinstance(item, AgentActionEvent):
                     yield MasterPipelineStreamEvent(
                         event="meta",

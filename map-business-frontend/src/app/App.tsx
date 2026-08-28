@@ -1,28 +1,28 @@
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { Button, ConfigProvider, Switch, Tag, carbonDarkTheme, carbonTheme } from '@agentscope-ai/design';
 import type { ViewMode } from '../api/types';
 
 import AppSidebar from '../components/AppSidebar';
-import { ViewRouter } from './router';
-import { useChatController } from '../features/chat/useChatController';
 import { useAdminController } from '../features/admin/useAdminController';
 import { useFlowStrategyController } from '../features/admin/useFlowStrategyController';
 import { useConversationController } from '../features/conversation/useConversationController';
-import { ConversationView } from '../features/conversation/ConversationView';
+
+const LazyConversationView = lazy(async () => {
+  const module = await import('../features/conversation/ConversationView');
+  return { default: module.ConversationView };
+});
+
+const LazyAdminView = lazy(() => import('../features/admin/AdminView'));
 
 const THEME_STORAGE_KEY = 'map_theme_mode';
-
-/** 新 conversation API 灰度开关（FIX-P1-CONV-01 / FIX-P2-FRONTEND-01） */
-const CONVERSATIONS_ENABLED =
-  import.meta.env.VITE_MAP_CONVERSATIONS_ENABLED === 'true';
 
 /**
  * 应用外壳(Application Shell)。
  *
  * 职责边界:
  * - 持有 shell 级 UI 状态(视图切换、侧栏折叠、主题);
- * - 组装聊天端/管理端/共享 flow 策略三个 controller;
- * - 渲染 主题 Provider + 侧栏 + 头部 + 视图路由。
+ * - 前台默认挂载 ConversationView（canonical Run 路径）;
+ * - 渲染 主题 Provider + 侧栏 + 头部 + 视图。
  *
  * 业务数据加载、SSE 流式、配置保存等均下沉到对应 controller/features,
  * 本文件不再包含表格与 fetch 逻辑。
@@ -45,7 +45,6 @@ export default function App() {
   });
 
   const flow = useFlowStrategyController();
-  const chat = useChatController(flow);
   const admin = useAdminController(flow);
   const conversation = useConversationController({});
 
@@ -66,11 +65,11 @@ export default function App() {
         <AppSidebar
           viewMode={viewMode}
           sidebarCollapsed={sidebarCollapsed}
-          chatHistory={chat.chatHistory}
-          activeHistoryId={chat.activeHistoryId}
+          chatHistory={[]}
+          activeHistoryId={null}
           onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
-          onNewChat={chat.handleNewChat}
-          onSelectHistory={chat.handleSelectHistory}
+          onNewChat={() => void conversation.create('global')}
+          onSelectHistory={() => {}}
           onSwitchView={(mode) => setViewMode(mode)}
         />
 
@@ -80,7 +79,7 @@ export default function App() {
               <h1>{viewMode === 'chat' ? '前台问答' : '后台管理'}</h1>
               <p>
                 {viewMode === 'chat'
-                  ? '提问后可在右侧查看思考过程与回答来源。'
+                  ? '提问后可在下方查看回答,运行过程由 canonical Run 事件驱动。'
                   : '后台功能与算法服务解耦，由业务后端独立承载管理流程。'}
               </p>
             </div>
@@ -95,10 +94,14 @@ export default function App() {
             </div>
           </header>
 
-          {viewMode === 'chat' && CONVERSATIONS_ENABLED ? (
-            <ConversationView controller={conversation} />
+          {viewMode === 'chat' ? (
+            <Suspense fallback={null}>
+              <LazyConversationView controller={conversation} />
+            </Suspense>
           ) : (
-            <ViewRouter viewMode={viewMode} chatProps={chat.chatProps} adminProps={{ api: admin }} />
+            <Suspense fallback={null}>
+              <LazyAdminView api={admin} />
+            </Suspense>
           )}
         </main>
       </div>

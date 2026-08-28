@@ -959,7 +959,15 @@ class JobRunner:
         """Claim and execute at most one job. Returns True if one ran."""
         async with self._session_factory() as session:
             repo = JobRepository(session)
-            job = await repo.claim_next(worker_id=self.worker_id, lease_seconds=self.lease_seconds)
+            # PR-C guard: claim ONLY registered handler types. A Run job
+            # (job_type="run") is parked until the RunWorker loop lands in
+            # PR-D; the legacy JobRunner must never fail/retry it as an
+            # unregistered handler.
+            job = await repo.claim_next(
+                worker_id=self.worker_id,
+                lease_seconds=self.lease_seconds,
+                job_types=list(self._handlers),
+            )
             if job is None:
                 return False
             attempt = job.attempt or 0

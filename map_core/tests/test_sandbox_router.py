@@ -31,9 +31,6 @@ from map_core.service.opensandbox_client import (
     SandboxResourceLimits,
 )
 from map_core.service.sandbox_ledger import (
-    IDEMPOTENCY_CONFLICT,
-    STATUS_FAILED,
-    STATUS_UNKNOWN,
     InMemorySandboxInvocationLedger,
     build_create_key,
     build_execute_key,
@@ -401,6 +398,199 @@ class TestS5FullChain:
         asyncio.run(run())
 
 
+class TestStatelessExecAndReconcileContract:
+    """PR-E: production /sandbox/exec and /sandbox/reconcile do not touch
+    the PostgreSQL ledger; they drive OpenSandboxClient directly and return
+    the S6-02 response shape."""
+
+    def test_exec_passes_custom_keys_limits_and_resume_fields(
+        self, monkeypatch
+    ) -> None:
+        server = FakeSandboxServer()
+        transport = httpx.ASGITransport(app=_app())
+
+        async def run() -> None:
+            with mock.patch.object(OpenSandboxClient, "from_env", lambda: _client(server)):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        "/sandbox/exec",
+                        json={
+                            "command": "echo hi",
+                            "limits": {"timeout_seconds": 11},
+                            "create_key": "create:custom",
+                            "execute_key": "execute:custom",
+                        },
+                        headers=_auth_headers(),
+                    )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["success"] is True
+            assert body["sandbox_id"] == "sb-1"
+            assert body["output"] == "ok: echo hi"
+            # The router honored the caller-chosen idempotency keys.
+            assert server.create_calls[0]["key"] == "create:custom"
+            assert server.execute_calls[0]["key"] == "execute:custom"
+            assert server.create_calls[0]["payload"]["limits"]["timeout_seconds"] == 11
+
+        asyncio.run(run())
+
+    def test_exec_derives_default_keys_when_body_omits_them(
+        self, monkeypatch
+    ) -> None:
+        server = FakeSandboxServer()
+        transport = httpx.ASGITransport(app=_app())
+
+        async def run() -> None:
+            with mock.patch.object(OpenSandboxClient, "from_env", lambda: _client(server)):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        "/sandbox/exec",
+                        json={"command": "echo hi"},
+                        headers=_auth_headers(),
+                    )
+            assert response.status_code == 200
+            assert server.create_calls[0]["key"].startswith("create:ws-1:inv-1:")
+            assert server.execute_calls[0]["key"].startswith("execute:ws-1:inv-1:")
+
+        asyncio.run(run())
+
+    def test_reconcile_returns_unknown_without_server_execution_fact(
+        self, monkeypatch
+    ) -> None:
+        def _handle(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if request.method == "GET" and "/api/v1/sandboxes/" in path:
+                return httpx.Response(
+                    200,
+                    json={"sandbox_id": "sb-r", "status": "ready", "executions": []},
+                )
+            if request.method == "DELETE":
+                return httpx.Response(204)
+            return httpx.Response(404, json={"error": "no route"})
+
+        client = OpenSandboxClient(
+            base_url="https://sandbox.test",
+            api_key="key-1234567890abcdef",
+            transport=httpx.MockTransport(_handle),
+        )
+        transport = httpx.ASGITransport(app=_app())
+
+        async def run() -> None:
+            with mock.patch.object(OpenSandboxClient, "from_env", lambda: client):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as http:
+                    response = await http.post(
+                        "/sandbox/reconcile",
+                        json={"sandbox_id": "sb-r", "execute_key": "execute:custom"},
+                        headers=_auth_headers(),
+                    )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["success"] is False
+            assert body["data_source"]["error_code"] == "OPENSANDBOX_UNKNOWN_OUTCOME"
+
+        asyncio.run(run())
+
+    def test_reconcile_returns_success_when_server_has_execution_fact(
+        self, monkeypatch
+    ) -> None:
+        def _handle(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if request.method == "GET" and "/api/v1/sandboxes/" in path:
+                return httpx.Response(
+                    200,
+                    json={
+                        "sandbox_id": "sb-r",
+                        "status": "completed",
+                        "executions": [
+                            {
+                                "key": "execute:custom",
+                                "command": "echo hi",
+                                "output": "ok: echo hi",
+                            }
+                        ],
+                    },
+                )
+            if request.method == "DELETE":
+                return httpx.Response(204)
+            return httpx.Response(404, json={"error": "no route"})
+
+        client = OpenSandboxClient(
+            base_url="https://sandbox.test",
+            api_key="key-1234567890abcdef",
+            transport=httpx.MockTransport(_handle),
+        )
+        transport = httpx.ASGITransport(app=_app())
+
+        async def run() -> None:
+            with mock.patch.object(OpenSandboxClient, "from_env", lambda: client):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as http:
+                    response = await http.post(
+                        "/sandbox/reconcile",
+                        json={"sandbox_id": "sb-r", "execute_key": "execute:custom"},
+                        headers=_auth_headers(),
+                    )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["success"] is True
+            assert body["sandbox_id"] == "sb-r"
+            assert body["output"] == "ok: echo hi"
+
+        asyncio.run(run())
+
+    def test_reconcile_accepts_identity_in_body_without_headers(
+        self, monkeypatch
+    ) -> None:
+        def _handle(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if request.method == "GET" and "/api/v1/sandboxes/" in path:
+                return httpx.Response(
+                    200,
+                    json={"sandbox_id": "sb-r", "status": "ready", "executions": []},
+                )
+            if request.method == "DELETE":
+                return httpx.Response(204)
+            return httpx.Response(404, json={"error": "no route"})
+
+        client = OpenSandboxClient(
+            base_url="https://sandbox.test",
+            api_key="key-1234567890abcdef",
+            transport=httpx.MockTransport(_handle),
+        )
+        transport = httpx.ASGITransport(app=_app())
+
+        async def run() -> None:
+            with mock.patch.object(OpenSandboxClient, "from_env", lambda: client):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as http:
+                    response = await http.post(
+                        "/sandbox/reconcile",
+                        json={
+                            "sandbox_id": "sb-r",
+                            "execute_key": "execute:custom",
+                            **{
+                                field: FULL_HEADERS[header]
+                                for field, header in IDENTITY_HEADERS.items()
+                            },
+                        },
+                        headers={"Authorization": f"Bearer {TOKEN}"},
+                    )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["success"] is False
+            assert body["data_source"]["error_code"] == "OPENSANDBOX_UNKNOWN_OUTCOME"
+
+        asyncio.run(run())
+
+
 def _preseed_terminal(status: str, error: str) -> None:
     """Write a terminal row for FULL_HEADERS' identity through the REAL
     ledger API, exactly as a prior crashed attempt would have left it."""
@@ -480,21 +670,46 @@ class TestS7CoreFailureContract:
 
         asyncio.run(run())
 
-    def test_replay_unknown_terminal_carries_uncertain_code(self) -> None:
-        _preseed_terminal(
-            STATUS_UNKNOWN, "OPENSANDBOX_UNKNOWN_OUTCOME: execute outcome unknown"
-        )
+    def test_unknown_execute_timeout_carries_uncertain_code(self) -> None:
+        """Stateless exec: a lost execute response reconciled to no server
+        execution fact answers success=false with the S6-02 uncertain code."""
         transport = httpx.ASGITransport(app=_app())
 
-        async def run() -> None:
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://test"
-            ) as client:
-                response = await client.post(
-                    "/sandbox/exec",
-                    json={"command": "echo hi"},
-                    headers=_auth_headers(),
+        def _handle(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if request.method == "POST" and path == "/api/v1/sandboxes":
+                return httpx.Response(
+                    201, json={"sandbox_id": "sb-u", "status": "ready"}
                 )
+            if request.method == "POST" and path.endswith("/execute"):
+                raise httpx.TimeoutException(
+                    "simulated lost execute response", request=request
+                )
+            if request.method == "GET" and "/api/v1/sandboxes/" in path:
+                return httpx.Response(
+                    200,
+                    json={"sandbox_id": "sb-u", "status": "ready", "executions": []},
+                )
+            if request.method == "DELETE":
+                return httpx.Response(204)
+            return httpx.Response(404, json={"error": "no route"})
+
+        client = OpenSandboxClient(
+            base_url="https://sandbox.test",
+            api_key="key-1234567890abcdef",
+            transport=httpx.MockTransport(_handle),
+        )
+
+        async def run() -> None:
+            with mock.patch.object(OpenSandboxClient, "from_env", lambda: client):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as http:
+                    response = await http.post(
+                        "/sandbox/exec",
+                        json={"command": "echo hi"},
+                        headers=_auth_headers(),
+                    )
             assert response.status_code == 200
             body = response.json()
             assert body["success"] is False
@@ -502,26 +717,47 @@ class TestS7CoreFailureContract:
 
         asyncio.run(run())
 
-    def test_replay_failed_conflict_carries_terminal_code(self) -> None:
-        _preseed_terminal(
-            STATUS_FAILED,
-            f"{IDEMPOTENCY_CONFLICT}: invocation already used with a "
-            "different payload",
-        )
+    def test_definitive_remote_failure_carries_failed_code(self) -> None:
+        """Stateless exec: a definitive OpenSandbox API failure answers the
+        S6-02 terminal OPENSANDBOX_FAILED code (never retried blindly)."""
         transport = httpx.ASGITransport(app=_app())
 
-        async def run() -> None:
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://test"
-            ) as client:
-                response = await client.post(
-                    "/sandbox/exec",
-                    json={"command": "echo hi"},
-                    headers=_auth_headers(),
+        def _handle(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if request.method == "POST" and path == "/api/v1/sandboxes":
+                return httpx.Response(
+                    201, json={"sandbox_id": "sb-f", "status": "ready"}
                 )
+            if request.method == "POST" and path.endswith("/execute"):
+                return httpx.Response(500, json={"error": "remote exploded"})
+            if request.method == "GET" and "/api/v1/sandboxes/" in path:
+                return httpx.Response(
+                    200,
+                    json={"sandbox_id": "sb-f", "status": "ready", "executions": []},
+                )
+            if request.method == "DELETE":
+                return httpx.Response(204)
+            return httpx.Response(404, json={"error": "no route"})
+
+        client = OpenSandboxClient(
+            base_url="https://sandbox.test",
+            api_key="key-1234567890abcdef",
+            transport=httpx.MockTransport(_handle),
+        )
+
+        async def run() -> None:
+            with mock.patch.object(OpenSandboxClient, "from_env", lambda: client):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as http:
+                    response = await http.post(
+                        "/sandbox/exec",
+                        json={"command": "echo hi"},
+                        headers=_auth_headers(),
+                    )
             assert response.status_code == 200
             body = response.json()
             assert body["success"] is False
-            assert body["data_source"]["error_code"] == IDEMPOTENCY_CONFLICT
+            assert body["data_source"]["error_code"] == "OPENSANDBOX_FAILED"
 
         asyncio.run(run())

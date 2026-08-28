@@ -26,6 +26,11 @@ class StreamConversationMessageRequest(BaseModel):
     mode: str | None = None
 
 
+class StartTurnRequest(BaseModel):
+    query: str = Field(min_length=1)
+    request_id: str | None = None
+
+
 class ModelRecord(BaseModel):
     model_name: str
     model_type: str = "本地"

@@ -43,7 +43,10 @@ class MapCoreClient:
         payload: dict[str, Any],
         headers: dict[str, str],
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        # Internal service-to-service call: never route through an ambient
+        # developer/CI proxy (trust_env=False) - a proxy 502 must not be
+        # mistaken for a Core verdict.
+        async with httpx.AsyncClient(timeout=180.0, trust_env=False) as client:
             response = await client.post(
                 self._url(path),
                 json=payload,
@@ -59,7 +62,7 @@ class MapCoreClient:
         headers: dict[str, str],
     ) -> AsyncGenerator[bytes, None]:
         timeout = httpx.Timeout(timeout=None, connect=20.0)
-        client = httpx.AsyncClient(timeout=timeout)
+        client = httpx.AsyncClient(timeout=timeout, trust_env=False)
         request = client.build_request(
             "POST",
             self._url(path),

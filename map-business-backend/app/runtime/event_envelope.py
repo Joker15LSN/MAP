@@ -52,6 +52,7 @@ _EVENT_TYPE_PREFIXES: Final[tuple[str, ...]] = (
     "artifact.",
     "checkpoint.",
     "effect.",
+    "message.",
 )
 
 _FROZEN_EVENT_TYPES: Final[frozenset[str]] = frozenset(
@@ -94,6 +95,7 @@ _FROZEN_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         "effect.reconciling",
         "effect.reconciled",
         "effect.cancelled",
+        "message.delta",
     }
 )
 

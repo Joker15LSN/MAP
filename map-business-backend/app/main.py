@@ -30,6 +30,7 @@ from .api.errors import install_error_handlers
 from .api.feedback import router as feedback_router
 from .api.internal import router as internal_router
 from .api.readiness import router as readiness_router
+from .api.runs import router as runs_router
 from .core.identity import AuthMode, parse_optional_id, parse_request_id
 from .core.permissions import PermissionService
 from .core_client import MapCoreClient
@@ -213,6 +214,7 @@ def create_app(
     app.include_router(readiness_router)
     app.include_router(audit_events_router)
     app.include_router(conversations_router)
+    app.include_router(runs_router)
     app.include_router(internal_router)
     app.include_router(feedback_router)
     app.include_router(admin_config_router)
@@ -221,9 +223,6 @@ def create_app(
 
     return app
 
-
-def _looks_like_production() -> bool:
-    return False  # replaced by Settings.env; kept for callers of the helper
 
 
 # Compatibility module-level singletons: uvicorn `app.main:app` and the

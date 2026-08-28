@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import signal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -21,6 +22,36 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ..db.models import Job
 from ..db.session import get_session_factory
 from .job_runner import JobHandler, JobRunner
+
+if TYPE_CHECKING:
+    from ..runs import RunWorker
+
+
+def build_run_worker() -> tuple[str, RunWorker]:
+    """PR-D: the Canonical Run worker (claims job_type="run" only).
+
+    The legacy JobRunner never sees run jobs (its claim is filtered to the
+    registered handler types); this loop owns Run lease/progress/settlement.
+    """
+    from ..core_client import MapCoreClient
+    from ..runs import HttpCoreRunStream, HttpSandboxRemote, PgRunStore, RunWorker
+
+    worker_id = os.getenv("MAP_WORKER_ID", "").strip() or f"run-worker-{os.getpid()}"
+    core_origin = os.getenv("MAP_CORE_API_ORIGIN", "http://127.0.0.1:10000")
+    core_client = MapCoreClient(core_origin)
+    core = HttpCoreRunStream(core_client)
+    sandbox_remote = HttpSandboxRemote(
+        core_client,
+        core_token=os.getenv("MAP_SANDBOX_CORE_TOKEN", "").strip(),
+    )
+    run_worker = RunWorker(
+        PgRunStore(get_session_factory()),
+        core,
+        sandbox_remote=sandbox_remote,
+        worker_id=worker_id,
+        lease_seconds=int(os.getenv("MAP_WORKER_LEASE_SECONDS", "60")),
+    )
+    return worker_id, run_worker
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +292,7 @@ async def _e2e_effect_probe_handler(job: Job, session: AsyncSession) -> dict | N
 
 async def _amain() -> None:
     runner = build_runner()
+    run_worker_id, run_worker = build_run_worker()
     stop_event = asyncio.Event()
 
     loop = asyncio.get_running_loop()
@@ -271,7 +303,10 @@ async def _amain() -> None:
             signal.signal(sig, lambda *_: stop_event.set())
 
     logger.info("worker %s starting", runner.worker_id)
-    await runner.run_forever(stop_event)
+    await asyncio.gather(
+        runner.run_forever(stop_event),
+        run_worker.run_forever(worker_id=run_worker_id, stop_event=stop_event),
+    )
     logger.info("worker %s stopped gracefully", runner.worker_id)
 
 

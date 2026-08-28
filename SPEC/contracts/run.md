@@ -96,7 +96,9 @@ running -> pass | fail | blocked | not-applicable-approved
 - `schema_version`（major）未知 → 写入前拒绝 `UNKNOWN_EVENT_VERSION`；
   minor 增量 forward compatible（未知字段保留、不丢弃）。
 - 冻结事件类型前缀：`run.` / `step.` / `attempt.` / `model.` /
-  `tool.` / `approval.` / `artifact.` / `checkpoint.` / `effect.`。
+  `tool.` / `approval.` / `artifact.` / `checkpoint.` / `effect.` /
+  `message.`（ADR-0003；`message.delta.data.content` 是增量内容事实，
+  不改变任何生命周期状态）。
 - 未知 `type`（已知前缀内未定义）→ 写入前拒绝 `UNKNOWN_EVENT_TYPE`。
 - SSE 帧：`id: <seq>`、`event: <type>`、`data: <envelope-json>`；客户端
   `Last-Event-ID`/`after_seq` 重连续传；断线不产生第二 Run。

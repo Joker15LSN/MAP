@@ -1,26 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, generateRequestId } from '../../api/client';
-import type { SseEvent } from '../../api/types';
+import { runApi } from '../../api/runApi';
 import { conversationApi } from './conversationApi';
 import type { ConversationView, FeedbackView, MessageView } from './conversationApi';
+import {
+  applyRunEvent,
+  createEmptyRunProjection,
+  mapRunTerminalToMessageStatus,
+} from './runProjection';
+import type { RunProjectionState } from './runProjection';
 
 /**
- * 会话控制器（R1-CONV-01 / FIX-P2-FRONTEND-01 / S4-05）。
+ * 会话控制器（Step 4 / PR-F1+F2 重写）。
  *
- * - 刷新后按 conversation id 恢复已完成/failed/stopped 消息;
- * - 流式消费冻结事件集,content_delta 累积,start 立即保存真实 message_id;
- * - stop 先调服务端 :stop 接口(条件更新为准),本地 abort 仅作超时/网络兜底;
- * - generation(版本号)防止旧的 GET/流回调覆盖更新的 stopped 终态;
- * - 错误状态与 loading/empty 状态显式暴露给视图。
+ * - 一轮问答通过 `runApi.createTurn` 创建 canonical Run，随后只订阅
+ *   `/api/v1/runs/{run_id}/events` 并按 `(run_id,seq)` 投影;
+ * - 刷新恢复时对每个带 `run_id` 的 assistant 消息重放事件;
+ * - stop 走权威 `runApi.cancelRun`;本地 abort 仅作网络/超时兜底;
+ * - generation(版本号)守卫：迟到事件/回调不得覆盖更新的终态。
  */
 
 export type ConversationPhase = 'idle' | 'loading' | 'streaming' | 'ready' | 'error';
 
-/**
- * R3-P1-02: 浏览器刷新恢复依赖活跃会话 id 的本地持久化。
- * create 成功后写入;加载失败(如后端换库)时清除并回落空状态,
- * 显式传入的 conversationId 永远优先且失败时保留错误状态。
- */
 const ACTIVE_CONVERSATION_KEY = 'map_active_conversation_id';
 
 const readStoredConversationId = (): string | null => {
@@ -65,8 +66,49 @@ export interface UseConversationControllerOptions {
   conversationId?: string;
 }
 
+function describeError(error: unknown): string {
+  if (error instanceof ApiError) {
+    return `${error.code}: ${error.message}`;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+function localMessage(
+  id: string,
+  conversation: ConversationView,
+  role: 'user' | 'assistant',
+  content: string,
+  requestId: string,
+): MessageView {
+  return {
+    id,
+    conversation_id: conversation.id,
+    role,
+    status: role === 'user' ? 'completed' : 'streaming',
+    content,
+    request_id: requestId,
+    task_id: null,
+    decision: null,
+    run_id: null,
+    stream_error: null,
+    error_message: null,
+    fallback_used: false,
+    created_at: new Date().toISOString(),
+    completed_at: role === 'user' ? new Date().toISOString() : null,
+  };
+}
+
+function abortError(): Error {
+  return new Error('The operation was aborted.');
+}
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
 export function useConversationController(options: UseConversationControllerOptions = {}) {
-  // 显式 conversationId 优先;否则一次性读取持久化的活跃会话 id。
   const [storedId] = useState<string | null>(() =>
     options.conversationId ? null : readStoredConversationId(),
   );
@@ -74,13 +116,12 @@ export function useConversationController(options: UseConversationControllerOpti
   const restoredFromStorage = !options.conversationId && Boolean(storedId);
   const [state, setState] = useState<ConversationState>(initialState);
   const abortRef = useRef<AbortController | null>(null);
-  // 当前流式消息的渲染 id:先为本地占位 id,收到 start 后换成真实服务端 id。
-  const streamingMessageId = useRef<string | null>(null);
-  // 真实服务端 message id:仅在收到 start 后非空,用于 stop 接口调用。
-  const serverMessageIdRef = useRef<string | null>(null);
-  // start 尚未到达时被点击 stop 的等待句柄:resolve 后拿到真实服务端 id,
-  // 避免「只 abort 本地 SSE、服务端继续执行」的竞态。
-  const serverIdReadyRef = useRef<Promise<string> | null>(null);
+  // 当前流式 assistant 消息的渲染 id（本地占位 -> 服务端真实 id）。
+  const streamingMessageIdRef = useRef<string | null>(null);
+  // createTurn 返回前的等待句柄：stop 点击早于 run_id 到达时,等它解析。
+  const runIdReadyRef = useRef<Promise<string | null> | null>(null);
+  // 当前流式 run 的 durable identity；createTurn 返回后非空。
+  const currentRunIdRef = useRef<string | null>(null);
   // generation/版本号:每次 send 自增;stop 成功提交权威终态时再次自增,
   // 使旧的流回调 / GET 回调因版本不匹配而被丢弃。
   const turnRef = useRef(0);
@@ -89,7 +130,6 @@ export function useConversationController(options: UseConversationControllerOpti
   const create = useCallback(async (mode: 'global' | 'flow' = 'global', title?: string) => {
     setState((prev) => ({ ...prev, phase: 'loading', error: null }));
     try {
-      // Idempotency-Key: 创建走幂等键,网络重放不会产生第二个会话。
       const conversation = await conversationApi.create({
         mode,
         title,
@@ -118,29 +158,40 @@ export function useConversationController(options: UseConversationControllerOpti
     try {
       const conversation = await conversationApi.get(conversationId);
       const feedbackByMessage: Record<string, FeedbackView | null> = {};
-      await Promise.all(
-        conversation.messages
-          .filter((m) => m.role === 'assistant' && m.status === 'completed')
-          .map(async (m) => {
-            try {
-              feedbackByMessage[m.id] = await conversationApi.getFeedback(m.id);
-            } catch {
-              feedbackByMessage[m.id] = null;
+      const messages = [...conversation.messages];
+
+      for (const message of messages) {
+        if (message.role === 'assistant' && message.run_id) {
+          try {
+            const projection = await replayRunToTerminalOrHead(message.run_id);
+            message.content = projection.content;
+            if (projection.terminalSeen && projection.terminalStatus) {
+              message.status = mapRunTerminalToMessageStatus(projection.terminalStatus);
+              message.completed_at = message.completed_at || new Date().toISOString();
             }
-          }),
-      );
+          } catch {
+            // 投影失败保留 DB 中的 message 事实;不阻塞恢复。
+          }
+        }
+        if (message.role === 'assistant' && message.status === 'completed') {
+          try {
+            feedbackByMessage[message.id] = await conversationApi.getFeedback(message.id);
+          } catch {
+            feedbackByMessage[message.id] = null;
+          }
+        }
+      }
+
       setState((prev) => ({
         ...prev,
         phase: 'ready',
         conversation,
-        messages: conversation.messages,
+        messages,
         feedbackByMessage,
         error: null,
       }));
     } catch (error) {
       if (restoredFromStorage) {
-        // 持久化的会话已不存在(如后端换了数据库):清除并回落空状态,
-        // 而不是把用户困在错误页。
         writeStoredConversationId(null);
         setState((prev) => ({ ...prev, ...initialState, error: null }));
         return;
@@ -164,45 +215,27 @@ export function useConversationController(options: UseConversationControllerOpti
     setInput('');
     const requestId = generateRequestId();
     const turn = ++turnRef.current;
-    const userMessage: MessageView = {
-      id: `local-user-${requestId}`,
-      conversation_id: conversation.id,
-      role: 'user',
-      status: 'completed',
-      content: query,
-      request_id: requestId,
-      task_id: null,
-      decision: null,
-      stream_error: null,
-      error_message: null,
-      fallback_used: false,
-      created_at: new Date().toISOString(),
-      completed_at: new Date().toISOString(),
-    };
-    const assistantPlaceholder: MessageView = {
-      id: `local-assistant-${requestId}`,
-      conversation_id: conversation.id,
-      role: 'assistant',
-      status: 'streaming',
-      content: '',
-      request_id: requestId,
-      task_id: null,
-      decision: null,
-      stream_error: null,
-      error_message: null,
-      fallback_used: false,
-      created_at: new Date().toISOString(),
-      completed_at: null,
-    };
-    // 当前这条 assistant 消息的渲染 id:先占位,start 后切换为真实 id。
-    let assistantId = assistantPlaceholder.id;
+    const userMessage = localMessage(
+      `local-user-${requestId}`,
+      conversation,
+      'user',
+      query,
+      requestId,
+    );
+    const assistantPlaceholder = localMessage(
+      `local-assistant-${requestId}`,
+      conversation,
+      'assistant',
+      '',
+      requestId,
+    );
     const abort = new AbortController();
     abortRef.current = abort;
-    streamingMessageId.current = assistantPlaceholder.id;
-    serverMessageIdRef.current = null;
-    let resolveServerId: (id: string) => void = () => {};
-    serverIdReadyRef.current = new Promise<string>((resolve) => {
-      resolveServerId = resolve;
+    streamingMessageIdRef.current = assistantPlaceholder.id;
+    currentRunIdRef.current = null;
+    let resolveRunId: (id: string | null) => void = () => {};
+    runIdReadyRef.current = new Promise<string | null>((resolve) => {
+      resolveRunId = resolve;
     });
 
     setState((prev) => ({
@@ -212,152 +245,212 @@ export function useConversationController(options: UseConversationControllerOpti
       error: null,
     }));
 
-    let accumulated = '';
-    let terminal: MessageView | null = null;
-    let streamError: string | null = null;
-    try {
-      for await (const event of conversationApi.stream(
-        conversation.id,
-        query,
-        requestId,
-        abort.signal,
-      )) {
-        if (turnRef.current !== turn) {
-          // stop 已提交权威终态:丢弃本 turn 剩余的流事件。
-          break;
-        }
-        if (event.event === 'start') {
-          const serverId = String(event.data.message_id || '');
-          if (serverId) {
-            assistantId = serverId;
-            streamingMessageId.current = serverId;
-            serverMessageIdRef.current = serverId;
-            resolveServerId(serverId);
-            adoptMessageId(assistantPlaceholder.id, serverId);
+    let assistantId = assistantPlaceholder.id;
+
+    const adoptServerIds = (
+      localUserId: string,
+      localAssistantId: string,
+      serverUserId: string,
+      serverAssistantId: string,
+    ) => {
+      setState((prev) => ({
+        ...prev,
+        messages: prev.messages.map((m) => {
+          if (m.id === localUserId) {
+            return { ...m, id: serverUserId };
           }
-        } else if (event.event === 'content_delta') {
-          accumulated += String(event.data.content || '');
-          updateAssistantContent(assistantId, accumulated);
-        } else if (event.event === 'done') {
-          terminal = {
-            ...assistantPlaceholder,
-            id: String(event.data.message_id || assistantId),
-            status: (event.data.status as MessageView['status']) || 'completed',
-            content: String(event.data.content || accumulated),
-            task_id: event.data.task_id ? String(event.data.task_id) : null,
-            completed_at: new Date().toISOString(),
-          };
-        } else if (event.event === 'error') {
-          streamError = String(event.data.error || '上游错误');
+          if (m.id === localAssistantId) {
+            return { ...m, id: serverAssistantId };
+          }
+          return m;
+        }),
+      }));
+    };
+
+    const updateAssistantMessage = (messageId: string, projection: RunProjectionState) => {
+      setState((prev) => ({
+        ...prev,
+        messages: prev.messages.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                content: projection.content,
+                run_id: projection.runId || m.run_id,
+              }
+            : m,
+        ),
+      }));
+    };
+
+    const finalizeTerminal = (
+      messageId: string,
+      projection: RunProjectionState | null,
+      status: MessageView['status'],
+      streamError?: string,
+      errorMessage?: string,
+    ) => {
+      setState((prev) => ({
+        ...prev,
+        phase: 'ready',
+        messages: prev.messages.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                status,
+                content: projection ? projection.content : m.content,
+                run_id: projection ? projection.runId : m.run_id,
+                stream_error: streamError || null,
+                error_message: errorMessage || null,
+                completed_at: new Date().toISOString(),
+              }
+            : m,
+        ),
+      }));
+    };
+
+    const refreshConversation = async (id: string, expectedTurn: number) => {
+      try {
+        const view = await conversationApi.get(id);
+        if (turnRef.current === expectedTurn) {
+          setState((cur) => ({ ...cur, conversation: view }));
         }
+      } catch {
+        // 元信息刷新失败不覆盖消息事实。
       }
+    };
+
+    try {
+      const created = await runApi.createTurn(conversation.id, query, {
+        requestId,
+        idempotencyKey: generateRequestId(),
+        signal: abort.signal,
+      });
       if (turnRef.current !== turn) {
         return;
       }
-      if (!terminal) {
-        // EOF without a legal done: failed (stable error code), never
-        // completed; a core error event also lands here.
-        terminal = {
-          ...assistantPlaceholder,
-          id: assistantId,
-          status: 'failed',
-          content: accumulated,
-          stream_error: streamError ? 'STREAM_CORE_ERROR' : 'STREAM_EOF_WITHOUT_DONE',
-          error_message: streamError || 'stream ended without done',
-          completed_at: new Date().toISOString(),
-        };
+      assistantId = created.assistant_message_id;
+      streamingMessageIdRef.current = assistantId;
+      currentRunIdRef.current = created.run_id;
+      resolveRunId(created.run_id);
+      adoptServerIds(
+        userMessage.id,
+        assistantPlaceholder.id,
+        created.user_message_id,
+        created.assistant_message_id,
+      );
+
+      let projection = createEmptyRunProjection(created.run_id);
+      // 订阅 run events;快照 EOF 后按 after_seq 重连续传,直到终态。
+      while (true) {
+        if (abort.signal.aborted) {
+          throw abortError();
+        }
+        for await (const envelope of runApi.replayRunEvents(created.run_id, {
+          afterSeq: projection.lastSeq,
+          signal: abort.signal,
+        })) {
+          if (turnRef.current !== turn) {
+            return;
+          }
+          projection = applyRunEvent(projection, envelope);
+          updateAssistantMessage(assistantId, projection);
+          if (projection.terminalSeen && projection.terminalStatus) {
+            finalizeTerminal(
+              assistantId,
+              projection,
+              mapRunTerminalToMessageStatus(projection.terminalStatus),
+            );
+            void refreshConversation(conversation.id, turn);
+            return;
+          }
+        }
+        // EOF without terminal: the run is still producing facts; resume
+        // from the last seen seq after a short backoff. 断流不重跑。
+        if (turnRef.current !== turn) {
+          return;
+        }
+        await sleep(250);
+        if (turnRef.current !== turn) {
+          return;
+        }
       }
     } catch (error) {
       if (turnRef.current !== turn) {
         return;
       }
       if (abort.signal.aborted) {
-        // 本地 abort 兜底:服务端停止未走通(超时/网络),或 start 尚未到达。
-        terminal = {
-          ...assistantPlaceholder,
-          id: assistantId,
-          status: 'stopped',
-          content: accumulated,
-          stream_error: 'STREAM_ABORTED',
-          completed_at: new Date().toISOString(),
-        };
+        finalizeTerminal(assistantId, null, 'stopped', 'STREAM_ABORTED');
       } else {
-        terminal = {
-          ...assistantPlaceholder,
-          id: assistantId,
-          status: 'failed',
-          content: accumulated,
-          stream_error: 'STREAM_CORE_ERROR',
-          error_message: describeError(error),
-          completed_at: new Date().toISOString(),
-        };
+        finalizeTerminal(
+          assistantId,
+          null,
+          'failed',
+          'STREAM_CORE_ERROR',
+          describeError(error),
+        );
       }
     } finally {
-      // 仅当本 turn 仍持有 controller 时清理,避免清掉新一轮 send 的引用。
       if (abortRef.current === abort) {
         abortRef.current = null;
-        streamingMessageId.current = null;
-        serverMessageIdRef.current = null;
-        serverIdReadyRef.current = null;
+        streamingMessageIdRef.current = null;
+        currentRunIdRef.current = null;
+        runIdReadyRef.current = null;
       }
     }
-
-    setState((prev) => {
-      const messages = prev.messages.map((m) =>
-        m.id === assistantPlaceholder.id || m.id === assistantId ? terminal! : m,
-      );
-      // 服务端刷新只更新 conversation 元信息;带 generation 守卫,旧回调
-      // 不得覆盖更新的 stopped 终态。
-      void conversationApi.get(conversation.id).then((conversationView) => {
-        if (turnRef.current === turn) {
-          setState((cur) => ({ ...cur, conversation: conversationView }));
-        }
-      });
-      return { ...prev, phase: 'ready', messages, error: null };
-    });
   }, [input, state.conversation]);
 
   const stop = useCallback(async () => {
-    // S4-05 race fix: stop 可能早于 start 事件被点击。先短暂等待真实服务端
-    // id(最多 2.5s),拿到后走权威路径;等待超时才落到本地 abort 兜底。
-    let serverId = serverMessageIdRef.current;
-    if (!serverId && serverIdReadyRef.current) {
-      serverId = await Promise.race([
-        serverIdReadyRef.current,
-        new Promise<string | null>((resolve) => setTimeout(() => resolve(null), 2500)),
+    let runId = currentRunIdRef.current;
+    if (!runId && runIdReadyRef.current) {
+      runId = await Promise.race([
+        runIdReadyRef.current,
+        new Promise<string | null>((resolve) => setTimeout(() => resolve(null), 8000)),
       ]);
     }
-    if (serverId) {
+    if (runId) {
       try {
-        // 权威路径:服务端条件更新与终态为准。done 先赢时接口显式返回
-        // completed,此处不得把终态回退成 streaming/completed。8s 超时
-        // 保证 stop 永不悬挂(失败落到本地 abort 兜底)。
-        const terminal = await conversationApi.stop(serverId, {
-          signal: AbortSignal.timeout(8000),
-        });
-        turnRef.current += 1; // 使本 turn 的流/GET 回调失效
-        serverMessageIdRef.current = null;
-        streamingMessageId.current = null;
-        setState((prev) => ({
-          ...prev,
-          phase: 'ready',
-          messages: prev.messages.map((m) => (m.id === serverId ? terminal : m)),
-          error: null,
-        }));
+        await runApi.cancelRun(runId, 'stopped by user');
+        // 权威路径:run cancel 命令已提交,worker 会 settle run.cancelled。
+        // 本地立即给出 stopped 终态,并让 generation 守卫丢弃迟到事件。
+        turnRef.current += 1;
+        abortRef.current?.abort();
+        const messageId = streamingMessageIdRef.current;
+        if (messageId) {
+          setState((prev) => ({
+            ...prev,
+            phase: 'ready',
+            messages: prev.messages.map((m) =>
+              m.id === messageId
+                ? {
+                    ...m,
+                    status: 'stopped' as const,
+                    stream_error: 'STREAM_ABORTED' as const,
+                    completed_at: new Date().toISOString(),
+                  }
+                : m,
+            ),
+            error: null,
+          }));
+        }
         return;
       } catch {
         // 网络/超时失败:落到本地 abort 兜底。
       }
     }
-    // 兜底:仅本地 abort(start 迟迟不到或服务端停止失败)。
+    // 兜底:仅本地 abort(run_id 迟迟不到或服务端 cancel 失败)。
     abortRef.current?.abort();
-    const localId = streamingMessageId.current;
-    if (localId) {
+    const messageId = streamingMessageIdRef.current;
+    if (messageId) {
       setState((prev) => ({
         ...prev,
         messages: prev.messages.map((m) =>
-          m.id === localId
-            ? { ...m, status: 'stopped' as const, stream_error: 'STREAM_ABORTED' as const }
+          m.id === messageId
+            ? {
+                ...m,
+                status: 'stopped' as const,
+                stream_error: 'STREAM_ABORTED' as const,
+                completed_at: new Date().toISOString(),
+              }
             : m,
         ),
       }));
@@ -407,24 +500,6 @@ export function useConversationController(options: UseConversationControllerOpti
     }
   }, []);
 
-  function adoptMessageId(localId: string, serverId: string) {
-    // start 携带真实 message_id:把本地占位 id 换成服务端 id,后续
-    // content_delta / done / stop 都按真实 id 定位。
-    setState((prev) => ({
-      ...prev,
-      messages: prev.messages.map((m) => (m.id === localId ? { ...m, id: serverId } : m)),
-    }));
-  }
-
-  function updateAssistantContent(messageId: string, content: string) {
-    setState((prev) => ({
-      ...prev,
-      messages: prev.messages.map((m) =>
-        m.id === messageId ? { ...m, content } : m,
-      ),
-    }));
-  }
-
   return {
     state,
     input,
@@ -438,14 +513,19 @@ export function useConversationController(options: UseConversationControllerOpti
   };
 }
 
-function describeError(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.code}: ${error.message}`;
+async function replayRunToTerminalOrHead(runId: string): Promise<RunProjectionState> {
+  let projection = createEmptyRunProjection(runId);
+  while (true) {
+    let advanced = false;
+    for await (const envelope of runApi.replayRunEvents(runId, {
+      afterSeq: projection.lastSeq,
+    })) {
+      advanced = true;
+      projection = applyRunEvent(projection, envelope);
+    }
+    if (!advanced || projection.terminalSeen) {
+      return projection;
+    }
+    await sleep(250);
   }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
-
-export type { SseEvent };

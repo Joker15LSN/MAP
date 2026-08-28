@@ -15,6 +15,7 @@ from .feedback import MessageFeedback
 from .idempotency import IdempotencyRecord
 from .job import Job, JobStatus
 from .outbox import OutboxEvent
+from .run import Run, RunEvent
 from .user import User
 from .workspace import Workspace
 
@@ -36,6 +37,8 @@ __all__ = [
     "MessageEvidence",
     "MessageFeedback",
     "OutboxEvent",
+    "Run",
+    "RunEvent",
     "User",
     "Workspace",
 ]

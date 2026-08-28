@@ -141,6 +141,9 @@ class ToolExecutor:
         engine-specific attributes via ``span_attributes`` but must not
         create their own TOOL spans.
         """
+        check_cancelled = getattr(self.owner, "check_cancelled", None)
+        if check_cancelled is not None:
+            check_cancelled()
         tracer = otel_trace.get_tracer("map.tool")
         attributes: dict[str, Any] = {
             "openinference.span.kind": "TOOL",

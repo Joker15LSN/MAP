@@ -705,6 +705,7 @@ class AgentScopeSceneAgent(TraceableAgent):
 
     async def run(self, request: AgentRequest, *, parid: str = "-") -> AgentResult:
         self.parid = parid
+        self.check_cancelled()
         self._reset_run_state()
         request = self.exit_handler.prepare_request_for_execution(request)
         self._compat_session = ToolCallSession.from_request(
@@ -730,6 +731,7 @@ class AgentScopeSceneAgent(TraceableAgent):
             force_tool_call=self.force_tool_call,
             response_handler=self._register_model_response,
         )
+        self.model_adapter.cancel_event = self.cancel_event
         offloader = None
         if self.artifact_store is not None:
             offloader = AgentScopeArtifactOffloader(
@@ -778,4 +780,5 @@ class AgentScopeSceneAgent(TraceableAgent):
             )
             async for event in agentscope_agent.reply_stream(inputs):
                 await self._handle_event(event)
+        self.check_cancelled()
         return await self._finalize_result(request)

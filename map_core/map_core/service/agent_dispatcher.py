@@ -19,7 +19,9 @@ from .agent.agent_mapping import (
 from .agent.base import AgentActionEvent, AgentRequest, AgentResult
 from .agent.fallback_agent_configs import get_fallback_scene_agent_configs
 from .agent.tool_call_agent import Tool, ToolCallAgent
-from .agent_runtime import AgentExecutionHooks, AgentExecutionSpec, AgentRuntime
+from .agent_execution import AgentExecutionHooks, AgentExecutionSpec, AgentRuntime
+from .agent_runtime import AgentExecutionSpec as LegacyAgentExecutionSpec
+from .agent_runtime import AgentRuntime as LegacyAgentRuntime
 from .state_store import (
     GlobalAgentStateStore,
     fire_and_forget,
@@ -66,7 +68,15 @@ class AgentDispatcher:
         self.query_rewrite_enabled = query_rewrite_enabled
         self._logger = logger_ or logger
         self.query_rewriter = QueryRewriter(llm=self.llm, logger_=self._logger)
+        # Execution path: public agent_execution module (AgentScope default).
         self.agent_runtime = AgentRuntime(
+            llm=llm,
+            tool_registry=self.tool_registry,
+            logger_=self._logger,
+        )
+        # Legacy factory kept for the pre-existing ``available_agents`` /
+        # ``build_agent`` compatibility surface (rollback switch).
+        self._legacy_agent_runtime = LegacyAgentRuntime(
             llm=llm,
             tool_registry=self.tool_registry,
             logger_=self._logger,
@@ -101,6 +111,7 @@ class AgentDispatcher:
             return
         self.tool_registry.update(dynamic_tools)
         self.agent_runtime.tool_registry = self.tool_registry
+        self._legacy_agent_runtime.tool_registry = self.tool_registry
 
     def _get_scene_configs(
         self, config: AgentDispatchConfig
@@ -323,6 +334,7 @@ class AgentDispatcher:
         self.state_store = state_store
         self.state_id = state_id
         self.agent_runtime.set_execution_context(state_store, state_id)
+        self._legacy_agent_runtime.set_execution_context(state_store, state_id)
 
     def _emit_agent_event(
         self,
@@ -375,8 +387,8 @@ class AgentDispatcher:
         if scene_config is None:
             self._logger.warning(f"No scene agent config registered for name: {name}")
             return None
-        return self.agent_runtime.build_agent(
-            AgentExecutionSpec(
+        return self._legacy_agent_runtime.build_agent(
+            LegacyAgentExecutionSpec(
                 name=name,
                 system_prompt=scene_config.prompt,
                 additional_user_prompt=scene_config.additional_user_prompt,
@@ -389,6 +401,66 @@ class AgentDispatcher:
                 engine=engine,
             )
         )
+
+    def _build_execution_spec(
+        self,
+        name: str,
+        config: SceneAgentConfig | None = None,
+        agent_name: str | None = None,
+    ) -> AgentExecutionSpec | None:
+        scene_config = config or self.scene_agent_configs.get(name)
+        if scene_config is None:
+            self._logger.warning(f"No scene agent config registered for name: {name}")
+            return None
+        return AgentExecutionSpec(
+            name=name,
+            system_prompt=scene_config.prompt,
+            additional_user_prompt=scene_config.additional_user_prompt,
+            tool_names=list(scene_config.tool_names),
+            max_steps=scene_config.max_steps,
+            force_tool_call=scene_config.force_tool_call,
+            llm_config=scene_config.llm_config,
+            scene_post_summary=scene_config.scene_post_summary,
+            agent_name=agent_name,
+        )
+
+    def _available_execution_specs(
+        self,
+        request: AgentRequest,
+        config: AgentDispatchConfig,
+    ) -> list[AgentExecutionSpec]:
+        configs = self._get_scene_configs(config)
+        if not configs:
+            self._logger.warning("No scene agent configs available")
+            return []
+        agent_name_map = self._resolve_agent_name_map(request)
+        specs = [
+            self._build_execution_spec(
+                name,
+                config=configs.get(name),
+                agent_name=agent_name_map.get(name),
+            )
+            for name in configs
+        ]
+        return [spec for spec in specs if spec is not None]
+
+    def _execution_specs_from_sequence(
+        self,
+        sequence: list[str],
+        config: AgentDispatchConfig,
+        agent_name_map: dict[str, str] | None = None,
+    ) -> list[AgentExecutionSpec]:
+        scene_configs = self._get_scene_configs(config)
+        resolved_name_map = agent_name_map or {}
+        specs = [
+            self._build_execution_spec(
+                name,
+                config=scene_configs.get(name),
+                agent_name=resolved_name_map.get(name),
+            )
+            for name in sequence
+        ]
+        return [spec for spec in specs if spec is not None]
 
     def _build_execution_hooks(self) -> AgentExecutionHooks:
         return AgentExecutionHooks(
@@ -434,21 +506,6 @@ class AgentDispatcher:
                 continue
             resolved.append(agent)
         return resolved
-
-    async def _run_agent(
-        self,
-        agent: ToolCallAgent,
-        request: AgentRequest,
-        *,
-        action_handler: Callable[[AgentActionEvent], Awaitable[None] | None]
-        | None = None,
-    ) -> AgentResult:
-        return await self.agent_runtime.run_agent(
-            agent,
-            request,
-            action_handler=action_handler,
-            hooks=self._build_execution_hooks(),
-        )
 
     async def _query_rewrite(
         self,
@@ -518,24 +575,25 @@ class AgentDispatcher:
             f"Dispatch start: big_scenes={big_scene_value} sub_scenes={sub_scene_value}"
         )
         if scene_result is not None:
-            agents = self._agents_from_sequence(
+            specs = self._execution_specs_from_sequence(
                 self.resolve_agents(scene_result),
                 config,
                 agent_name_map=agent_name_map,
             )
         else:
-            agents = self.available_agents(updated_request, config)
-        if not agents:
+            specs = self._available_execution_specs(updated_request, config)
+        if not specs:
             self._logger.warning("Dispatch end: no agents selected")
             return
         self._logger.debug(
-            f"Dispatching to agents: {', '.join(agent.name for agent in agents)}"
+            f"Dispatching to agents: {', '.join(spec.name for spec in specs)}"
         )
 
-        async for item in self.agent_runtime.run_stream(
-            agents,
+        async for item in self.agent_runtime.stream(
+            specs,
             updated_request,
             hooks=self._build_execution_hooks(),
+            engine=config.engine,
         ):
             yield item
 
@@ -558,17 +616,17 @@ class AgentDispatcher:
             tool_context=tool_context,
         )
         agent_name_map = self._resolve_agent_name_map(updated_request)
-        agent = self._build_scene_agent(
+        spec = self._build_execution_spec(
             name,
             config=config,
             agent_name=agent_name_map.get(name),
-            engine=engine,
         )
-        if agent is None:
+        if spec is None:
             raise ValueError(f"Unknown scene agent: {name}")
 
-        result = await self._run_agent(
-            agent,
+        return await self.agent_runtime.execute(
+            spec,
             updated_request,
+            hooks=self._build_execution_hooks(),
+            engine=engine,
         )
-        return result

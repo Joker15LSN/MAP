@@ -16,7 +16,12 @@ from .. import config as app_config
 from ..config.config_schema import LLMConfig
 from ..schema.scene_agent_config_schema import ScenePostSummaryConfig
 from ..utils.llm_engine import LLMEngine
-from .agent.base import AgentActionEvent, AgentRequest, AgentResult
+from .agent.base import (
+    AgentActionEvent,
+    AgentExecutionCancelled,
+    AgentRequest,
+    AgentResult,
+)
 from .agent.tool_call_agent import (
     SCENE_POST_SUMMARY_SYSTEM_PROMPT,
     SCENE_POST_SUMMARY_USER_PROMPT_TEMPLATE,
@@ -424,6 +429,33 @@ class AgentRuntime:
             return final_result
         except asyncio.CancelledError:
             raise
+        except AgentExecutionCancelled:
+            self._logger.info("Agent {} cancelled", agent.name)
+            end_status = "failed"
+            end_ts = self._now()
+            end_data = {
+                "agent_id": agent.agent_id,
+                "error": "cancelled",
+                "error_type": "AgentExecutionCancelled",
+                "meta": {
+                    "duration_s": (end_ts - start_ts).total_seconds(),
+                    "cancelled": True,
+                },
+            }
+            return self.attach_agent_identity(
+                AgentResult(
+                    success=False,
+                    name=agent.name,
+                    content="",
+                    error="cancelled",
+                    data_source={
+                        "source": "agent_execution_cancelled",
+                        "error_type": "AgentExecutionCancelled",
+                    },
+                    meta_data=end_data["meta"],
+                ),
+                agent,
+            )
         except asyncio.TimeoutError:
             self._logger.warning(
                 "Agent {} timed out after {}", agent.name, agent.timeout

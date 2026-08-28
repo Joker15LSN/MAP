@@ -91,6 +91,8 @@ class JobRepository:
             .limit(1)
             .with_for_update(skip_locked=True)
         )
+        if job_types:
+            reclaim = reclaim.where(Job.job_type.in_(job_types))
         job = (await self._session.execute(reclaim)).scalar_one_or_none()
         if job is not None:
             self._take_lease(job, worker_id, lease_expires)

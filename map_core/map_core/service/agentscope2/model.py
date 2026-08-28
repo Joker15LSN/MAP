@@ -10,6 +10,7 @@ from agentscope.tool import ToolChoice
 from pydantic import SecretStr
 
 from ...observability import get_tracer
+from ..agent.base import AgentExecutionCancelled
 from .message import agentscope_messages_to_openai
 
 _tracer = get_tracer(__name__)
@@ -35,6 +36,7 @@ class MapChatModelAdapter(ChatModelBase):
         self.last_response: Any | None = None
         self.last_terminate_call: Any | None = None
         self.last_terminate_response: Any | None = None
+        self.cancel_event: Any | None = None
 
         config = getattr(llm, "config", None)
         model_name = str(getattr(config, "model", None) or "map-adapted-model")
@@ -100,6 +102,8 @@ class MapChatModelAdapter(ChatModelBase):
         **kwargs: Any,
     ) -> ChatResponse:
         del model_name
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise AgentExecutionCancelled("cancelled")
         is_structured_output_call = any(
             (tool.get("function") or {}).get("name") == "generate_structured_output"
             for tool in (tools or [])

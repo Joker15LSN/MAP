@@ -42,6 +42,7 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from .agent.base import AgentRequest, ToolResult
@@ -774,7 +775,7 @@ async def _drive_remote_execution(
     # already executed our key, take its result instead of re-issuing.
     try:
         state = await client.get_sandbox(sandbox_id)
-    except OpenSandboxClientError as exc:
+    except OpenSandboxClientError:
         if resumed:
             # S5-01 fail-closed: on a RESUMED (created) row the prior owner
             # may already have executed; an unqueryable sandbox cannot prove
@@ -948,6 +949,284 @@ async def _destroy_best_effort(client: OpenSandboxClient, sandbox_id: str) -> No
         await client.destroy_sandbox(sandbox_id)
     except OpenSandboxClientError:
         pass
+
+
+@dataclass(frozen=True)
+class SandboxExecOutcome:
+    """Stateless result of one OpenSandbox execution (no PG dependency).
+
+    ``success`` is true only for status ``succeeded``; ``unknown`` never
+    reports success and never re-issues a mutation blindly.
+    """
+
+    success: bool
+    status: str  # succeeded | failed | unknown
+    sandbox_id: str | None = None
+    output: str | None = None
+    error_code: str | None = None
+    error: str | None = None
+    server_state: dict[str, Any] | None = None
+
+
+def _outcome_succeeded(
+    output: str, sandbox_id: str, server_state: dict[str, Any] | None
+) -> SandboxExecOutcome:
+    return SandboxExecOutcome(
+        success=True,
+        status="succeeded",
+        sandbox_id=sandbox_id,
+        output=output,
+        server_state=server_state,
+    )
+
+
+def _outcome_failed(
+    error_code: str,
+    error: str,
+    *,
+    sandbox_id: str | None = None,
+    server_state: dict[str, Any] | None = None,
+) -> SandboxExecOutcome:
+    return SandboxExecOutcome(
+        success=False,
+        status="failed",
+        sandbox_id=sandbox_id,
+        error_code=error_code,
+        error=error,
+        server_state=server_state,
+    )
+
+
+def _outcome_unknown(
+    error: str,
+    *,
+    sandbox_id: str | None = None,
+    server_state: dict[str, Any] | None = None,
+) -> SandboxExecOutcome:
+    return SandboxExecOutcome(
+        success=False,
+        status="unknown",
+        sandbox_id=sandbox_id,
+        error_code=UNKNOWN_OUTCOME,
+        error=error,
+        server_state=server_state,
+    )
+
+
+async def execute_sandbox_once(
+    *,
+    command: str,
+    identity: SandboxIdentity,
+    limits: SandboxResourceLimits,
+    create_key: str,
+    execute_key: str,
+    client: OpenSandboxClient,
+    resume_sandbox_id: str | None = None,
+    resume_phase: str | None = None,
+) -> SandboxExecOutcome:
+    """Stateless execute path used by the production sandbox router.
+
+    create/get/execute/destroy all go through the injected
+    :class:`OpenSandboxClient`; no ledger, lease or PostgreSQL is touched.
+    Unknown semantics follow S5-01: an already-present server fact
+    converges to that result, and an unproven-absent execution is returned
+    as ``unknown`` (never blind-replayed). The caller (BFF RunWorker) owns
+    durable ``effect.*`` facts around this call.
+    """
+    del resume_phase  # kept in the signature for the router/resume contract
+    sandbox_id, state = await _resume_or_create_sandbox(
+        command=command,
+        identity=identity,
+        limits=limits,
+        create_key=create_key,
+        execute_key=execute_key,
+        client=client,
+        resume_sandbox_id=resume_sandbox_id,
+    )
+    if isinstance(sandbox_id, SandboxExecOutcome):
+        return sandbox_id
+    return await _execute_or_reconcile(
+        sandbox_id=sandbox_id,
+        state=state,
+        command=command,
+        identity=identity,
+        limits=limits,
+        execute_key=execute_key,
+        client=client,
+    )
+
+
+async def _resume_or_create_sandbox(
+    *,
+    command: str,
+    identity: SandboxIdentity,
+    limits: SandboxResourceLimits,
+    create_key: str,
+    execute_key: str,
+    client: OpenSandboxClient,
+    resume_sandbox_id: str | None,
+) -> tuple[str | SandboxExecOutcome, dict[str, Any]]:
+    """Resume a previous sandbox or create a fresh one.
+
+    Returns ``(SandboxExecOutcome, {})`` when the call is already terminal
+    (unknown create / missing config / conflict). Otherwise returns the
+    sandbox id and the best-known server state.
+    """
+    sandbox_id: str | None = resume_sandbox_id
+    if sandbox_id is not None:
+        try:
+            state = await client.get_sandbox(sandbox_id)
+        except OpenSandboxClientError as exc:
+            return (
+                _outcome_unknown(
+                    "OPENSANDBOX_UNKNOWN_OUTCOME: resumed sandbox is no longer "
+                    "queryable and the prior execution cannot be proven absent "
+                    f"({exc}); refusing to re-issue the mutation",
+                    sandbox_id=sandbox_id,
+                ),
+                {},
+            )
+        prior = _prior_server_execution(state, execute_key)
+        if prior is not None:
+            output = str(prior.get("output") or "")
+            await _destroy_best_effort(client, sandbox_id)
+            return _outcome_succeeded(output, sandbox_id, state), {}
+        return sandbox_id, state
+
+    try:
+        created = await client.create_sandbox(
+            identity, limits, idempotency_key=create_key
+        )
+    except OpenSandboxClientError as exc:
+        if exc.code == UNKNOWN_OUTCOME:
+            return (
+                _outcome_unknown(
+                    "OPENSANDBOX_UNKNOWN_OUTCOME: create timed out and the "
+                    "server dedup guarantee is unverified; refusing to "
+                    "blindly re-send the mutation"
+                ),
+                {},
+            )
+        if exc.code == MISSING_CONFIG_ERROR:
+            return _outcome_failed(CAPABILITY_DISABLED, str(exc)), {}
+        return _outcome_failed(FAILED_OUTCOME, str(exc)), {}
+    sandbox_id = str(created.get("sandbox_id") or "")
+    if not sandbox_id:
+        return (
+            _outcome_failed(
+                FAILED_OUTCOME,
+                "OPENSANDBOX_FAILED: create response missing sandbox_id",
+            ),
+            {},
+        )
+    try:
+        state = await client.get_sandbox(sandbox_id)
+    except OpenSandboxClientError:
+        state = {}
+    prior = _prior_server_execution(state, execute_key)
+    if prior is not None:
+        output = str(prior.get("output") or "")
+        await _destroy_best_effort(client, sandbox_id)
+        return _outcome_succeeded(output, sandbox_id, state), {}
+    return sandbox_id, state
+
+
+async def _execute_or_reconcile(
+    *,
+    sandbox_id: str,
+    state: dict[str, Any],
+    command: str,
+    identity: SandboxIdentity,
+    limits: SandboxResourceLimits,
+    execute_key: str,
+    client: OpenSandboxClient,
+) -> SandboxExecOutcome:
+    try:
+        outcome = await client.execute(
+            sandbox_id,
+            identity,
+            command,
+            limits.timeout_seconds,
+            idempotency_key=execute_key,
+        )
+    except OpenSandboxClientError as exc:
+        return await _execute_failure_outcome(
+            exc=exc,
+            sandbox_id=sandbox_id,
+            execute_key=execute_key,
+            client=client,
+        )
+    output = str(outcome.get("output") or outcome.get("result") or "")
+    await _destroy_best_effort(client, sandbox_id)
+    return _outcome_succeeded(output, sandbox_id, outcome)
+
+
+async def _execute_failure_outcome(
+    *,
+    exc: OpenSandboxClientError,
+    sandbox_id: str,
+    execute_key: str,
+    client: OpenSandboxClient,
+) -> SandboxExecOutcome:
+    if exc.code != UNKNOWN_OUTCOME:
+        if exc.code in (CAPABILITY_DISABLED, IDEMPOTENCY_CONFLICT):
+            return _outcome_failed(exc.code, str(exc), sandbox_id=sandbox_id)
+        return _outcome_failed(FAILED_OUTCOME, str(exc), sandbox_id=sandbox_id)
+    try:
+        state = await client.reconcile(sandbox_id)
+    except OpenSandboxClientError as reconcile_exc:
+        return _outcome_unknown(
+            "OPENSANDBOX_UNKNOWN_OUTCOME: execute timed out and "
+            f"reconciliation failed: {reconcile_exc}",
+            sandbox_id=sandbox_id,
+        )
+    prior = _prior_server_execution(state, execute_key)
+    if prior is not None:
+        output = str(prior.get("output") or "")
+        await _destroy_best_effort(client, sandbox_id)
+        return _outcome_succeeded(output, sandbox_id, state)
+    return _outcome_unknown(
+        "OPENSANDBOX_UNKNOWN_OUTCOME: execute timed out; server-side "
+        "state reconciled - no duplicate execution was issued",
+        sandbox_id=sandbox_id,
+        server_state=state,
+    )
+
+
+async def reconcile_sandbox_once(
+    *,
+    sandbox_id: str,
+    execute_key: str,
+    client: OpenSandboxClient,
+    resume_phase: str | None = None,
+) -> SandboxExecOutcome:
+    """Stateless reconcile path used by ``POST /sandbox/reconcile``.
+
+    The sandbox is queried exactly once; a server-side execution fact for
+    ``execute_key`` converges to that result. Anything else (including a
+    queryable sandbox with no such fact) is ``unknown`` - the original
+    outcome cannot be reconstructed and the mutation is never re-issued.
+    """
+    del resume_phase  # accepted for the reconcile contract; no branching needed
+    try:
+        state = await client.get_sandbox(sandbox_id)
+    except OpenSandboxClientError as exc:
+        return _outcome_unknown(
+            "OPENSANDBOX_UNKNOWN_OUTCOME: reconcile could not query the "
+            f"sandbox: {exc}",
+            sandbox_id=sandbox_id,
+        )
+    prior = _prior_server_execution(state, execute_key)
+    if prior is not None:
+        output = str(prior.get("output") or "")
+        await _destroy_best_effort(client, sandbox_id)
+        return _outcome_succeeded(output, sandbox_id, state)
+    return _outcome_unknown(
+        "OPENSANDBOX_UNKNOWN_OUTCOME: no server execution fact for the "
+        "execute key; the original outcome cannot be reconstructed",
+        sandbox_id=sandbox_id,
+        server_state=state,
+    )
 
 
 class SandboxReconciler:

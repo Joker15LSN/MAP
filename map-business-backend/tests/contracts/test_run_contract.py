@@ -400,6 +400,28 @@ def test_unknown_event_type_fails_closed() -> None:
     assert exc_info2.value.code == UNKNOWN_EVENT_TYPE
 
 
+def test_message_delta_is_frozen_and_unknown_message_type_rejected() -> None:
+    """Step 4 / PR-F1: message.delta is a frozen canonical event type."""
+    envelope = EventEnvelope.build(
+        run_id=RUN_ID,
+        seq=1,
+        event_type="message.delta",
+        workspace_id=WORKSPACE_ID,
+        data={"content": "你"},
+    )
+    assert envelope.type == "message.delta"
+    assert envelope.data["content"] == "你"
+    # known prefix but undefined type fails closed
+    with pytest.raises(EventEnvelopeError) as exc_info:
+        EventEnvelope.build(
+            run_id=RUN_ID,
+            seq=1,
+            event_type="message.not_defined",
+            workspace_id=WORKSPACE_ID,
+        )
+    assert exc_info.value.code == UNKNOWN_EVENT_TYPE
+
+
 def test_minor_version_forward_compatible_through_real_parser() -> None:
     """A newer minor version parsed from JSON keeps unknown fields intact."""
     envelope = EventEnvelope.build(
