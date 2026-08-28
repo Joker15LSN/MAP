@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-import json
-from typing import Optional
-
 from pydantic import BaseModel
-from pymilvus import AsyncMilvusClient
 
 from ...service.agent.base import AgentRequest
 from ...service.scene_agent_config_provider import (
@@ -106,10 +101,3 @@ async def afetch_agent_configs_by_refs(scene_codes: list[str], env='ubddev') -> 
     )
     provider = SceneAgentConfigProvider(endpoint="", timeout_s=5.0)
     return await provider.fetch_by_refs(scene_codes, request)
-
-
-# def fetch_agent_configs_by_refs(scene_codes: list[str]) -> SceneAgentConfigFetchResult:
-#     """同步版本：通过 refs 获取 agent 实际配置，参数全部写死。"""
-#     return asyncio.run(afetch_agent_configs_by_refs(scene_codes))
-
-

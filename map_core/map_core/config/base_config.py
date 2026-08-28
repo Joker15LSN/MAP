@@ -5,8 +5,3 @@ VERSION = "0.0.1"
 PROJECT_ROOT = Path(__file__).parents[2].resolve()  # /home/vscode/map-core
 LOG_DIR = PROJECT_ROOT / "logs"
 DATA_DIR = PROJECT_ROOT / "data"
-
-if __name__ == "__main__":
-    print(f"Project Root: {PROJECT_ROOT}")
-    print(f"Log Directory: {LOG_DIR}")
-    print(f"Data Directory: {DATA_DIR}")

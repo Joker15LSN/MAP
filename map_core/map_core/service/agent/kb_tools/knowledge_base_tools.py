@@ -19,16 +19,12 @@ from .base import (
     KB_API_BASE_URL,
     RerankModelConfig,
     SearchKbChunkOutput,
-    build_item_as_dict,
     fetch_tool_self_dict,
-    temp_to_tool_result,
     to_tool_result,
 )
 from .remote_api import (
     EmbSchema,
     KbConfigSchema,
-    ResultItem,
-    query_chunks_by_file,
     search_knowledge,
 )
 

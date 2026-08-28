@@ -43,14 +43,15 @@ FastAPI 服务，提供请求分析、链路关联和错误定位 API。
 
 ```bash
 cd map-observability/map-observability-backend
-uv sync --dev
+uv sync --frozen
 uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ## Test
 
 ```bash
-uv run pytest -q
+uv run ruff check .
+uv run pytest
 ```
 
 ## Environment Variables
@@ -92,3 +93,5 @@ uv run pytest -q
 
 - 上层观测文档：[`../README.md`](../README.md)
 - 根文档：[`../../README.md`](../../README.md)
+- 测试策略：[`../../docs/TESTING.md`](../../docs/TESTING.md)
+- 系统设计：[`../../docs/SDD.md`](../../docs/SDD.md)

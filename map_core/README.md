@@ -1,133 +1,118 @@
-# MAP Algorithm Service (`map_core`)
+# MAP Core 执行模块（`map_core`）
 
-`map_core` 是 MAP 的算法执行层，负责场景识别、多智能体调度、工具调用、心流编排与结果汇总。
+Core 负责场景选择、Agent 调度、模型/工具调用、Flow 执行和 typed 流输出。它不面向浏览器；
+生产由 BFF/Worker 通过受保护的内部网络调用。
 
-## Service Responsibilities
+当前模块仍保留 legacy 与 AgentScope 双引擎，并直接保存部分 Mongo 运行记录和沙箱 ledger。
+目标边界是消费不可变 Runtime Snapshot、返回 typed events/results，而不直接写 Canonical
+Run/Event 事实。详见 [`docs/SDD.md`](../docs/SDD.md) 与
+[`docs/TDD.md`](../docs/TDD.md#4-core-技术设计)。
 
-- 统一算法入口：
-  - 全域链路：`/global_domain/*`
-  - 心流链路：`/flow_domain/*`
-- 智能体执行：场景识别、业务智能体调用、工具编排、总结生成。
-- 心流治理：ScenarioHub + SkillHub + FlowPolicy（含 fallback、预算、修复策略）。
-- 运行记录：请求/智能体/工具事件写入 Mongo，支撑观测平台。
+## 当前职责
 
-## Key Interfaces
+- 全域：`/global_domain/*`；
+- 心流：`/flow_domain/*`，ScenarioHub / SkillHub / Flow 策略；
+- AgentRuntime：按 `MAP_AGENT_ENGINE` 选择 legacy 或 AgentScope；
+- Model/Tool/MCP 调用与统一运行身份传播；
+- OpenSandbox client、身份、ledger、fencing 和 crash recovery；
+- Mongo 运行记录与可选 OTel trace；
+- 健康与受服务身份保护的 sandbox/internal 入口。
 
-### Global Domain
+`python_exec_tool`、`bash_tool`、本地文件和宿主 stdio MCP 能力已删除或 fail-closed。生产不得
+恢复宿主 fallback；见 [`ADR-0001`](../SPEC/adr/ADR-0001-disable-host-execution-capabilities.md)。
+
+## 代码地图
+
+```text
+map_core/
+├── main.py                  # 组合根、生命周期、router、telemetry
+├── routers/                 # HTTP/SSE adapter
+├── service/
+│   ├── global_domain.py     # 全域编排
+│   ├── flow_domain.py       # Flow 图执行
+│   ├── agent_runtime.py     # 双引擎选择 seam（过渡中）
+│   ├── agent/               # legacy runtime
+│   ├── agentscope2/         # AgentScope adapter
+│   ├── scenario_hub.py / skill_hub.py
+│   └── sandbox_*.py         # OpenSandbox 与调用 ledger
+├── schema/                  # 请求、事件和运行数据结构
+├── observability/           # OTel 与运行观测
+├── utils/llm_engine.py      # 当前宽模型接口热点
+└── tests/
+```
+
+## 主要入口
 
 - `POST /global_domain/chat`
 - `POST /global_domain/chat/stream/v2`
 - `POST /global_domain/chat/stream/v3`
-
-### Flow Domain
-
 - `POST /flow_domain/chat/v1`
 - `POST /flow_domain/chat/stream/v1`
+- `GET /health`
 
-### SSE Event Model
+这些是当前 Core 协议。浏览器面向的稳定协议由 BFF 拥有；Canonical Event 目标契约见
+[`SPEC/contracts/run.md`](../SPEC/contracts/run.md)。
 
-- 通用事件：`start` / `meta` / `content_delta` / `done` / `error`
-- 心流关键 phase（`meta.phase`）：
-  - `flow_mode_initialized`
-  - `flow_policy_hit`
-  - `scenario_resolved`
-  - `flow_graph_built`
-  - `flow_node_started`
-  - `flow_node_result`
-  - `flow_repair_applied`
+## 运行流概览
 
-## Execution Flow
+全域路径处理输入/附件与上下文、选择 Scenario/Agent、执行模型和工具、汇总并产生流事件。
+心流路径从 BFF 获取当前 Flow 配置快照，解析 Scenario，构建执行图，按依赖推进节点并执行
+repair/fallback 策略。
 
-### 全域模式
+当前流事件包含 `start/meta/content_delta/done/error` 及心流 `meta.phase`；BFF 负责把 Core
+协议投影为浏览器契约。EOF 不代表成功。
 
-1. 请求预处理（历史、附件、上下文）。
-2. 场景识别与智能体选择。
-3. 子智能体工具调用与结果聚合。
-4. 汇总智能体生成最终响应。
-5. 写入 `request.start/request.end` 与执行事件。
+## 本地运行
 
-### 心流模式
-
-1. 从 BFF 拉取心流运行时快照（可缓存）。
-2. ScenarioResolver 命中场景并构建执行图。
-3. SkillHub 按 `agent/scenario/user/tenant` 计算授权工具。
-4. FlowOrchestrator 按节点依赖顺序执行。
-5. 节点失败或不确定时按策略执行 repair。
-6. 不可执行时按 `fallback_to_global` 决定回退或硬失败。
-
-## Module Layout
-
-```text
-map_core/
-├── map_core/main.py
-├── map_core/routers/
-│   ├── global_domain_router.py
-│   └── flow_domain_router.py
-├── map_core/service/
-│   ├── global_domain.py
-│   ├── flow_domain.py
-│   ├── scenario_hub.py
-│   ├── skill_hub.py
-│   ├── flow_config_provider.py
-│   └── agent/
-├── map_core/schema/
-└── tests/
-```
-
-## Local Development
+Python >= 3.13，当前锁定 `agentscope==2.0.4`。
 
 ```bash
 cd map_core
-uv sync --dev
-uv run python -m map_core.main --host 0.0.0.0 --port 10000
+uv sync --frozen
+uv run python -m map_core.main --env dev --host 0.0.0.0 --port 10000
 ```
 
-## Docker Run
+数据库、模型和沙箱能力所需配置必须显式注入；缺少高权限能力配置时应 fail-closed。
+
+Compose：
 
 ```bash
 docker compose up -d algorithm-service
 ```
 
-## Test
+生产 override 会移除 Core 宿主机端口。
+
+## 测试
 
 ```bash
 cd map_core
-uv run pytest -q
+uv sync --frozen
+uv run ruff check .
+uv run pytest
 ```
 
-## Environment Variables
+Agent 引擎、运行身份、OpenSandbox、宿主边界、MCP egress、事件和 trace 均有定向测试。真实
+OpenSandbox 环境验收不能仅由 double 代替，见 [`docs/TESTING.md`](../docs/TESTING.md)。
 
-### Runtime Basics
+## 关键配置
 
-- `ENV`：`dev/test/pre/prod`
-- `POSTGRES_DSN`：PostgreSQL 连接串
-- `MONGODB_URI`：MongoDB 连接串
-- `MONGODB_DATABASE`：MongoDB 数据库名
+- `MAP_ENV` / 兼容 `ENV`：环境；
+- `POSTGRES_DSN`：当前沙箱 ledger 等关系事实；
+- `MONGODB_URI` / `MONGODB_DATABASE`：当前运行记录；
+- `MAP_AGENT_ENGINE=legacy|agentscope`：双引擎开关；
+- `MAP_LLM_BASE_URL` / `MAP_LLM_MODEL` / `MAP_LLM_API_KEY`：模型；
+- `MAP_BFF_API_ORIGIN` / `MAP_FLOW_CONFIG_SNAPSHOT_URL`：当前 Flow 配置来源；
+- `MAP_OPENSANDBOX_URL` / `MAP_OPENSANDBOX_API_KEY`：沙箱服务；
+- `MAP_SANDBOX_SERVICE_CREDENTIALS` / `MAP_SANDBOX_SERVICE_AUDIENCE`：沙箱入口服务身份；
+- `MAP_OTEL_ENABLED` 与 OTLP 配置：可选 trace。
 
-### LLM
+完整变量与优先级见根 [`.env.example`](../.env.example)。AgentScope 单引擎、ModelInvocation、
+Runtime Snapshot 和 Event 投影的收敛顺序见
+[`TODO/代码精简与可读性改造执行计划.md`](../TODO/代码精简与可读性改造执行计划.md)。
 
-- `MAP_LLM_BASE_URL`
-- `MAP_LLM_MODEL`
-- `MAP_LLM_API_KEY`
-- `MAP_LLM_TEMPERATURE`
-- `MAP_AGENT_LLM_TEMPERATURE`
-- `MAP_SCENE_SELECTOR_LLM_TEMPERATURE`
-- `MAP_SUMMARIZATION_LLM_TEMPERATURE`
+## 相关文档
 
-### Flow Config Source
-
-- `MAP_BFF_API_ORIGIN`：BFF 地址
-- `MAP_FLOW_CONFIG_SNAPSHOT_URL`：默认 `${MAP_BFF_API_ORIGIN}/api/admin/flow-runtime-snapshot`
-- `MAP_FLOW_CONFIG_CACHE_TTL_S`：快照缓存秒数
-- `MAP_FLOW_CONFIG_FETCH_ENABLED`：是否启用远端拉取
-
-## Operational Notes
-
-- 同步接口（`/chat`）会消费完整事件流并返回最终文本。
-- 为保证观测链路完整，`request.end` 在响应 `done` 之前落库。
-- 请求日志默认对密钥字段脱敏（`api_key/token/authorization`）。
-
-## References
-
-- 系统架构：[`../SPEC/ARCHITECTURE.md`](../SPEC/ARCHITECTURE.md)
-- 工程规范：[`../SPEC/STANDARDS.md`](../SPEC/STANDARDS.md)
+- [`SPEC/ARCHITECTURE.md`](../SPEC/ARCHITECTURE.md)
+- [`SPEC/contracts/run.md`](../SPEC/contracts/run.md)
+- [`docs/DEVELOPMENT.md`](../docs/DEVELOPMENT.md)
+- [`docs/OPERATIONS.md`](../docs/OPERATIONS.md)

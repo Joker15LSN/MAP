@@ -751,20 +751,6 @@ class GlobalAgentStateStore:
 
 _R = TypeVar("_R")
 
-DEFAULT_STATE_STORE_TIMEOUT_S = 2.0
-
-
-async def _safe_state_call(
-    coro: Awaitable[Any],
-    *,
-    action: str,
-    timeout_s: float = DEFAULT_STATE_STORE_TIMEOUT_S,
-) -> None:
-    """deprecated!"""
-    try:
-        await asyncio.wait_for(coro, timeout=timeout_s)
-    except Exception as exc:
-        logger.error(f"State store {action} failed: {exc}")
 
 
 def safe_serialize(value: Any) -> Any:

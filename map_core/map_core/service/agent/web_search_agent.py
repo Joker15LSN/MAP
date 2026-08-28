@@ -1020,39 +1020,3 @@ class WebSearchAgent(TraceableAgent):
                     data_source={},
                     error=str(exc),
                 )
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    from ...config.common import DEEPSEEKV3_LOCAL_CONFIG
-    from ...utils.llm_engine import LLMEngine
-
-    async def _demo():
-        agent = WebSearchAgent(llm=LLMEngine(DEEPSEEKV3_LOCAL_CONFIG))
-
-        request = AgentRequest(
-            query="2026年全球AI代理发展趋势",
-            staff_code="0120250028",
-            extra={
-                "caller_agent_name": "org_agent",
-                "tool_context": {
-                    "org_agent": {
-                        "web_search_agent": {
-                            "enable_query_disassembly": True,
-                        }
-                    }
-                },
-            },
-        )
-
-        result = await agent.run(request)
-
-        print("AgentResult:")
-        print(f"  name: {result.name}")
-        print(f"  success: {result.success}")
-        print(f"  content: {result.content}")
-        print(f"  error: {result.error}")
-        print(f"  data_source: {result.data_source}")
-
-    asyncio.run(_demo())

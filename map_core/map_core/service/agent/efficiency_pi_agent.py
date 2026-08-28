@@ -758,7 +758,6 @@ class EfficiencyPiAgent(TraceableAgent):
             sections.append(f"{index}. 子问题：{sub_query}\n总结：{summary}")
         return "\n\n".join(sections)
 
-    # @record_agent_call("run_efficiency_pi_agent")
     async def run(self, request: AgentRequest, *, parid: str = "-") -> AgentResult:
         with agent_log_context(self.agent_id, parent_id=parid):
             logger.info(f"[TOOL] EfficiencyPiAgent run started, query={request.query}")
@@ -833,65 +832,3 @@ class EfficiencyPiAgent(TraceableAgent):
                     data_source={},
                     error=str(exc),
                 )
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    from ...config.common import DEEPSEEKV3_LOCAL_CONFIG, QWEN3_NEXT_80B_CONFIG
-    from ...utils.llm_engine import LLMEngine
-
-    disassembly_system_prompt = DEFAULT_DISASSEMBLY_SYSTEM_PROMPT
-    disassembly_user_prompt = DEFAULT_DISASSEMBLY_USER_PROMPT
-
-    async def _demo():
-        agent = EfficiencyPiAgent(llm=LLMEngine(QWEN3_NEXT_80B_CONFIG))
-        query = "今年1月份MAP创新部谁加班最多？加班时间分别是多少？"
-        request = AgentRequest(
-            query=query,
-            # query="总结朱轶涵1月工作",
-            staff_code="0120250028",
-            summarize=True,
-            extra={
-                "tool_context": {
-                    "efficiency_pi_agent": {
-                        "disassembly_system_prompt": disassembly_system_prompt,
-                        "disassembly_user_prompt": disassembly_user_prompt,
-                        "summarize_prompt": (
-                            "你是效率数据分析助手。请基于问题查询结果进行总结。请你的总结要突出关键数据、时间范围与对象，精简所有无关信息。"
-                        ),
-                    }
-                }
-            },
-        )
-
-        result = await agent.run(request)
-        decomposed_queries = (
-            result.meta_data.get("decomposed_queries")
-            if isinstance(result.meta_data, dict)
-            else None
-        )
-        all_queries = (
-            result.meta_data.get("all_queries")
-            if isinstance(result.meta_data, dict)
-            else None
-        )
-
-        print("AgentResult:")
-        print(f"  name: {result.name}")
-        print(f"  success: {result.success}")
-        print(f"  content: {result.content}")
-        print(f"  error: {result.error}")
-        print(f"  decomposed_queries: {decomposed_queries}")
-        print(f"  all_queries: {all_queries}")
-        # print(f"  data_source: {result.data_source}")
-        items = (
-            result.data_source.get("data", [])
-            if isinstance(result.data_source, dict)
-            else []
-        )
-        for i, item in enumerate(items, 1):
-            print(f"[{i}] query: {item.get('query')}")
-            print(f"\nsummary: {item.get('summary')}")
-
-    asyncio.run(_demo())

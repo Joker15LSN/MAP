@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncGenerator
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from opentelemetry.trace import StatusCode as OtelStatusCode
 
 from ..observability import get_tracer
 from ..schema.flow_domain_schema import (
+    BusinessExecutionGraphSchema,
     FlowChatRequest,
     FlowConfigSchema,
     FlowDomainStreamEvent,
@@ -27,10 +29,6 @@ from ..schema.global_domain_schema import (
 from .agent.agent_mapping import SCENE_AGENT_CONFIGS
 from .agent.base import AgentRequest, AgentResult
 from .agent_case_miner import AgentCaseMiner
-from .business_execution_graph_store import (
-    BusinessExecutionGraphStore,
-    GraphRuntimeState,
-)
 from .flow_config_provider import FlowConfigProvider
 from .global_domain import GlobalDomain
 from .global_domain_helpers import (
@@ -50,6 +48,51 @@ from .state_store import fire_and_forget, safe_serialize
 _flow_tracer = get_tracer(__name__)
 
 
+@dataclass
+class GraphRuntimeState:
+    """In-memory execution-graph state for one request lifecycle.
+
+    Inlined from ``service/business_execution_graph_store.py`` (Step 1
+    deletion test: the former static facade had exactly one caller and its
+    two operations read/append one caller-owned object, so the facade hid
+    no decision and the complexity moves locally into ``FlowDomain``).
+    """
+
+    graph: BusinessExecutionGraphSchema
+    node_results: dict[str, NodeExecutionResultSchema] = field(default_factory=dict)
+    verdicts: dict[str, StepVerdictSchema] = field(default_factory=dict)
+
+    def record(
+        self,
+        *,
+        node_id: str,
+        node_result: NodeExecutionResultSchema,
+        verdict: StepVerdictSchema,
+    ) -> None:
+        self.node_results[node_id] = node_result
+        self.verdicts[node_id] = verdict
+
+    def is_finished(self, node_id: str) -> bool:
+        return node_id in self.verdicts
+
+    def is_passed(self, node_id: str) -> bool:
+        verdict = self.verdicts.get(node_id)
+        return bool(verdict and verdict.verdict == "pass")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "node_results": {
+                key: value.model_dump()
+                for key, value in self.node_results.items()
+            },
+            "verdicts": {
+                key: value.model_dump()
+                for key, value in self.verdicts.items()
+            },
+            "graph": self.graph.model_dump(by_alias=True),
+        }
+
+
 class FlowDomain:
     """Flow-mode orchestrator with ScenarioHub + SkillHub and fallback support."""
 
@@ -63,7 +106,6 @@ class FlowDomain:
         self.skill_hub = SkillHub()
         self.scenario_resolver = ScenarioResolver()
         self.hyperedge_planner = HyperedgePlanner()
-        self.graph_store = BusinessExecutionGraphStore()
         self.flow_config_provider = FlowConfigProvider.instance()
         self.agent_case_miner = AgentCaseMiner()
 
@@ -549,7 +591,7 @@ class FlowDomain:
                     yield event
                 return
 
-            state = self.graph_store.create(graph)
+            state = GraphRuntimeState(graph=graph)
 
             yield FlowDomainStreamEvent(
                 event="meta",
@@ -714,10 +756,7 @@ class FlowDomain:
                                 status="pending",
                                 depends_on=[node.node_id],
                             )
-                            self.graph_store.append_repair_node(
-                                state,
-                                repair_node=repair_node,
-                            )
+                            state.graph.nodes.append(repair_node)
                             state.graph.edges.append(
                                 GraphEdgeSchema(
                                     **{

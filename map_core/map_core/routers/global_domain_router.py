@@ -12,7 +12,6 @@ from ..schema.global_domain_schema import (
     GlobalDomainChatResponse,
     GlobalDomainChatSchema,
     GlobalDomainChatV3Schema,
-    GlobalDomainDemoResponse,
     GlobalDomainStreamEvent,
     SceneAgentDebugRequest,
     SceneAgentDebugResponse,
@@ -252,18 +251,3 @@ async def debug_run_tool_agent(
     _apply_runtime_headers(http_request, request_token=request_token)
     global_domain = GlobalDomain(request=request, http_request=http_request)
     return await global_domain.debug_tool_agent(request)
-
-
-# @global_domain_router.post("/demo", response_model=GlobalDomainDemoResponse)
-# async def demo(
-#     request: GlobalDomainChatSchema, http_request: Request
-# ) -> GlobalDomainDemoResponse:
-#     global_domain = GlobalDomain(request=request, http_request=http_request)
-#     result = await global_domain.demo(request)
-#     return result
-
-# @global_domain_router.post("/chat/stream")
-# async def chat_stream(request: GlobalDomainChatSchema, http_request: Request):
-#     global_domain = GlobalDomain(request=request, http_request=http_request)
-#     _, _, stream = await global_domain.pipeline_stream(request)
-#     return StreamingResponse(iter_chunks(), media_type="text/plain")

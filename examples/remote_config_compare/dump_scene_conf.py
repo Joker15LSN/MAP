@@ -1,12 +1,12 @@
 """
 Dump scene agent configs from different environments into JSON files.
 
-Usage:
-    python -m map_core.utils.remote_config_compare.scripts.dump_scene_conf \
+Usage (from the repository root, uses the frozen map_core venv):
+    PYTHONPATH=map_core uv run --project map_core python -m examples.remote_config_compare.dump_scene_conf \
         --scenes Procurement Inventory --envs ubddev ubdtest
 
 Each scene + env combination gets its own JSON file under
-    map_core/utils/remote_config_compare/dumped_configs/
+``dumped_configs/`` in the current working directory.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from map_core.utils.remote_config_compare.sacne_config_fetch import (
     afetch_agent_configs_by_refs,
 )
 
-DUMP_DIR = Path(__file__).resolve().parent.parent / "dumped_configs"
+DUMP_DIR = Path.cwd() / "dumped_configs"
 
 
 async def dump_scene(

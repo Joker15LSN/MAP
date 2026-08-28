@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from ...schema.scene_agent_config_schema import (
     SceneAgentConfig,
-    ScenePostSummaryConfig,
 )
 from ...schema.scene_registry import SUB_SCENES
 

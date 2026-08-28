@@ -9,6 +9,9 @@ MAP 是一个面向企业场景的多智能体应用平台。它把业务 UI、�
 
 浏览器只访问 BFF，不直接访问算法服务。跨服务契约以 [`SPEC/contracts/`](SPEC/contracts/) 为准。
 
+第一次阅读或准备修改代码时，从 [`docs/README.md`](docs/README.md) 开始；领域术语、系统设计、
+技术设计、测试、开发和运维文档均由该页索引。
+
 ## 当前实现状态（诚实声明，R-10）
 
 本分支状态为 **P0 止血与契约基础，未完成**，不宣称黄金任务书已完成：
@@ -39,7 +42,7 @@ MAP 是一个面向企业场景的多智能体应用平台。它把业务 UI、�
 - 端到端观测：Mongo 请求/智能体/工具记录，独立观测前后端，以及可选的 BFF → map_core 分布式追踪。
 - 可复现质量门禁：冻结依赖、后端 Ruff/pytest、前端 test/build、bundle、依赖审计和 Compose 跨服务 E2E。
 
-## 系统架构
+## 系统架构（当前过渡实现）
 
 ```mermaid
 flowchart LR
@@ -421,13 +424,17 @@ E2E 只在 LLM 边界使用确定性的 fake，其余 PostgreSQL、MongoDB、BFF
 ```text
 MAP/
 ├── README.md
+├── AGENTS.md                         # Agent 工作指针与完成标准
+├── CONTEXT.md                        # 领域统一语言
 ├── docker-compose.yml               # 基础开发栈
 ├── docker-compose.otel.yml          # OTel/Jaeger overlay
 ├── .env.example                     # 配置模板与优先级
+├── docs/                             # SDD/TDD、开发、测试、运维与入门
 ├── SPEC/
 │   ├── ARCHITECTURE.md
 │   ├── STANDARDS.md
-│   └── contracts/                   # 跨服务权威契约
+│   ├── contracts/                   # 跨服务权威契约
+│   └── adr/                         # 架构决策记录
 ├── map-business-frontend/           # 业务 React/Vite 前端
 ├── map-business-backend/            # FastAPI BFF + worker + Alembic
 ├── map_core/                         # 多智能体算法服务
@@ -443,7 +450,16 @@ MAP/
 
 ## 文档索引
 
-- 架构与规范：[`SPEC/README.md`](SPEC/README.md)
+- 文档入口与事实优先级：[`docs/README.md`](docs/README.md)
+- 领域术语：[`CONTEXT.md`](CONTEXT.md)
+- 系统设计（SDD）：[`docs/SDD.md`](docs/SDD.md)
+- 技术设计（TDD）：[`docs/TDD.md`](docs/TDD.md)
+- 开发指南：[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
+- 测试策略：[`docs/TESTING.md`](docs/TESTING.md)
+- 运维手册：[`docs/OPERATIONS.md`](docs/OPERATIONS.md)
+- 新成员入门：[`docs/ONBOARDING.md`](docs/ONBOARDING.md)
+- 规范与 ADR：[`SPEC/README.md`](SPEC/README.md)
+- Canonical Run/Event/Artifact：[`SPEC/contracts/run.md`](SPEC/contracts/run.md)
 - 身份与权限：[`SPEC/contracts/identity.md`](SPEC/contracts/identity.md)
 - 会话、SSE 与幂等：[`SPEC/contracts/conversation.md`](SPEC/contracts/conversation.md)
 - 反馈：[`SPEC/contracts/feedback.md`](SPEC/contracts/feedback.md)
@@ -455,6 +471,7 @@ MAP/
 - 观测系统：[`map-observability/README.md`](map-observability/README.md)
 - Compose E2E：[`e2e/README.md`](e2e/README.md)
 - 供应链安全例外：[`SECURITY_EXCEPTIONS.md`](SECURITY_EXCEPTIONS.md)
+- 代码精简计划：[`TODO/代码精简与可读性改造执行计划.md`](TODO/代码精简与可读性改造执行计划.md)
 
 ## 变更不变量
 

@@ -2,6 +2,9 @@
 
 MAP 观测系统用于分析多智能体请求链路，覆盖请求、智能体、工具三个层级。
 
+当前观测以 Core 写入 Mongo 的运行记录为主，并可关联 OTel trace；它尚未完全由 Canonical
+Event 投影驱动。系统现状与目标见 [`docs/SDD.md`](../docs/SDD.md#55-观测已实现基础过渡中)。
+
 ## Components
 
 - `map-observability-backend`：FastAPI 分析后端
@@ -38,7 +41,7 @@ docker compose up -d observability-backend-service observability-frontend-servic
 
 ```bash
 cd map-observability/map-observability-backend
-uv sync --dev
+uv sync --frozen
 uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -68,3 +71,5 @@ npm run dev
 - 观测后端：[`map-observability-backend/README.md`](map-observability-backend/README.md)
 - 观测前端：[`map-observability-frontend/README.md`](map-observability-frontend/README.md)
 - 根文档：[`../README.md`](../README.md)
+- 测试策略：[`../docs/TESTING.md`](../docs/TESTING.md)
+- 运维手册：[`../docs/OPERATIONS.md`](../docs/OPERATIONS.md)

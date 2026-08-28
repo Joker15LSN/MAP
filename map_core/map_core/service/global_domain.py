@@ -10,10 +10,8 @@ from loguru import logger
 
 from ..config.common import (
     AGENT_MEMORY_DEFAULT_INTENTION_ID,
-    DEEPSEEKV3_LOCAL_CONFIG,
     DS_V4_FLASH_AGENT_CONFIG,
     DS_V4_FLASH_LLM_CONFIG,
-    QWEN3_NEXT_80B_CONFIG,
     SCENE_SELECTION_LLM_CONFIG,
     SUMMARIZATION_LLM_CONFIG,
 )
@@ -21,7 +19,6 @@ from ..schema.attachment_schema import AttachmentSchema
 from ..schema.global_domain_schema import (
     GlobalDomainChatSchema,
     GlobalDomainChatV3Schema,
-    GlobalDomainDemoResponse,
     GlobalDomainStreamContext,
     GlobalDomainStreamEvent,
     SceneAgentDebugRequest,
@@ -1559,55 +1556,3 @@ class GlobalDomain:
             )
 
         return scene_result, dispatch_results, "".join(summary_parts)
-
-    async def demo(self, request: GlobalDomainRequest) -> GlobalDomainDemoResponse:
-        try:
-            logger.info(f"Received global domain request:\n{request}")
-
-            _, dispatch_results, summary = await self.pipeline(request)
-
-            return GlobalDomainDemoResponse(
-                summary=summary,
-                dispatch_results=dispatch_results,
-            )
-        except Exception as exc:
-            logger.exception("Pipeline demo failed!")
-            return GlobalDomainDemoResponse(
-                summary="",
-                dispatch_results=[],
-                error=str(exc),
-            )
-
-    # async def record_tool_call(self, tool_name: str, payload: dict[str, Any]) -> None:
-    #     """Optional hook for tool-call recording."""
-
-    #     await self.state_store.record_event(
-    #         self.state_id,
-    #         "tool_call",
-    #         {"tool": tool_name, **payload},
-    #     )
-
-
-async def main():
-    gd = GlobalDomain()
-    query = "经营与资源治理和业务运营与交付近况如何?"
-    query = "公司的财务状况如何?"
-    query = "去年MAP的合同额怎么样?"
-    query = "今年公司的有效人力有多少?"
-    query = "公司的研发项目进度如何?"
-    query = "市场开发和销售情况如何?"
-    query = "王宽心的25年加班时间详情"
-
-    print(f"Query: {query}")
-
-    result = await gd.demo(
-        GlobalDomainChatSchema(
-            query=query,
-        )
-    )
-    print("\n--- Scene Classification Result ---")
-    print(result)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

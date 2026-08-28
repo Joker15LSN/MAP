@@ -54,14 +54,11 @@ select = [
 ignore = [
     "E501",  # line-too-long
     "E402",  # module-import-not-at-top-of-file
-    "F841",  # unused-variable, only for dev
-    "F401",  # unused-import, only for dev
 ]
 
 [tool.pytest.ini_options]
-# Only collect the real test suite: legacy manual scripts under
-# map_core/service/agent/{kb_tools,zhiwen_agent}/scripts share duplicate
-# basenames (e.g. two ``single_agent_test.py``) and break collection.
+# Only collect the real test suite under tests/. (Step 1 removed the legacy
+# duplicate-basename manual scripts that previously required this pin.)
 testpaths = ["tests"]
 
 [dependency-groups]

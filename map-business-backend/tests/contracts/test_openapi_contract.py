@@ -269,8 +269,15 @@ def test_new_api_routes_are_present() -> None:
     assert current >= NEW_API_PATHS
 
 
-async def test_v1_errors_use_standard_envelope_not_fastapi_detail() -> None:
-    """Runtime check: /api/v1 4xx bodies are {code,message,details,request_id}."""
+async def test_v1_errors_use_standard_envelope_not_fastapi_detail(_engine) -> None:
+    """Runtime check: /api/v1 4xx bodies are {code,message,details,request_id}.
+
+    This test exercises real /api/v1 handlers against PostgreSQL. Pytest
+    collects ``tests/contracts/`` before ``tests/integration/``, so it must
+    not rely on an earlier test having run Alembic — requesting the shared
+    ``_engine`` fixture runs the idempotent ``upgrade head`` explicitly and
+    makes a fresh database reproducible (Step 0 baseline gate).
+    """
     app = _app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # 404 conversation

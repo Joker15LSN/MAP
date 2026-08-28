@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-24T16:24:21Z",
+  "git_sha": "e781ecd84d4fa54ddf5aa4dd33c9c321b4031f53",
+  "f401_f841": {
+    "map-business-backend": {},
+    "map_core": {},
+    "map-observability": {}
+  },
+  "c901_gt12": {
+    "map-business-backend": [
+      {
+        "file": "map-business-backend/app/core/service_identity.py",
+        "line": 69,
+        "name": "parse_service_credentials",
+        "complexity": 13
+      },
+      {
+        "file": "map-business-backend/app/runtime/event_envelope.py",
+        "line": 371,
+        "name": "__post_init__",
+        "complexity": 13
+      },
+      {
+        "file": "map-business-backend/app/services/conversation_service.py",
+        "line": 73,
+        "name": "stream_conversation_message",
+        "complexity": 30
+      },
+      {
+        "file": "map-business-backend/app/services/runtime_payloads.py",
+        "line": 198,
+        "name": "derive_agent_tool_names",
+        "complexity": 13
+      },
+      {
+        "file": "map-business-backend/app/workers/job_runner.py",
+        "line": 658,
+        "name": "_resolve_dispatching",
+        "complexity": 14
+      },
+      {
+        "file": "map-business-backend/app/workers/job_runner.py",
+        "line": 812,
+        "name": "run_effect_once",
+        "complexity": 15
+      }
+    ],
+    "map_core": [
+      {
+        "file": "map_core/map_core/main.py",
+        "line": 82,
+        "name": "_truncate_top_level_json_fields",
+        "complexity": 13
+      },
+      {
+        "file": "map_core/map_core/main.py",
+        "line": 324,
+        "name": "__call__",
+        "complexity": 17
+      },
+      {
+        "file": "map_core/map_core/observability/asgi.py",
+        "line": 33,
+        "name": "__call__",
+        "complexity": 13
+      },
+      {
+        "file": "map_core/map_core/observability/telemetry.py",
+        "line": 196,
+        "name": "configure_telemetry",
+        "complexity": 17
+      },
+      {
+        "file": "map_core/map_core/service/agent/_result_calculator/engine.py",
+        "line": 65,
+        "name": "aggregate_raw_data",
+        "complexity": 15
+      },
+      {
+        "file": "map_core/map_core/service/agent/_result_calculator/engine.py",
+        "line": 123,
+        "name": "run_calculation",
+        "complexity": 21
+      },
+      {
+        "file": "map_core/map_core/service/agent/annual_performance_agent.py",
+        "line": 103,
+        "name": "_parse_stream_event_text",
+        "complexity": 17
+      },
+      {
+        "file": "map_core/map_core/service/agent/ask_database_agent.py",
+        "line": 223,
+        "name": "_parse_tool_context",
+        "complexity": 14
+      },
+      {
+        "file": "map_core/map_core/service/agent/ask_database_agent.py",
+        "line": 424,
+        "name": "run",
+        "complexity": 18
+      },
+      {
+        "file": "map_core/map_core/service/agentscope2/agent.py",
+        "line": 459,
+        "name": "_handle_event",
+        "complexity": 14
+      },
+      {
+        "file": "map_core/map_core/service/agentscope2/message.py",
+        "line": 88,
+        "name": "agentscope_messages_to_openai",
+        "complexity": 16
+      },
+      {
+        "file": "map_core/map_core/service/chart_plotting.py",
+        "line": 128,
+        "name": "build_chart_plotting_payload",
+        "complexity": 19
+      },
+      {
+        "file": "map_core/map_core/service/flow_domain.py",
+        "line": 472,
+        "name": "pipeline_stream",
+        "complexity": 19
+      },
+      {
+        "file": "map_core/map_core/service/global_domain.py",
+        "line": 470,
+        "name": "summarize",
+        "complexity": 14
+      },
+      {
+        "file": "map_core/map_core/service/global_domain.py",
+        "line": 779,
+        "name": "consume_event_stream",
+        "complexity": 16
+      },
+      {
+        "file": "map_core/map_core/service/global_domain.py",
+        "line": 1048,
+        "name": "pipeline_stream",
+        "complexity": 24
+      },
+      {
+        "file": "map_core/map_core/service/mcp_egress.py",
+        "line": 184,
+        "name": "validate_mcp_url",
+        "complexity": 18
+      },
+      {
+        "file": "map_core/map_core/service/sandbox_tools.py",
+        "line": 465,
+        "name": "_sandbox_execute_handler",
+        "complexity": 18
+      },
+      {
+        "file": "map_core/map_core/service/sandbox_tools.py",
+        "line": 676,
+        "name": "_drive_remote_execution",
+        "complexity": 14
+      },
+      {
+        "file": "map_core/map_core/service/scene_selector.py",
+        "line": 758,
+        "name": "select_scene_direct",
+        "complexity": 14
+      },
+      {
+        "file": "map_core/map_core/service/scene_selector.py",
+        "line": 1006,
+        "name": "_select_sub_scene_with_usage",
+        "complexity": 16
+      },
+      {
+        "file": "map_core/map_core/utils/content_review/content_reviewer.py",
+        "line": 161,
+        "name": "moderate_event_stream",
+        "complexity": 35
+      },
+      {
+        "file": "map_core/map_core/utils/content_review/content_reviewer.py",
+        "line": 350,
+        "name": "review_text_stream",
+        "complexity": 22
+      },
+      {
+        "file": "map_core/map_core/utils/llm_engine.py",
+        "line": 591,
+        "name": "_prepare_messages",
+        "complexity": 17
+      },
+      {
+        "file": "map_core/map_core/utils/llm_engine.py",
+        "line": 1041,
+        "name": "_parse_non_stream_payload",
+        "complexity": 14
+      },
+      {
+        "file": "map_core/map_core/utils/milvus/factory.py",
+        "line": 108,
+        "name": "create_collection_with_index",
+        "complexity": 20
+      }
+    ],
+    "map-observability": [
+      {
+        "file": "map-observability/map-observability-backend/app/services/correlation_service.py",
+        "line": 236,
+        "name": "_select_main_chain_aids",
+        "complexity": 13
+      },
+      {
+        "file": "map-observability/map-observability-backend/app/services/correlation_service.py",
+        "line": 380,
+        "name": "_build_trace_chain",
+        "complexity": 18
+      },
+      {
+        "file": "map-observability/map-observability-backend/app/services/correlation_service.py",
+        "line": 984,
+        "name": "get_error_clusters",
+        "complexity": 13
+      },
+      {
+        "file": "map-observability/map-observability-backend/app/services/friday_service.py",
+        "line": 949,
+        "name": "_stream_openai_compatible",
+        "complexity": 15
+      },
+      {
+        "file": "map-observability/map-observability-backend/app/services/friday_service.py",
+        "line": 1073,
+        "name": "stream_chat",
+        "complexity": 17
+      }
+    ]
+  },
+  "cross_router_imports": [
+    {
+      "project": "map-business-backend/app/api",
+      "importer": "app/api/audit_events.py",
+      "target": "app/api/conversations.py",
+      "line": 25
+    },
+    {
+      "project": "map-business-backend/app/api",
+      "importer": "app/api/conversations.py",
+      "target": "app/api/chat.py",
+      "line": 33
+    },
+    {
+      "project": "map-business-backend/app/api",
+      "importer": "app/api/feedback.py",
+      "target": "app/api/conversations.py",
+      "line": 33
+    }
+  ],
+  "direct_sdk_imports": {
+    "openai": [
+      {
+        "file": "map_core/map_core/utils/llm_engine.py",
+        "symbol": "openai",
+        "line": 40
+      },
+      {
+        "file": "map_core/map_core/utils/llm_engine.py",
+        "symbol": "openai.types.chat",
+        "line": 41
+      }
+    ]
+  }
+}

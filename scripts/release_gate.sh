@@ -247,6 +247,17 @@ run obs-deps "$ROOT/map-observability/map-observability-backend" uv sync --froze
 run obs-lint "$ROOT/map-observability/map-observability-backend" uv run ruff check app tests
 run obs-test "$ROOT/map-observability/map-observability-backend" uv run pytest -q
 
+# ---- Step 0 architecture anti-regression gates (代码精简计划 Step 0):
+#      changed functions may not add C901>12; F401/F841 debt is non-increasing;
+#      no new private cross-router imports; no new direct provider SDK imports.
+#      The committed debt register lives in TODO/architecture-baseline.json.
+run architecture-gate-self-test "$ROOT" python3 scripts/architecture_gate.py --mode self-test
+if [ -n "$GATE_BASELINE_SHA" ]; then
+    run architecture-gate "$ROOT" python3 scripts/architecture_gate.py --repo . --baseline-sha "$GATE_BASELINE_SHA"
+else
+    run architecture-gate "$ROOT" python3 scripts/architecture_gate.py --repo .
+fi
+
 # ---- Frontends: clean install, tests (must exit 0 with NO unhandled errors),
 #      production build, then the bundle size gate
 run biz-fe-deps "$ROOT/map-business-frontend" npm ci

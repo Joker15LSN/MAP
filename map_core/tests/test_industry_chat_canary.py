@@ -5,7 +5,6 @@ content / data_source / record_message / tool-result events."""
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from unittest import mock
 
 from map_core.service.agent.base import AgentRequest

@@ -18,7 +18,6 @@ from uuid import uuid4
 import pytest
 
 from map_core.service.sandbox_ledger import (
-    STATUS_CREATED,
     STATUS_SUCCEEDED,
     STATUS_UNKNOWN,
     InMemorySandboxInvocationLedger,

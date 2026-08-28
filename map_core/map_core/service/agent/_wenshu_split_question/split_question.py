@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import re
 import time
 from collections.abc import Callable
@@ -23,15 +22,12 @@ from ._prompts import (
     SPLIT_QUESTION_INSTRUCTIONS,
 )
 from ._schema import (
-    DATA_MODEL_ID_FIELD_NAME,
-    DATA_SOURCE_ID_FIELD_NAME,
     DIMENSION_DETAIL_COLLECTION_PREFIX,
     DIMENSION_INFO_DRAFT_COLLECTION,
     DIMENSION_INFO_PUBLISHED_COLLECTION,
     METRIC_DEFINITION_FIELD_NAME,
     METRIC_INFO_DRAFT_COLLECTION,
     METRIC_INFO_PUBLISHED_COLLECTION,
-    MILVUS_DB_NAME_PREFIX,
     VERSION,
     IdentifyMetricsResponse,
     SubQuestionResponse,
@@ -488,49 +484,3 @@ async def split_question(
         )
 
     return sub_questions
-
-
-async def _test_split_question() -> None:
-    """Test the split_question function with sample questions."""
-    from map_core.config.common import DEEPSEEKV3_LOCAL_CONFIG
-
-    test_questions = [
-        # "2025年各个一级业绩区域的合同额",
-        "上个月supos的合同额是多少",
-    ]
-
-    # P0-SEC-01: dev-only credentials come from environment.
-    METRIC_UBDDEV_MILVUS_URI = os.getenv("MAP_MILVUS_URI", "")
-    MILVUS_DB_NAME = os.getenv("MAP_MILVUS_DB_NAME", "")
-
-    milvus_client = MilvusClient(
-        uri=METRIC_UBDDEV_MILVUS_URI,
-        user=os.getenv("MAP_MILVUS_USER", "root"),
-        password=os.getenv("MAP_MILVUS_PASSWORD", ""),
-        db_name=MILVUS_DB_NAME,
-    )
-    await milvus_client.connect()
-
-    llm_engine = LLMEngine(config=DEEPSEEKV3_LOCAL_CONFIG)
-
-    for question in test_questions:
-        print(f"\n{'=' * 60}")
-        print(f"Testing with question: {question}")
-        print("=" * 60)
-
-        result = await split_question(
-            query=question,
-            query_mode="publish",
-            milvus_client=milvus_client,
-            llm=llm_engine,
-        )
-
-        print(f"\nFound {len(result)} metrics corresponding sub-questions:")
-        for i, sq in enumerate(result, 1):
-            print(f"{i}. Metric: {sq['metric_name']} ({sq['metric_code']})")
-            print(f"   Sub-questions: {sq['sub_questions']}")
-
-    await milvus_client.close()
-
-if __name__ == "__main__":
-    asyncio.run(_test_split_question())

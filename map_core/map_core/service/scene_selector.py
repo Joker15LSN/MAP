@@ -1106,24 +1106,3 @@ class SceneSelector:
                     if isinstance(value, int):
                         token_usage[key] = token_usage.get(key, 0) + value
         return cleaned, token_usage
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    async def main():
-        from ..config.common import QWEN3_NEXT_80B_CONFIG
-        from ..schema.global_domain_schema import GlobalDomainChatSchema
-
-        request = GlobalDomainChatSchema(
-            query="公司的财务状况如何?",
-            staff_code="0120250028",
-        )
-
-        llm = LLMEngine(config=QWEN3_NEXT_80B_CONFIG)
-        selector = SceneSelector(llm=llm)
-
-        result = await selector.select_scene(request)
-        print(result)
-
-    asyncio.run(main())

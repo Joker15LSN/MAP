@@ -1,4 +1,3 @@
-import json
 from typing import Optional, Union
 
 from .enterprise_kb_api import RetrieveItemSchema, RetrieveResponseDataSchema

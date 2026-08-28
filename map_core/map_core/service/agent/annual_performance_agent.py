@@ -223,30 +223,3 @@ class AnnualPerformanceAgent(TraceableAgent):
                     data_source={},
                     error=str(exc),
                 )
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    from ...config.common import DEEPSEEKV3_LOCAL_CONFIG
-    from ...utils.llm_engine import LLMEngine
-
-    async def _demo():
-        agent = AnnualPerformanceAgent(llm=LLMEngine(DEEPSEEKV3_LOCAL_CONFIG))
-
-        request = AgentRequest(
-            query=AnnualPerformanceAgent._fixed_query,
-            staff_code="0120240487",
-            summarize=False,
-        )
-
-        result = await agent.run(request)
-
-        print("AgentResult:")
-        print(f"  name: {result.name}")
-        print(f"  success: {result.success}")
-        print(f"  content: {result.content}")
-        print(f"  error: {result.error}")
-        print(f"  data_source: {result.data_source}")
-
-    asyncio.run(_demo())

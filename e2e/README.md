@@ -1,5 +1,7 @@
 # Compose 跨服务 E2E（R2-P1-05）
 
+测试分层、选择规则与 release gate 见 [`docs/TESTING.md`](../docs/TESTING.md)。
+
 一条命令在**随机 Compose project / 全新 volumes** 上完成真实跨服务验收并自动清理：
 
 ```bash

@@ -246,7 +246,7 @@ class SceneAgentConfigProvider:
                     headers=headers or None,
                 )
                 response.raise_for_status()
-        except Exception as exc:
+        except Exception:
             logger.exception(
                 f"Failed to fetch scene agent configs by refs. endpoint={endpoint}, refs={refs}"
             )

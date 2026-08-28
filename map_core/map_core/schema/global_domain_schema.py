@@ -606,13 +606,6 @@ class GlobalDomainStreamEvent(BaseModel):
         return self
 
 
-# -------- debug: demo --------
-class GlobalDomainDemoResponse(BaseModel):
-    summary: str
-    dispatch_results: list[AgentResult] | None = None
-    error: str | None = None
-
-
 # -------- debug only --------
 class SceneClassificationRequest(GlobalDomainChatSchema):
     """Backward-compatible alias for scene-classification debug endpoint."""

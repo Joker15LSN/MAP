@@ -1,34 +1,34 @@
-# MAP Frontend Service (`map-business-frontend`)
+# MAP 业务前端（`map-business-frontend`）
 
-MAP 业务前端，包含“问答工作台 + 管理配置台”两大界面。
+React/TypeScript/Vite 业务 UI，提供问答与管理配置。浏览器只访问 BFF，不直连 Core、数据库
+或 internal 接口。
 
-## Functional Scope
+## 当前功能与迁移状态
 
-- 问答工作台：
-  - 全域模式与心流模式切换
-  - 流式回答展示
-  - Trace / Source 信息展示
-  - 模式内会话历史隔离
-- 管理配置台：
-  - 模型中心
-  - 智能体配置
-  - 权限与策略配置
-  - 心流策略、场景包、技能描述配置
+- `features/chat/`：全域/心流兼容问答，调用 `/api/chat*`；处于退役轨道；
+- `features/conversation/`：持久 Conversation、刷新恢复、停止和 Feedback，调用 `/api/v1`；
+- `features/admin/`：模型、Agent、权限、场景、Skill 和 Flow 管理；
+- `api/sse.ts`：共享 SSE 分帧与错误解析；
+- `packages/map-tree-core`：与观测前端共享调用树呈现。
 
-## Frontend Architecture
+Conversation UI 由 `VITE_MAP_CONVERSATIONS_ENABLED=true` 启用，当前默认关闭。目标是在
+Canonical Run 落地并完成等价验证后，迁移全部流量并删除 Chat controller/reducer，而不是
+长期维护双状态。
 
-- 技术栈：React + TypeScript + Vite
-- UI：`@agentscope-ai/design` + Ant Design
-- 共享能力：`packages/map-tree-core`
-- 数据边界：仅调用 BFF（`map-business-backend`），不直连算法服务
+## 代码地图
 
-## Runtime API Routing
+```text
+src/
+├── main.tsx
+├── app/                    # Shell 与视图装配
+├── api/                    # BFF client、DTO、SSE parser
+├── features/chat/          # 兼容问答
+├── features/conversation/  # 新 Conversation UI
+├── features/admin/         # 管理配置
+└── test/                   # MSW 与测试设置
+```
 
-- 全域模式 -> `POST /api/chat/stream/v2`
-- 心流模式 -> `POST /api/chat/stream/flow/v1`
-- 管理端配置 -> `GET/PUT/POST /api/admin/*`
-
-## Local Development
+## 本地运行
 
 ```bash
 cd map-business-frontend
@@ -36,31 +36,30 @@ npm ci
 npm run dev
 ```
 
-默认地址：`http://localhost:5174`
+默认地址：`http://localhost:5174`。开发代理/跨域 BFF 地址由
+`VITE_MAP_BFF_API_ORIGIN` 配置。
 
-## Build
+## 测试与构建
 
 ```bash
+npm test
 npm run build
 ```
 
-## Preview
+修改 `packages/map-tree-core` 时还必须运行观测前端 test/build 和根 bundle 检查。完整策略见
+[`docs/TESTING.md`](../docs/TESTING.md)。
 
-```bash
-npm run preview
-```
+## 前端约束
 
-## Environment Variables
+- 新业务接口只加在 BFF Public API，不绕过身份与 Workspace 所有权；
+- SSE 的 EOF、`error` 和唯一终态由统一 parser/controller 处理；
+- 目标 `/api/v1` DTO 由 Public OpenAPI 生成，不手写同义类型；
+- 策略与权限来自 BFF/Runtime Snapshot，不在 UI 复制；
+- Chat/Conversation 兼容逻辑必须有迁移和删除条件。
 
-- `VITE_MAP_BFF_API_ORIGIN`：BFF 地址（默认 `http://localhost:18080`）
+## 相关文档
 
-## Engineering Notes
-
-- 新增页面时保持“前端只走 BFF”的边界。
-- 心流模式默认策略应来自管理端快照，而非前端硬编码。
-- 任何模式切换功能必须保证历史会话按模式隔离。
-
-## References
-
-- 根文档：[`../README.md`](../README.md)
-- BFF 服务：[`../map-business-backend/README.md`](../map-business-backend/README.md)
+- [`SPEC/contracts/conversation.md`](../SPEC/contracts/conversation.md)
+- [`docs/TDD.md`](../docs/TDD.md#5-前端技术设计)
+- [`docs/DEVELOPMENT.md`](../docs/DEVELOPMENT.md)
+- [`map-business-backend/README.md`](../map-business-backend/README.md)

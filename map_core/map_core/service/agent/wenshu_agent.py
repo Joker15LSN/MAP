@@ -42,7 +42,6 @@ _parse_tool_context() 分支字段定义：
 """
 
 import asyncio
-import json
 import os
 import time
 from typing import Any, Literal, cast
@@ -222,34 +221,6 @@ class WenshuAgent(TraceableAgent):
             else normalized_path + cls.CONNECTOR_QUERY_PATH
         )
         return str(url.copy_with(path=final_path))
-
-    # def _merge_extra(self, request: AgentRequest) -> dict[str, Any]:
-    #     extra = dict(request.extra or {})
-    #     tool_context = extra.get("tool_context", {})
-    #     caller_agent_name = extra.get("caller_agent_name")
-
-    #     tool_name = self.name
-
-    #     _context = tool_context.get(caller_agent_name, {}).get(tool_name, {})
-
-    #     print(f"[WenshuAgent] tool_context: {tool_context}")
-    #     print(f"[WenshuAgent] caller_agent_name: {caller_agent_name}")
-
-    #     if isinstance(tool_context, dict):
-    #         if isinstance(caller_agent_name, str) and caller_agent_name.strip():
-    #             caller_context = tool_context.get(caller_agent_name)
-    #             if isinstance(caller_context, dict):
-    #                 nested_agent_context = caller_context.get(self.name)
-    #                 if isinstance(nested_agent_context, dict):
-    #                     for key, value in nested_agent_context.items():
-    #                         extra.setdefault(key, value)
-
-    #         agent_context = tool_context.get(self.name)
-    #         if isinstance(agent_context, dict):
-    #             for key, value in agent_context.items():
-    #                 extra.setdefault(key, value)
-    #     print(f"[WenshuAgent] extra: {extra}")
-    #     return extra
 
     def _parse_tool_context(self, request: AgentRequest) -> WenshuToolContext:
         extra = dict(request.extra or {})
@@ -698,48 +669,3 @@ class WenshuAgent(TraceableAgent):
                 f"{MSG_HEADER} WenshuAgent disassemble_queries failed, error={self._format_exception_detail(e)}"
             )
             return [query]
-
-
-if __name__ == "__main__":
-    from ...config.common import DEEPSEEKV3_LOCAL_CONFIG
-    from ...utils.llm_engine import LLMEngine
-
-    test_questions = [
-        "2025年MAP（Multi Agent Path）的销售收入?",
-        "2025年MAP（Multi Agent Path）怎么样?",
-    ]
-
-    async def _demo():
-        agent = WenshuAgent(llm=LLMEngine(DEEPSEEKV3_LOCAL_CONFIG))
-
-        request = AgentRequest(
-            query=test_questions[-1],
-            staff_code="0120250028",
-            summarize=True,
-            extra={
-                "userName": "liusongnan",
-                "request_id": "6062589570674192",
-                "data_origin": "supcon_metrics",
-                "model_list": "",
-                "permission_model_list": "",
-                "business_domain": "6102261701897472",
-                "ask_back_payload": False,
-                "algorithmSpecMap": {
-                    "queryResult": None,
-                    "payload_list": None,
-                    "query_parsing": None,
-                    "modelInfos": None,
-                },
-            },
-        )
-
-        result = await agent.run(request)
-
-        print("AgentResult:")
-        print(f"  name: {result.name}")
-        print(f"  success: {result.success}")
-        print(f"  content: {result.content}")
-        print(f"  error: {result.error}")
-        print(f"  data_source: {result.data_source}")
-
-    asyncio.run(_demo())

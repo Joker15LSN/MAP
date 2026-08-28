@@ -1,8 +1,6 @@
-import asyncio
 import datetime
 import inspect
 import json
-import random
 from typing import Any, Awaitable, Callable, Sequence
 from zoneinfo import ZoneInfo
 
@@ -13,8 +11,8 @@ from ...utils.llm_engine import LLMEngine
 from ...utils.llm_trace_context import llm_trace_context
 from ..prompt.tool_call_prompt import (
     NEXT_STEP_PROMPT,
-    SCENE_POST_SUMMARY_SYSTEM_PROMPT,
-    SCENE_POST_SUMMARY_USER_PROMPT_TEMPLATE,
+    SCENE_POST_SUMMARY_SYSTEM_PROMPT,  # noqa: F401  # public re-export seam
+    SCENE_POST_SUMMARY_USER_PROMPT_TEMPLATE,  # noqa: F401  # public re-export seam
     SYSTEM_PROMPT,
     UPLOADED_KB_FILE_SYSTEM_PROMPT_TEMPLATE,
 )
@@ -23,7 +21,12 @@ from .base import AgentActionEvent, AgentRequest, AgentResult, ExecutionResult
 from .tool_call_exit import ScenePostSummaryRuntimeConfig, ToolCallExitHandler
 from .tool_call_session import ToolCallSession
 from .tool_executor import ToolExecutor
-from .tool_runtime import AgentTool, RuntimeSchemaTool, Tool, ToolSet
+from .tool_runtime import (  # noqa: F401  # public re-export seam
+    AgentTool,
+    RuntimeSchemaTool,
+    Tool,
+    ToolSet,
+)
 from .traceable_agent import TraceableAgent
 
 
@@ -421,6 +424,7 @@ class ToolCallAgent(TraceableAgent):
         )
 
     async def _run_with_context(self, request: AgentRequest) -> AgentResult:
+        self.check_cancelled()
         request = self._prepare_request_for_execution(request)
         session = self._create_session(request)
         tools = self.toolset.to_openai_tools(
@@ -457,6 +461,7 @@ class ToolCallAgent(TraceableAgent):
             logger.debug(
                 f"{self._agent_log_tag()}[Step {step}/{self.max_steps}] Calling LLM for tool selection"
             )
+            self.check_cancelled()
             with llm_trace_context(
                 state_store=self.state_store,
                 state_id=self.state_id,
@@ -473,6 +478,7 @@ class ToolCallAgent(TraceableAgent):
                     tools=tools,
                     tool_choice=self._llm_tool_choice(session.tool_called),
                 )
+            self.check_cancelled()
             self._accumulate_usage(response.usage)
             logger.debug(
                 "{}[Step {}/{}] Tool-selection LLM completed in {:.3f}s with finish_reason={} tool_calls={} request_id={!r}".format(

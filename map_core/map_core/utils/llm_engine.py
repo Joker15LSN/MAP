@@ -44,7 +44,7 @@ from opentelemetry import trace as otel_trace
 from opentelemetry.propagate import inject as otel_inject
 from opentelemetry.trace import Span, SpanKind
 from opentelemetry.trace import StatusCode as OtelStatusCode
-from pydantic import BaseModel, Field, PositiveInt, field_validator
+from pydantic import BaseModel
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
@@ -1823,50 +1823,3 @@ class LLMEngine:
             else:
                 return retry_state.outcome.result()
         return None
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    from loguru import logger
-
-    from ..config.common import DEEPSEEKV3_LOCAL_CONFIG, DS_V4_FLASH_LLM_CONFIG
-
-    # cfg = LLMConfig(
-    #     base_url="http://10.16.12.25:11112/v1/",
-    #     model="qwen3.6",
-    #     temperature=0.1,
-    #     chat_template_kwargs={"enable_thinking": True},
-    # )
-    cfg = DS_V4_FLASH_LLM_CONFIG
-
-    async def test_async():
-        async with LLMEngine(cfg, logger) as engine:
-            resp = await engine.ainvoke(
-                [LLMMessage(role="user", content="Hello, how are you?")]
-            )
-            print("Async invoke response:", resp)
-
-            print("Async stream response:")
-            async for chunk in engine.astream(
-                [LLMMessage(role="user", content="Tell me a joke.")]
-            ):
-                print(chunk, end="", flush=True)
-            print()
-
-    def test_sync():
-        with LLMEngine(cfg, logger) as engine:
-            resp = engine.invoke(
-                [LLMMessage(role="user", content="Hello, how are you?")]
-            )
-            print("Sync invoke response:", resp)
-
-            print("Sync stream response:")
-            for chunk in engine.stream(
-                [LLMMessage(role="user", content="Tell me a joke.")]
-            ):
-                print(chunk, end="", flush=True)
-            print()
-
-    # test_sync()
-    asyncio.run(test_async())

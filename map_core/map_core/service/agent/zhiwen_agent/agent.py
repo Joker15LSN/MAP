@@ -43,7 +43,6 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, cast
 
-import httpx
 from loguru import logger
 from pydantic import (
     BaseModel,
@@ -720,71 +719,3 @@ class ZhiwenAgent(TraceableAgent):
                     data_source={},
                     error=str(exc),
                 )
-
-
-if __name__ == "__main__":
-    import asyncio
-    import os
-
-    from ....config.common import QWEN3_NEXT_80B_CONFIG
-    from ....utils.llm_engine import LLMEngine
-
-    async def _demo() -> None:
-        tenant_id = os.getenv("ZHIWEN_TENANT_ID", "")
-        user_id = os.getenv("ZHIWEN_USER_ID", "")
-        user_name = os.getenv("ZHIWEN_USER_NAME", "")
-        auth_token = os.getenv("ZHIWEN_AUTH", "")
-        staff_code = os.getenv("ZHIWEN_STAFF_CODE", "0120250028")
-        query = os.getenv("ZHIWEN_QUERY", "请总结公司请假审批流程要点")
-
-        if not tenant_id or not user_id or not user_name or not auth_token:
-            print(
-                "请先设置环境变量：ZHIWEN_TENANT_ID / ZHIWEN_USER_ID / ZHIWEN_USER_NAME / ZHIWEN_AUTH"
-            )
-            return
-
-        agent = ZhiwenAgent(llm=LLMEngine(QWEN3_NEXT_80B_CONFIG))
-        request = AgentRequest(
-            query=query,
-            staff_code=staff_code,
-            summarize=True,
-            extra={
-                "caller_agent_name": "org_agent",
-                "tool_context": {
-                    "org_agent": {
-                        "zhiwen_agent": {
-                            "tenant_id": tenant_id,
-                            "user_id": user_id,
-                            "user_name": user_name,
-                            "sources": ["REPORT_MARKET", "KMS", "OA", "SEP"],
-                            "source_config": {
-                                "kms_config": {},
-                                "report_market_config": {},
-                                "oa_config": {},
-                                "sep_config": {},
-                            },
-                            "disassembly_system_prompt": (
-                                "你是问题拆解助手。请把用户问题拆成可独立检索的子问题。"
-                                "现在日期是{current_time}。"
-                            ),
-                            "disassembly_user_prompt": "请拆解问题：{query}",
-                            "summarize_prompt": (
-                                "你是企业知识检索助手。请基于检索结果给出准确、简洁总结。"
-                            ),
-                        }
-                    }
-                },
-                "request_token": auth_token,
-            },
-        )
-
-        result = await agent.run(request)
-        print("AgentResult:")
-        print(f"  success: {result.success}")
-        print(f"  error: {result.error}")
-        print(f"  content:\n{result.content}")
-        print(f"  meta_data: {result.meta_data}")
-        data_items = result.data_source.get("data", []) if result.data_source else []
-        print(f"  data items: {len(data_items)}")
-
-    asyncio.run(_demo())

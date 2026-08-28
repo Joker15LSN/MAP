@@ -4,14 +4,13 @@
 """
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import date
-from typing import Any, Literal, Optional, Sequence, overload
+from typing import Any, Optional, Sequence
 
 import httpx
 from loguru import logger
-from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 # ==================== Request Models ====================
 
@@ -163,16 +162,6 @@ class KnowledgeBaseAPI:
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-
-    # def _get_headers(self, request_id: str | None = None) -> dict[str, str]:
-    #     """获取请求头"""
-    #     headers = {
-    #         "Content-Type": "application/json",
-    #         "X-Request-Id": uuid.uuid4().hex,
-    #     }
-    #     if isinstance(request_id, str) and request_id.strip():
-    #         headers["X-Task-Id"] = request_id.strip()
-    #     return headers
 
     async def _request(
         self,
@@ -354,28 +343,6 @@ class KnowledgeBaseAPI:
 
 # ==================== Convenience Functions ====================
 
-# @overload
-# async def search_knowledge(
-#     base_url: str,
-#     query: str,
-#     kb_configs: list[KbConfigSchema],
-#     emb_configs: list[EmbSchema],
-#     limit: int = 10,
-#     request_id: str | None = None,
-#     search_strategy: dict[str, Any] | None = None,
-# ) -> list[SearchResultItem]: ...
-
-# @overload
-# async def search_knowledge(
-#     base_url: str,
-#     query: str,
-#     kb_configs: list[dict[str, Any]],
-#     emb_configs: list[dict[str, Any]],
-#     limit: int = 10,
-#     request_id: str | None = None,
-#     search_strategy: dict[str, Any] | None = None,
-# ) -> list[SearchResultItem]: ...
-
 async def search_knowledge(
     base_url: str,
     query: str,
@@ -401,7 +368,6 @@ async def search_knowledge(
     Returns:
         SearchResponse: 搜索响应对象
     """
-    import uuid
 
     api = KnowledgeBaseAPI(base_url)
     res = await api.multi_knowledge_search(

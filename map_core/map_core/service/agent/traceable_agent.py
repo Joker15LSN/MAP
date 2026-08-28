@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
 from abc import abstractmethod
 from typing import Any, AsyncGenerator, Awaitable
 
 from ...schema.state_event_schema import ToolCallData, ToolResultData
 from ...utils.llm_engine import LLMEngine
-from ..prompt.tool_call_prompt import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from ..state_store import (
     GlobalAgentStateStore,
     fire_and_forget,
     safe_serialize,
 )
-from .base import AgentRequest, AgentResult, BaseAgent
+from .base import AgentExecutionCancelled, AgentRequest, AgentResult, BaseAgent
 
 
 class TraceableAgent(BaseAgent):
@@ -29,6 +29,12 @@ class TraceableAgent(BaseAgent):
         self.state_id: str | None = None
         self.aid = aid or secrets.token_hex(10)
         self.parid: str = "-"
+        self.cancel_event: asyncio.Event | None = None
+
+    def check_cancelled(self) -> None:
+        """Raise :class:`AgentExecutionCancelled` when the cancel event is set."""
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise AgentExecutionCancelled("cancelled")
 
     def set_execution_context(self, state_store: GlobalAgentStateStore, state_id: str):
         """Inject global agent state for the agent instance."""

@@ -1,8 +1,9 @@
 # R2-P2-02: the release gate. CI runs the SAME script a developer runs
 # locally (scripts/release_gate.sh): uv sync --frozen / npm ci first, then
-# ruff + pytest for all three Python services, vitest + build for both
-# frontends, and finally the bundle size gate. No locally installed tool
-# can satisfy this job — everything is resolved from lockfiles.
+# ruff + pytest for all three Python services, the Step 0 architecture
+# anti-regression gates (scripts/architecture_gate.py), vitest + build for
+# both frontends, and finally the bundle size gate. No locally installed
+# tool can satisfy this job — everything is resolved from lockfiles.
 #
 # S2-01: the `gate` job below is STRUCTURE-ONLY — it proves evidence
 # coverage/integrity but is explicitly NOT release evidence. Only the
@@ -32,6 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -40,6 +43,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      # Step 0 架构/whitespace committed-range checks: for pull_request runs
+      # resolve the base sha so the release gate diffs baseline..HEAD
+      # (fail-closed when the base is not an ancestor of HEAD). Push runs on
+      # feature branches keep the worktree-only architecture mode.
+      - name: Resolve PR diff baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags origin "$BASE_SHA"
+          echo "GATE_BASELINE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
 
       # map-business-backend integration tests require the three-role setup
       # normally created by docker-compose on a fresh volume
@@ -109,6 +123,8 @@ jobs:
 
       - name: Release gate (structure-only, NOT release evidence)
         run: bash scripts/release_gate.sh
+        env:
+          GATE_BASELINE_SHA: ${{ env.GATE_BASELINE_SHA }}
 
       - name: Upload gate artifacts
         if: always()

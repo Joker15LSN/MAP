@@ -10,8 +10,6 @@ from .ask_database_agent import AskDatabaseAgent
 from .base import BaseAgent
 from .disabled_capabilities import (
     DISABLED_HOST_EXEC_CAPABILITIES,
-    build_capability_disabled_result,
-    is_disabled_capability,
 )
 from .efficiency_pi_agent import EfficiencyPiAgent
 from .general_qa_agent import GeneralQAAgent

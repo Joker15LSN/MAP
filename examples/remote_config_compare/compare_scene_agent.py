@@ -1,14 +1,14 @@
 """
 Compare scene agent configs between two environments or two specific files.
 
-Usage:
+Usage (from the repository root, uses the frozen map_core venv):
     # 1v1 单文件对比 (--left/--right 传 .json 文件)
-    python -m map_core.utils.remote_config_compare.scripts.compare_scene_agent \
+    PYTHONPATH=map_core uv run --project map_core python -m examples.remote_config_compare.compare_scene_agent \
         --left dumped_configs/ubddev/<ts>/scene_conf/Procurement.json \
         --right dumped_configs/ubdprod/<ts>/scene_conf/Procurement.json
 
     # 批量全场景对比 (--left/--right 传目录)
-    python -m map_core.utils.remote_config_compare.scripts.compare_scene_agent \
+    PYTHONPATH=map_core uv run --project map_core python -m examples.remote_config_compare.compare_scene_agent \
         --left dumped_configs/ubddev/<ts>/scene_conf \
         --right dumped_configs/ubdprod/<ts>/scene_conf
 

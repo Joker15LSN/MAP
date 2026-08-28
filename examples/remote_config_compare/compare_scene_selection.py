@@ -1,8 +1,8 @@
 """
 Compare scene_selection.json between two environments.
 
-Usage:
-    python -m map_core.utils.remote_config_compare.scripts.compare_scene_selection \
+Usage (from the repository root, uses the frozen map_core venv):
+    PYTHONPATH=map_core uv run --project map_core python -m examples.remote_config_compare.compare_scene_selection \
         --left dumped_configs/ubddev/scene_selection.json \
         --right dumped_configs/ubdprod/scene_selection.json
 

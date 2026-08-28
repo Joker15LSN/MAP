@@ -20,7 +20,6 @@ from unittest import mock
 import httpcore
 import pytest
 
-from map_core.service.agent.base import AgentRequest, ToolResult
 from map_core.service.dynamic_tools import _call_http_mcp_tool
 from map_core.service.mcp_egress import (
     ALLOW_INSECURE_LOCAL_ENV,
@@ -339,7 +338,6 @@ class TestGuardedToolCall:
         assert "secret reference" in result.error
 
     def test_oversized_response_rejected(self, monkeypatch) -> None:
-        import json as jsonlib
 
         _policy("allowed.example.com:443", max_bytes=1024)
         monkeypatch.setenv("MAP_MCP_TEST_SECRET", CANARY)
@@ -351,9 +349,6 @@ class TestGuardedToolCall:
                 "https://allowed.example.com:443/mcp",
                 headers={"Authorization": "${ENV:MAP_MCP_TEST_SECRET}"},
             )
-            big = jsonlib.dumps(
-                {"result": {"content": [{"type": "text", "text": "x" * 100000}]}}
-            ).encode()
             async def oversized(**kwargs):
                 from map_core.service.mcp_egress import (
                     RESPONSE_TOO_LARGE,

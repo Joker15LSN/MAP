@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 
-from ...config.common import DEEPSEEKV3_LOCAL_CONFIG, QWEN3_NEXT_80B_CONFIG
+from ...config.common import DEEPSEEKV3_LOCAL_CONFIG
 from ...config.config_schema import LLMConfig
 from ...schema.agent_schema import Message
 from ...utils.global_context import agent_log_context

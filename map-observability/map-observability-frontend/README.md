@@ -58,6 +58,8 @@ npm run test
 
 - 观测后端：[`../map-observability-backend/README.md`](../map-observability-backend/README.md)
 - 观测系统总览：[`../README.md`](../README.md)
+- 测试策略：[`../../docs/TESTING.md`](../../docs/TESTING.md)
+- 技术设计：[`../../docs/TDD.md`](../../docs/TDD.md#5-前端技术设计)
 
 ## Bundle 尺寸基线（FIX-P2-OBSERVABILITY-01）
 

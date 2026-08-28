@@ -6,10 +6,8 @@
 
 from __future__ import annotations
 
-import os
 from functools import partial
-from typing import Any, Optional, override
-from unittest import result
+from typing import Any, Optional
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -21,7 +19,6 @@ from .base import (
     RerankModelConfig,
     SearchKbChunkOutput,
     build_item_as_dict,
-    temp_to_tool_result,
     to_tool_result,
 )
 from .remote_api import (
@@ -548,34 +545,3 @@ def create_search_uploaded_file_chunk_tool() -> Tool:
         parameters=SearchUploadedFileChunkInput.model_json_schema(),
         handler=_handle_search_chunks,
     )
-
-
-# ==================== Demo / Testing ====================
-
-if __name__ == "__main__":
-    import asyncio
-
-    async def _demo() -> None:
-        """演示函数"""
-        # 设置环境变量（在实际使用中应该从系统环境变量读取）
-        os.environ.setdefault("MAP_KB_API_BASE_URL", "https://api.example.com")
-        os.environ.setdefault("MAP_EMBED_ID", "demo_embed_id")
-        os.environ.setdefault("MAP_EMBED_NAME", "bce")
-        os.environ.setdefault("MAP_EMBED_URL", "http://embedding-api.example.com")
-
-        # 创建 tool
-        tool = create_query_kb_chunk_tool()
-
-        # 模拟请求参数
-        args = {
-            "file_id": "demo_file_id_123",
-            "file_name": "demo_document.txt",
-        }
-
-        # 执行查询（注意：这会调用真实 API，需要有效的 API 端点）
-        print(f"Tool name: {tool.name}")
-        print(f"Tool description: {tool.description}")
-        print(f"Parameters schema: {tool.parameters}")
-        print("\nDemo would call API with:", args)
-
-    asyncio.run(_demo())

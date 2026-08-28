@@ -7,7 +7,7 @@ import asyncio
 
 from ._config import DEFAULT_EMBEDDING_CHOICE, EMBEDDING_REGISTRY
 from ._types.embed import SupconEmbedResponse
-from .http_client import ChatClient, EmbedClient
+from .http_client import EmbedClient
 
 
 async def aembed_text(text: str):

@@ -12,8 +12,6 @@ from ....utils.milvus import get_milvus_client
 from ....utils.model_factory import aembed_text
 from ._prompts import SELECTING_PROMPT_TEMPLATE
 from ._schema import (
-    WIDE_TABLE_MODEL_DRAFT_COLLECTION,
-    WIDE_TABLE_MODEL_PUBLISHED_COLLECTION,
     AtomizeContext,
     FilteredDataModel,
 )

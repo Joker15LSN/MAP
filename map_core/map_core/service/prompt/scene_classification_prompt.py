@@ -85,9 +85,3 @@ SUB_SCENE_CLASSIFICATION_PROMPT = """
 }}
 
 """
-
-if __name__ == "__main__":
-    import json
-
-    prompt_json_str = json.dumps(SUB_SCENE_DESCRIPTIONS, ensure_ascii=False)
-    print(prompt_json_str)

@@ -1,7 +1,5 @@
 from typing import Literal
 
-from pymilvus import AnnSearchRequest, WeightedRanker
-
 from ._get_dimension_base_info import get_dimension_base_info
 
 try:

@@ -1,6 +1,5 @@
 import json
-import os
-from typing import Any, TypeVar, Union
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -61,28 +60,6 @@ def fetch_tool_self_dict(agent_request: AgentRequest, self_tool_name: str) -> di
     return self_extra_dict
 
 
-def temp_to_tool_result(search_chunk_output: SearchKbChunkOutput) -> dict[str, Any]:
-    '''
-    临时方案，将search_chunk_output dump为字典
-    '''
-
-    if search_chunk_output.success:
-        item_dicts = []
-        for item in search_chunk_output.results:
-            _dict = build_item_as_dict(item=item)
-            # _dict['backend_id'] = item.backend_id
-            _dict['ba_id'] = item.ba_id
-            item_dicts.append(_dict)
-        return {
-            'success': search_chunk_output.success,
-            'results': item_dicts,
-            'total_count': search_chunk_output.total_count,
-        }
-    else:
-        return {
-            'success': search_chunk_output.success,
-            'error': search_chunk_output.error
-        }
 
 
 def  _build_contents(search_chunk_output: SearchKbChunkOutput) -> list[str]:

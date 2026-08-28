@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
-
 """AskDatabaseAgent.
 
 tool_context 契约说明：
@@ -192,33 +190,6 @@ class AskDatabaseAgent(TraceableAgent):
 
         return f"{type(exc).__name__}: {detail}"
 
-    # def _resolve_nested_tool_context(self, request: AgentRequest) -> dict[str, Any]:
-    #     extra = request.extra or {}
-    #     tool_context = extra.get("tool_context")
-    #     caller_agent_name = extra.get("caller_agent_name")
-    #     merged: dict[str, Any] = {}
-
-    #     if not isinstance(tool_context, dict):
-    #         return {}
-
-    #     agent_context = tool_context.get(self.name)
-    #     if isinstance(agent_context, dict):
-    #         merged.update(agent_context)
-
-    #     if isinstance(caller_agent_name, str) and caller_agent_name.strip():
-    #         caller_context = tool_context.get(caller_agent_name)
-    #         if isinstance(caller_context, dict):
-    #             nested_agent_context = caller_context.get(self.name)
-    #             if isinstance(nested_agent_context, dict):
-    #                 merged.update(nested_agent_context)
-
-    #     return merged
-
-    # def _resolve_tool_context(self, request: AgentRequest) -> AskDatabaseToolContext:
-    #     return AskDatabaseToolContext.model_validate(
-    #         self._resolve_nested_tool_context(request)
-    #     )
-
     @classmethod
     def _resolve_api_url(cls, value: Any) -> str:
         if isinstance(value, str):
@@ -349,44 +320,6 @@ class AskDatabaseAgent(TraceableAgent):
                 raise
 
         return response.json()
-
-    # def _extract_result_text(self, data: dict[str, Any]) -> str:
-    #     if not isinstance(data, dict):
-    #         return ""
-
-    #     nested_data = data.get("data")
-    #     if not isinstance(nested_data, dict):
-    #         return ""
-
-    #     result = nested_data.get("result")
-    #     if isinstance(result, str):
-    #         return result.strip()
-
-    #     return ""
-
-    # def _extract_sql_text(self, data: dict[str, Any]) -> str:
-    #     if not isinstance(data, dict):
-    #         return ""
-
-    #     nested_data = data.get("data")
-    #     if not isinstance(nested_data, dict):
-    #         return ""
-
-    #     sql = nested_data.get("sql")
-    #     if isinstance(sql, str):
-    #         return sql.strip()
-
-    #     return ""
-
-    # def _extract_response_message(self, data: dict[str, Any]) -> str:
-    #     if not isinstance(data, dict):
-    #         return ""
-
-    #     message = data.get("message")
-    #     if isinstance(message, str):
-    #         return message.strip()
-
-    #     return ""
 
     async def _summarize_result(
         self,

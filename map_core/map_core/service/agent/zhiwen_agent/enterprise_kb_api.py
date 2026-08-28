@@ -1,5 +1,5 @@
 import enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import httpx
 from loguru import logger

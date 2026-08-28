@@ -27,7 +27,6 @@ from map_core.config import load_actual_config
 
 load_actual_config()
 
-from map_core.config import METRIC_MILVUS_URI
 from map_core.database.milvus import MilvusClient
 
 from .._wenshu_split_question._schema import (
@@ -35,7 +34,6 @@ from .._wenshu_split_question._schema import (
     DIMENSION_INFO_PUBLISHED_COLLECTION,
     METRIC_INFO_DRAFT_COLLECTION,
     METRIC_INFO_PUBLISHED_COLLECTION,
-    MILVUS_DB_NAME_PREFIX,
 )
 
 
@@ -96,7 +94,6 @@ async def parse_final_results(
     for result in final_results:
         _results = []
 
-        question = result.get("question")
         metric_ql = result.get("metric_ql", {})
         metric_codes = metric_ql.get("metrics", [])
 
@@ -137,128 +134,3 @@ async def parse_final_results(
         parsed_results.extend(_results)
 
     return parsed_results
-
-
-async def test_parse_final_results():
-    query_mode = "draft"
-    agent_id = 9
-    milvus_client = MilvusClient(
-        uri=METRIC_MILVUS_URI,
-        db_name=f"{MILVUS_DB_NAME_PREFIX}{agent_id}",
-    )
-    await milvus_client.connect()
-
-    final_results = [
-        {
-            "question": "统计年_v2为2025的Industrial AI的合同额",
-            "metric_ql": {
-                "metrics": [
-                    "BA5598511"
-                ],
-                "dimensions": [
-                    "DM979935",
-                    "DM038856"
-                ],
-                "filter": {
-                    "filters": [
-                        {
-                        "conditions": [
-                            {
-                            "operator": "EQ",
-                            "property": "DM979935",
-                            "values": [
-                                "2025"
-                            ]
-                            }
-                        ],
-                        "logicalOperator": "AND"
-                        },
-                        {
-                        "conditions": [
-                            {
-                            "operator": "EQ",
-                            "property": "DM038856",
-                            "values": [
-                                "Industrial AI"
-                            ]
-                            }
-                        ],
-                        "logicalOperator": "AND"
-                        }
-                ],
-                "logicalOperator": "AND"
-                }
-            },
-            "data": [
-                {
-                    "统计年_v2": "2025",
-                    "一级产品线_v2": "Industrial AI",
-                    "合同额_v2": "654436241.980000"
-                }
-            ],
-            "error": "",
-        },
-        {
-            "question": "统计年_v2为2024的Industrial AI的合同额",
-            "metric_ql": {
-                "metrics": [
-                "BA5598511"
-                ],
-                "dimensions": [
-                "DM979935",
-                "DM038856"
-                ],
-                "filter": {
-                "filters": [
-                    {
-                    "conditions": [
-                        {
-                        "operator": "EQ",
-                        "property": "DM979935",
-                        "values": [
-                            "2024"
-                        ]
-                        }
-                    ],
-                    "logicalOperator": "AND"
-                    },
-                    {
-                    "conditions": [
-                        {
-                        "operator": "EQ",
-                        "property": "DM038856",
-                        "values": [
-                            "Industrial AI"
-                        ]
-                        }
-                    ],
-                    "logicalOperator": "AND"
-                    }
-                ],
-                "logicalOperator": "AND"
-                }
-            },
-            "data": [
-                {
-                "统计年_v2": "2024",
-                "一级产品线_v2": "Industrial AI",
-                "合同额_v2": "510499589.980000"
-                }
-            ],
-            "error": None
-        }
-    ]
-
-    parsed_results = await parse_final_results(
-        milvus_client=milvus_client,
-        final_results=final_results,
-        query_mode=query_mode,
-    )
-    print("\n", parsed_results)
-
-    await milvus_client.close()
-
-if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(test_parse_final_results())

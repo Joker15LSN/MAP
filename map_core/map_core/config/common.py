@@ -181,8 +181,6 @@ MONGODB_CONFIG = {
     "database": os.getenv("MONGODB_DATABASE", "map_db_dev"),
 }
 
-MONGODB_STATE_RECORD_COLLECTION = "agent_call_states"  # legacy, kept for reference
-
 # Collections for the three-way event routing in MongoAgentStateHandler
 MONGODB_AGENT_EXECUTIONS_COLLECTION = "agent_executions"
 MONGODB_TOOL_CALL_COLLECTION = "tool_call_records"

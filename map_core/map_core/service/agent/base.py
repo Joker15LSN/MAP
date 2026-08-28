@@ -4,7 +4,6 @@ import inspect
 import secrets
 from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator, Awaitable, Literal, Sequence, cast
-from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -54,6 +53,10 @@ class AgentActionEvent(BaseModel):
     action: str
     message: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentExecutionCancelled(Exception):
+    """Raised when a run's cancel event is set before a model/tool call."""
 
 
 class BaseAgent(ABC):

@@ -13,11 +13,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import pytest
-
 from map_core.service.agent.disabled_capabilities import (
     CAPABILITY_DISABLED_ERROR,
-    build_capability_disabled_result,
 )
 from map_core.service.agent.file_read_tool import create_attachment_file_read_tool
 from map_core.service.agent.file_write_tool import create_attachment_file_write_tool
