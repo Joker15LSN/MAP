@@ -18,7 +18,8 @@ from ..core.identity import RequestPrincipal
 from ..runs import RunApplication, RunCommand
 from ..runs.errors import RunError, RunNotFoundError
 from ..runtime.error_mapping import http_status_for, sse_error_frame
-from .deps import get_principal, get_run_application
+from ..services.runtime_snapshot.errors import RuntimeSnapshotUnavailableError
+from .deps import get_principal, get_run_application, get_runtime_snapshots
 
 router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
 
@@ -69,6 +70,10 @@ def _run_view_json(view) -> dict[str, Any]:
         "last_seq": view.last_seq,
         "cancel_requested": view.cancel_requested,
         "error_code": view.error_code,
+        "runtime_snapshot_id": str(view.runtime_snapshot_id)
+        if view.runtime_snapshot_id is not None
+        else None,
+        "runtime_snapshot_digest": view.runtime_snapshot_digest,
     }
 
 
@@ -78,6 +83,7 @@ async def create_run(
     principal: RequestPrincipal = Depends(get_principal),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     application: RunApplication = Depends(get_run_application),
+    snapshots=Depends(get_runtime_snapshots),
 ) -> dict[str, Any]:
     workspace_id = _workspace_uuid(principal)
     if workspace_id is None:
@@ -96,16 +102,27 @@ async def create_run(
         snapshot=payload.command.snapshot,
     )
     try:
+        current_snapshot = await snapshots.get_current()
+        if current_snapshot is None:
+            raise RuntimeSnapshotUnavailableError()
         created = await application.create_run(
             workspace_id=workspace_id,
             principal_id=principal.user_id,
             conversation_id=payload.conversation_id,
             command=command,
+            runtime_snapshot_id=current_snapshot.id,
+            runtime_snapshot_digest=current_snapshot.digest,
             idempotency_key=idempotency_key,
             idempotency_body_hash=hash_request(payload.model_dump()),
         )
     except RunError as exc:
         _raise_run_error(exc)
+    except RuntimeSnapshotUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=exc.message,
+            headers={"X-MAP-Error-Code": exc.code},
+        ) from exc
     return {
         "run_id": str(created.run_id),
         "status": created.status,

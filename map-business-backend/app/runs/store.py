@@ -67,6 +67,8 @@ class RunStore(Protocol):
         principal_id: str,
         conversation_id: uuid.UUID | None,
         command: RunCommand,
+        runtime_snapshot_id: uuid.UUID,
+        runtime_snapshot_digest: str,
         idempotency_key: str,
         idempotency_body_hash: str,
         now: datetime | None = None,

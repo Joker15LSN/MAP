@@ -18,6 +18,13 @@ from app.runs.domain import CoreOutcome
 from app.runs.errors import RunNotFoundError
 from app.runtime.event_envelope import EventEnvelope
 from app.runtime.state_machine import RunState
+from app.schemas import AdminState
+from app.services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
+from app.services.runtime_snapshot.digest import (
+    projection_digest,
+    snapshot_id_for_digest,
+)
+from app.services.runtime_snapshot.schemas import build_runtime_projection
 from app.turns import TurnApplication, TurnError
 from app.turns.projection import project_turn_events
 
@@ -77,12 +84,25 @@ def factory(_engine):
 
 
 @pytest.fixture()
+async def current_snapshot(session) -> tuple[uuid.UUID, str]:
+    projection = build_runtime_projection(AdminState.default())
+    digest = projection_digest(projection)
+    snapshot_id = snapshot_id_for_digest(digest)
+    repo = PgRuntimeSnapshotRepository(session)
+    await repo.insert(snapshot_id, projection, digest, None, "published")
+    await repo.activate(snapshot_id, None)
+    await session.commit()
+    return snapshot_id, digest
+
+
+@pytest.fixture()
 def run_application(factory) -> RunApplication:
     return RunApplication(PgRunStore(factory))
 
 
 @pytest.fixture()
-def turn_application(factory, run_application) -> TurnApplication:
+def turn_application(factory, run_application, current_snapshot) -> TurnApplication:
+    del current_snapshot
     return TurnApplication(factory, run_application)
 
 

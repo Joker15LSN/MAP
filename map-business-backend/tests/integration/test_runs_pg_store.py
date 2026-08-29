@@ -25,6 +25,13 @@ from app.runs.errors import (
     LeaseLostError,
     RunStateTransitionError,
 )
+from app.schemas import AdminState
+from app.services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
+from app.services.runtime_snapshot.digest import (
+    projection_digest,
+    snapshot_id_for_digest,
+)
+from app.services.runtime_snapshot.schemas import build_runtime_projection
 
 T0 = datetime(2026, 8, 24, tzinfo=UTC)
 
@@ -38,21 +45,47 @@ def _command() -> RunCommand:
 
 
 @pytest.fixture()
-def store(_engine, session) -> PgRunStore:
+async def current_snapshot(session) -> tuple[uuid.UUID, str]:
+    projection = build_runtime_projection(AdminState.default())
+    digest = projection_digest(projection)
+    snapshot_id = snapshot_id_for_digest(digest)
+    repo = PgRuntimeSnapshotRepository(session)
+    await repo.insert(snapshot_id, projection, digest, None, "published")
+    await repo.activate(snapshot_id, None)
+    await session.commit()
+    return snapshot_id, digest
+
+
+@pytest.fixture()
+def store(_engine, session, current_snapshot) -> PgRunStore:
     # ``session`` is requested only for its test-isolation side effect: the
     # shared conftest fixture truncates map_control tables with the admin
     # role before each test, so runs/jobs never leak across tests.
-    del session
+    # ``current_snapshot`` guarantees every run creation below has a
+    # current pointer to pin.
+    del session, current_snapshot
     factory = async_sessionmaker(_engine, expire_on_commit=False)
     return PgRunStore(factory)
 
 
+async def _current_snapshot_args(
+    store: PgRunStore,
+) -> tuple[uuid.UUID, str]:
+    async with store._session_factory() as session:
+        current = await PgRuntimeSnapshotRepository(session).get_current()
+        assert current is not None
+        return current.id, current.digest
+
+
 async def _create(store: PgRunStore, ws: uuid.UUID, key: str = "k-1"):
+    snapshot_id, snapshot_digest = await _current_snapshot_args(store)
     return await store.create_run(
         workspace_id=ws,
         principal_id="u-1",
         conversation_id=None,
         command=_command(),
+        runtime_snapshot_id=snapshot_id,
+        runtime_snapshot_digest=snapshot_digest,
         idempotency_key=key,
         idempotency_body_hash=f"hash-{key}",
         now=T0,
@@ -86,12 +119,15 @@ async def test_create_is_one_transaction_and_replays(store: PgRunStore) -> None:
 async def test_create_conflict_is_typed(store: PgRunStore) -> None:
     ws = uuid.uuid4()
     await _create(store, ws, key="k-1")
+    snapshot_id, snapshot_digest = await _current_snapshot_args(store)
     with pytest.raises(IdempotencyConflictRunError):
         await store.create_run(
             workspace_id=ws,
             principal_id="u-1",
             conversation_id=None,
             command=_command(),
+            runtime_snapshot_id=snapshot_id,
+            runtime_snapshot_digest=snapshot_digest,
             idempotency_key="k-1",
             idempotency_body_hash="hash-other",
             now=T0,

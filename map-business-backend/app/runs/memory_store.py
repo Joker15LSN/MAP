@@ -60,6 +60,8 @@ class _MemoryRun:
     conversation_id: uuid.UUID | None
     status: str
     command: RunCommand
+    runtime_snapshot_id: uuid.UUID
+    runtime_snapshot_digest: str
     last_seq: int = 0
     cancel_requested_at: datetime | None = None
     cancel_reason: str | None = None
@@ -105,6 +107,8 @@ class InMemoryRunStore:
             last_seq=run.last_seq,
             cancel_requested=run.cancel_requested_at is not None,
             error_code=run.error_code,
+            runtime_snapshot_id=run.runtime_snapshot_id,
+            runtime_snapshot_digest=run.runtime_snapshot_digest,
         )
 
     # ------------------------------------------------------------------ create
@@ -115,6 +119,8 @@ class InMemoryRunStore:
         principal_id: str,
         conversation_id: uuid.UUID | None,
         command: RunCommand,
+        runtime_snapshot_id: uuid.UUID,
+        runtime_snapshot_digest: str,
         idempotency_key: str,
         idempotency_body_hash: str,
         now: datetime | None = None,
@@ -140,6 +146,8 @@ class InMemoryRunStore:
                 conversation_id=conversation_id,
                 status=RunState.QUEUED,
                 command=command,
+                runtime_snapshot_id=runtime_snapshot_id,
+                runtime_snapshot_digest=runtime_snapshot_digest,
                 created_at=now,
                 next_run_at=now,
             )

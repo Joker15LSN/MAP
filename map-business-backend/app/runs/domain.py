@@ -76,6 +76,8 @@ class RunView:
     last_seq: int
     cancel_requested: bool
     error_code: str | None
+    runtime_snapshot_id: uuid.UUID | None
+    runtime_snapshot_digest: str | None
 
 
 @dataclass(frozen=True)

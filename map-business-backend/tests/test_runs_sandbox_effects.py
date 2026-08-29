@@ -47,6 +47,10 @@ def _workspace() -> uuid.UUID:
     return uuid.uuid4()
 
 
+_RUNTIME_SNAPSHOT_ID = uuid.UUID("00000000-0000-0000-0000-0000000000b2")
+_RUNTIME_SNAPSHOT_DIGEST = "c" * 64
+
+
 @pytest.fixture()
 def store() -> InMemoryRunStore:
     return InMemoryRunStore(now=datetime(2026, 8, 24, tzinfo=UTC))
@@ -68,6 +72,8 @@ async def _create_run(
         command=command,
         idempotency_key=f"k-{uuid.uuid4().hex}",
         idempotency_body_hash=f"h-{uuid.uuid4().hex}",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     assert store is not None
     return created.run_id
@@ -249,6 +255,8 @@ async def test_sandbox_invocation_handler_success_event_order(
         command=command,
         idempotency_key="k-sandbox-ok",
         idempotency_body_hash="h-sandbox-ok",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     remote = InMemorySandboxRemote(
         [
@@ -300,6 +308,8 @@ async def test_sandbox_invocation_handler_failed_settles_run_failed(
         command=_sandbox_command(),
         idempotency_key="k-sandbox-fail",
         idempotency_body_hash="h-sandbox-fail",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     remote = InMemorySandboxRemote(
         [
@@ -345,6 +355,8 @@ async def test_sandbox_invocation_handler_unknown_is_never_success(
         command=_sandbox_command(),
         idempotency_key="k-sandbox-unknown",
         idempotency_body_hash="h-sandbox-unknown",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     remote = InMemorySandboxRemote(
         [

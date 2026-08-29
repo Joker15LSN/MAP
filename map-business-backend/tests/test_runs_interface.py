@@ -49,6 +49,10 @@ def _workspace() -> uuid.UUID:
     return uuid.uuid4()
 
 
+_RUNTIME_SNAPSHOT_ID = uuid.UUID("00000000-0000-0000-0000-0000000000b1")
+_RUNTIME_SNAPSHOT_DIGEST = "a" * 64
+
+
 @pytest.fixture()
 def store() -> InMemoryRunStore:
     return InMemoryRunStore(now=datetime(2026, 8, 24, tzinfo=UTC))
@@ -70,6 +74,8 @@ async def test_create_run_and_replay_idempotency(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     assert created.status == "queued"
     assert created.replayed is False
@@ -81,6 +87,8 @@ async def test_create_run_and_replay_idempotency(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     assert replay.run_id == created.run_id
     assert replay.replayed is True
@@ -95,6 +103,8 @@ async def test_create_run_idempotency_conflict(application: RunApplication) -> N
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     with pytest.raises(IdempotencyConflictRunError):
         await application.create_run(
@@ -104,6 +114,8 @@ async def test_create_run_idempotency_conflict(application: RunApplication) -> N
             command=_command(),
             idempotency_key="k-1",
             idempotency_body_hash="hash-b",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
         )
 
 
@@ -118,9 +130,13 @@ async def test_get_run_cross_workspace_is_not_found(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     view = await application.get_run(workspace_id=ws, principal_id="u-1", run_id=created.run_id)
     assert view.run_id == created.run_id
+    assert view.runtime_snapshot_id == _RUNTIME_SNAPSHOT_ID
+    assert view.runtime_snapshot_digest == _RUNTIME_SNAPSHOT_DIGEST
     with pytest.raises(RunNotFoundError):
         await application.get_run(
             workspace_id=_workspace(), principal_id="u-1", run_id=created.run_id
@@ -142,6 +158,8 @@ async def test_cancel_is_command_only_until_worker_settles(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     receipt = await application.cancel_run(
         workspace_id=ws, run_id=created.run_id, principal_id="u-1", reason="stop"
@@ -170,6 +188,8 @@ async def test_worker_happy_path_event_order(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     core = InMemoryCoreRunStream(
         [
@@ -218,6 +238,8 @@ async def test_worker_core_failure_settles_run_failed(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     core = InMemoryCoreRunStream(
         [CoreOutcome(status="failed", error_code="CORE_BAD", error_message="bad")]
@@ -248,6 +270,8 @@ async def test_worker_core_transport_error_retries_then_fails(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     core = InMemoryCoreRunStream(
         [CoreError(code="STREAM_CORE_ERROR", message="upstream broke")]
@@ -284,6 +308,8 @@ async def test_worker_handler_exception_retries_within_max_attempts(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
 
     calls = 0
@@ -322,6 +348,8 @@ async def test_worker_cancel_command_settles_cancelled(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     await application.cancel_run(
         workspace_id=ws, run_id=created.run_id, principal_id="u-1"
@@ -349,6 +377,8 @@ async def test_worker_lease_takeover_fences_loser(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     first = await store.claim_next(worker_id="w-1", lease_seconds=10)
     assert first is not None
@@ -374,6 +404,8 @@ async def test_replay_after_seq_is_strictly_increasing(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     core = InMemoryCoreRunStream([CoreOutcome(status="completed")])
     await RunWorker(store, core).run_once(worker_id="w-1")
@@ -400,6 +432,8 @@ async def test_handler_generator_is_aclosed_on_stop(
         command=_command(),
         idempotency_key="k-1",
         idempotency_body_hash="hash-a",
+        runtime_snapshot_id=_RUNTIME_SNAPSHOT_ID,
+        runtime_snapshot_digest=_RUNTIME_SNAPSHOT_DIGEST,
     )
     closed = asyncio.Event()
 

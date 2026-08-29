@@ -31,6 +31,7 @@ from ..schemas import (
 )
 from ..services.conversation_service import STREAM_ABORTED, stream_conversation_message
 from ..services.idempotency import IdempotencyConflictError, IdempotencyService, hash_request
+from ..services.runtime_snapshot.errors import RuntimeSnapshotUnavailableError
 from ..turns import TurnApplication, TurnError, TurnNotFoundError
 from .chat import _forward_headers
 from .deps import get_core_client, get_principal, get_turn_application
@@ -273,6 +274,12 @@ async def start_turn(
         raise HTTPException(
             status_code=404,
             detail="conversation not found",
+            headers={"X-MAP-Error-Code": exc.code},
+        ) from exc
+    except RuntimeSnapshotUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=exc.message,
             headers={"X-MAP-Error-Code": exc.code},
         ) from exc
     except TurnError as exc:

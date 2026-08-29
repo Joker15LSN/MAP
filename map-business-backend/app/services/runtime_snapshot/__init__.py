@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from .digest import canonical_json_hash, projection_digest, snapshot_id_for_digest
 from .errors import (
+    RuntimeSnapshotUnavailableError,
     SnapshotAuditWriteError,
     SnapshotConcurrentModificationError,
     SnapshotDigestMismatchError,
@@ -38,6 +39,7 @@ __all__ = [
     "RuntimeSnapshotRecord",
     "RuntimeSnapshotRepository",
     "RuntimeSnapshotService",
+    "RuntimeSnapshotUnavailableError",
     "SnapshotAuditWriteError",
     "SnapshotConcurrentModificationError",
     "SnapshotDigestMismatchError",

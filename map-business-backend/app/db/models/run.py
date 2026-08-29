@@ -27,6 +27,10 @@ class Run(Base):
             "'cancelling', 'cancelled', 'timed_out')",
             name="ck_runs_status",
         ),
+        CheckConstraint(
+            "(runtime_snapshot_id IS NULL) = (runtime_snapshot_digest IS NULL)",
+            name="ck_runs_runtime_snapshot_pair",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -42,6 +46,17 @@ class Run(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     command_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
     snapshot_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    runtime_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            f"{MAP_CONTROL_SCHEMA}.runtime_snapshots.id",
+            name="fk_runs_runtime_snapshot_id",
+        ),
+        nullable=True,
+    )
+    runtime_snapshot_digest: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     last_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

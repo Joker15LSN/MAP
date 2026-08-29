@@ -15,7 +15,7 @@ os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_turns_test_state.json"
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.deps import get_run_application, get_turn_application
@@ -30,6 +30,13 @@ from app.runs import (
 )
 from app.runs.domain import CoreEvent, CoreOutcome
 from app.runtime.state_machine import RunState
+from app.schemas import AdminState
+from app.services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
+from app.services.runtime_snapshot.digest import (
+    projection_digest,
+    snapshot_id_for_digest,
+)
+from app.services.runtime_snapshot.schemas import build_runtime_projection
 from app.settings import Settings
 from app.turns import (
     StopTurnReceipt,
@@ -51,12 +58,25 @@ def factory(_engine):
 
 
 @pytest.fixture()
+async def current_snapshot(session) -> tuple[uuid.UUID, str]:
+    projection = build_runtime_projection(AdminState.default())
+    digest = projection_digest(projection)
+    snapshot_id = snapshot_id_for_digest(digest)
+    repo = PgRuntimeSnapshotRepository(session)
+    await repo.insert(snapshot_id, projection, digest, None, "published")
+    await repo.activate(snapshot_id, None)
+    await session.commit()
+    return snapshot_id, digest
+
+
+@pytest.fixture()
 def run_application(factory) -> RunApplication:
     return RunApplication(PgRunStore(factory))
 
 
 @pytest.fixture()
-def turn_application(factory, run_application) -> TurnApplication:
+def turn_application(factory, run_application, current_snapshot) -> TurnApplication:
+    del current_snapshot
     return TurnApplication(factory, run_application)
 
 
@@ -266,6 +286,23 @@ async def test_http_start_turn_and_replay_envelopes(
         headers={"Idempotency-Key": "turn-route-2"},
     )
     assert missing.status_code == 404
+
+
+async def test_http_start_turn_without_current_snapshot_is_503(
+    http_client: AsyncClient, session
+) -> None:
+    await session.execute(
+        text("DELETE FROM map_control.runtime_snapshot_current WHERE id = 1")
+    )
+    await session.commit()
+    conversation = await _create_conversation(session, owner_user_id="local-admin")
+    response = await http_client.post(
+        f"/api/v1/conversations/{conversation.id}/turns",
+        json=_body(),
+        headers={"Idempotency-Key": "turn-route-no-snapshot"},
+    )
+    assert response.status_code == 503
+    assert response.json()["code"] == "RUNTIME_SNAPSHOT_UNAVAILABLE"
 
 
 async def test_stop_turn_thin_adapter_cancels_run_and_finalizes_message(

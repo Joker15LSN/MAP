@@ -25,3 +25,17 @@ class SnapshotDigestMismatchError(SnapshotError):
 
 class SnapshotAuditWriteError(SnapshotError):
     """Audit append failed; the product write may have succeeded already."""
+
+
+class RuntimeSnapshotUnavailableError(SnapshotError):
+    """Run creation needs a current snapshot but none is configured.
+
+    Fail-closed: callers must map this to 503 + ``RUNTIME_SNAPSHOT_UNAVAILABLE``.
+    """
+
+    def __init__(self) -> None:
+        self.code = "RUNTIME_SNAPSHOT_UNAVAILABLE"
+        self.message = (
+            "runtime snapshot unavailable: no active runtime snapshot is configured"
+        )
+        super().__init__(self.message)

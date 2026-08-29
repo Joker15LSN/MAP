@@ -34,6 +34,8 @@ from ..services.idempotency import (
     IdempotencyConflictError,
     IdempotencyService,
 )
+from ..services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
+from ..services.runtime_snapshot.errors import RuntimeSnapshotUnavailableError
 from .projection import TurnProjection, project_turn_events
 
 TURN_NOT_FOUND = "TURN_NOT_FOUND"
@@ -142,6 +144,12 @@ class TurnApplication:
                 if replay is not None:
                     return self._turn_from_response_body(replay.response_body)
 
+                current_snapshot = await PgRuntimeSnapshotRepository(
+                    session
+                ).get_current()
+                if current_snapshot is None:
+                    raise RuntimeSnapshotUnavailableError()
+
                 session.add(
                     Run(
                         id=run_id,
@@ -151,6 +159,8 @@ class TurnApplication:
                         status=RunState.QUEUED,
                         command_json=command.to_json(),
                         snapshot_json=dict(command.snapshot),
+                        runtime_snapshot_id=current_snapshot.id,
+                        runtime_snapshot_digest=current_snapshot.digest,
                         last_seq=0,
                         created_at=now,
                     )

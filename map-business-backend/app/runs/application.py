@@ -33,6 +33,8 @@ class RunApplication:
         principal_id: str,
         conversation_id: uuid.UUID | None,
         command: RunCommand,
+        runtime_snapshot_id: uuid.UUID,
+        runtime_snapshot_digest: str,
         idempotency_key: str,
         idempotency_body_hash: str,
     ) -> RunCreated:
@@ -41,6 +43,8 @@ class RunApplication:
             principal_id=principal_id,
             conversation_id=conversation_id,
             command=command,
+            runtime_snapshot_id=runtime_snapshot_id,
+            runtime_snapshot_digest=runtime_snapshot_digest,
             idempotency_key=idempotency_key,
             idempotency_body_hash=idempotency_body_hash,
         )

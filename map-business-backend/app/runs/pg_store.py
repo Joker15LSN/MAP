@@ -67,6 +67,8 @@ def _run_view(row: Run) -> RunView:
         last_seq=row.last_seq,
         cancel_requested=row.cancel_requested_at is not None,
         error_code=row.error_code,
+        runtime_snapshot_id=row.runtime_snapshot_id,
+        runtime_snapshot_digest=row.runtime_snapshot_digest,
     )
 
 
@@ -82,6 +84,8 @@ class PgRunStore:
         principal_id: str,
         conversation_id: uuid.UUID | None,
         command: RunCommand,
+        runtime_snapshot_id: uuid.UUID,
+        runtime_snapshot_digest: str,
         idempotency_key: str,
         idempotency_body_hash: str,
         now: datetime | None = None,
@@ -112,6 +116,8 @@ class PgRunStore:
                             status=RunState.QUEUED,
                             command_json=command.to_json(),
                             snapshot_json=dict(command.snapshot),
+                            runtime_snapshot_id=runtime_snapshot_id,
+                            runtime_snapshot_digest=runtime_snapshot_digest,
                             last_seq=0,
                             created_at=now,
                         )
