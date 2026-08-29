@@ -411,6 +411,7 @@ class LLMEngine:
                 schema=kwargs["json_schema"],
                 name=kwargs.get("schema_name", "response_schema"),
                 strict=kwargs.get("schema_strict", False),
+                parse=False,  # legacy callers parse the returned content themselves
             )
         return ModelInvocationRequest(
             messages=self._convert_messages(messages),

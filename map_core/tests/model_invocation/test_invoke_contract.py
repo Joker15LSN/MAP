@@ -264,6 +264,22 @@ async def test_tools_tool_choice_success_neutral_tool_call_dicts() -> None:
 
 
 @run_async
+async def test_structured_parse_false_preserves_legacy_tolerant_content() -> None:
+    provider = ScriptedProvider(
+        [ProviderResponse(payload=_completion(content="```json\nnot-json\n```"))]
+    )
+    invocation = ModelInvocation(_config(), provider=provider)
+
+    outcome = await invocation.invoke(
+        _request(structured=StructuredOutput(schema={"type": "object"}, parse=False))
+    )
+
+    assert outcome.status == "succeeded"
+    assert outcome.structured is None
+    assert outcome.content == "```json\nnot-json\n```"
+
+
+@run_async
 async def test_tools_empty_choices_is_empty_success_legacy_parity() -> None:
     provider = ScriptedProvider(
         [ProviderResponse(payload=_completion(content="", choices=[]))]

@@ -35,6 +35,7 @@ class StructuredOutput(BaseModel):
     json_schema: dict[str, Any] = Field(alias="schema")
     name: str = "response_schema"
     strict: bool = False
+    parse: bool = True  # False preserves legacy shell behavior: caller parses content itself
 
 
 class ProviderParams(BaseModel):

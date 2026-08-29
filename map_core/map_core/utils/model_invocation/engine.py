@@ -323,7 +323,7 @@ class ModelInvocation:
             content = str(content)
 
         structured: Any = None
-        if req.structured is not None:
+        if req.structured is not None and req.structured.parse:
             try:
                 structured = json.loads(content)
             except json.JSONDecodeError:
