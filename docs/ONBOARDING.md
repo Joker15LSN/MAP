@@ -104,7 +104,7 @@ Message 生命周期迁移到 Canonical Run，而不是永久保留两套执行�
 2. 引擎选择 seam：`map_core/map_core/service/agent_runtime.py`
 3. legacy 实现：`map_core/map_core/service/agent/`
 4. AgentScope adapter：`map_core/map_core/service/agentscope2/`
-5. 模型调用：`map_core/map_core/utils/model_invocation/`（typed 入口）；`utils/llm_engine.py` 为 B6 待删兼容壳
+5. 模型调用：`map_core/map_core/utils/model_invocation/`（唯一 typed 入口，旧壳已删）
 6. OpenSandbox：`service/opensandbox_client.py`、`sandbox_tools.py`、`sandbox_ledger.py`
 7. 安全能力：`service/agent/disabled_capabilities.py`、`service/mcp_egress.py`
 
@@ -142,7 +142,7 @@ test/build。不要为了通过本地测试改用未冻结依赖。
 - `conversation_service.py`：持久状态、流、取消和错误协调集中；
 - `job_runner.py`：并发正确性高，改动必须覆盖 lease/fencing/故障；
 - `config_mutation.py`：文件与数据库跨资源一致性；
-- `llm_engine.py`：B6 待删兼容壳，provider/重试/观测已收敛到 `model_invocation`；
+- `model_invocation/`：typed gateway 的 provider seam、重试与流式终态仍需保持深度；
 - legacy / AgentScope 双引擎：事件与工具策略重复；
 - BFF Effect guard / Core sandbox ledger：相邻但未统一的副作用生命周期；
 - Conversation、Chat 与目标 Run：三种语义容易被误当成同一概念。

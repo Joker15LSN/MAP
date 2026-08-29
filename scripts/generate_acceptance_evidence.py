@@ -91,10 +91,10 @@ BLOCKED_REASON_BY_TASK = {
     "P1-CLEAN-BUILD-01": "generated-DTO toolchain not implemented in this "
                          "change set",
     "P1-CLEAN-DEAD-01": "dead-code sweep not executed in this change set",
-    "P1-CLEAN-LLM-01": "typed ModelInvocation gateway and all production "
-                       "caller migration are implemented (PR-I B0-B5); B6 "
-                       "legacy shell deletion, durable reconciliation and CI "
-                       "attestation still pending",
+    "P1-CLEAN-LLM-01": "typed ModelInvocation gateway, all production caller "
+                       "migration and legacy shell deletion are implemented "
+                       "(PR-I B0-B6); durable ModelInvocation reconciliation "
+                       "and CI attestation still pending",
     "P1-CLEAN-STATE-01": "Mongo state/telemetry abstraction retirement not "
                          "implemented in this change set",
     "P1-CONFIG-01": "PG versioned configuration not implemented in this "

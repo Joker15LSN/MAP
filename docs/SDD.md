@@ -188,7 +188,7 @@ sequenceDiagram
 | 执行所有权 | BFF 直连 Core，Message 是主要生命周期事实；PR-C/D 已具备 runs+run_events 事实集、RunWorker 生产循环与 retry/lease 收敛（未切 conversation 流量） | Run worker 单写 Canonical Event | 过渡中；ADR-0002、计划 Step 2（AC-RUN 全矩阵待 CI/E2E） |
 | Agent 引擎 | legacy / AgentScope 双引擎；PR-H1 默认 AgentScope 并保留回滚开关 | AgentScope 单引擎 | 过渡中；计划 Step 5（PR-H2 待证据后删 switch） |
 | 沙箱事实 | Core 自有 ledger + BFF Effect guard | Invocation/Effect 统一模型 | 过渡中；计划 Phase 2 |
-| 模型调用 | 单一 typed ModelInvocation 已承载全部 production caller（PR-I B0–B5）；`llm_engine.py` 为待删兼容壳 | 小接口 ModelInvocation 模块（删除旧壳） | 过渡中；计划 Step 6（B6 待删） |
+| 模型调用 | 单一 typed ModelInvocation 承载全部 production caller；旧 `llm_engine.py` 壳已删除（PR-I B0–B6） | 小接口 ModelInvocation 模块（AC-03 CI/durable 对账待补） | 过渡中；计划 Step 6 |
 | 配置 | 文件快照 + mutation/audit | 版本化配置 + 固定 Runtime Snapshot | 过渡中；计划 Phase 6 |
 | 运行观测 | Mongo 记录 + OTel + SSE 语义并存 | Canonical Event 投影到观测 | 目标；计划 Phase 7 |
 
