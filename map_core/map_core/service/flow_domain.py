@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncGenerator
@@ -40,6 +41,15 @@ from .global_domain_helpers import (
     stream_event_data_as_dict,
 )
 from .hyperedge_planner import HyperedgePlanner
+from .runtime_snapshot_transport import (
+    RuntimeSnapshotAuthError,
+    RuntimeSnapshotDigestMismatchError,
+    RuntimeSnapshotError,
+    RuntimeSnapshotIdMissingError,
+    RuntimeSnapshotNotFoundError,
+    RuntimeSnapshotSchemaError,
+    ServiceIdentityRuntimeSnapshotTransport,
+)
 from .scenario_hub import ScenarioHub
 from .scenario_resolver import ScenarioResolver
 from .skill_hub import SkillHub, SkillMountPlan
@@ -100,13 +110,22 @@ class FlowDomain:
         self,
         request: FlowChatRequest | None = None,
         http_request: Request | None = None,
+        flow_config_provider: FlowConfigProvider | None = None,
     ) -> None:
         self.global_domain = GlobalDomain(request=request, http_request=http_request)
         self.scenario_hub = ScenarioHub()
         self.skill_hub = SkillHub()
         self.scenario_resolver = ScenarioResolver()
         self.hyperedge_planner = HyperedgePlanner()
-        self.flow_config_provider = FlowConfigProvider.instance()
+        if flow_config_provider is None:
+            transport = ServiceIdentityRuntimeSnapshotTransport(
+                base_url=os.getenv("MAP_BFF_API_ORIGIN", "http://backend-service:18080"),
+                token=os.getenv("MAP_BFF_SERVICE_TOKEN", ""),
+                audience=os.getenv("MAP_BFF_SERVICE_AUDIENCE", "map-bff"),
+            )
+            flow_config_provider = FlowConfigProvider(transport)
+        self.flow_config_provider = flow_config_provider
+        self.http_request = http_request
         self.agent_case_miner = AgentCaseMiner()
 
     @property
@@ -152,6 +171,20 @@ class FlowDomain:
         merged.max_node_budget = request_config.max_node_budget
         merged.fallback_to_global = request_config.fallback_to_global
         return merged
+
+    @staticmethod
+    def _runtime_snapshot_error_code(exc: RuntimeSnapshotError) -> str:
+        if isinstance(exc, RuntimeSnapshotIdMissingError):
+            return "RUNTIME_SNAPSHOT_MISSING"
+        if isinstance(exc, RuntimeSnapshotAuthError):
+            return "RUNTIME_SNAPSHOT_AUTH"
+        if isinstance(exc, RuntimeSnapshotNotFoundError):
+            return "RUNTIME_SNAPSHOT_NOT_FOUND"
+        if isinstance(exc, RuntimeSnapshotDigestMismatchError):
+            return "RUNTIME_SNAPSHOT_DIGEST_MISMATCH"
+        if isinstance(exc, RuntimeSnapshotSchemaError):
+            return "RUNTIME_SNAPSHOT_SCHEMA"
+        return "RUNTIME_SNAPSHOT_UNAVAILABLE"
 
     def _should_fallback_to_global(self, request: FlowChatRequest) -> bool:
         return bool(request.flow_config.fallback_to_global)
@@ -498,8 +531,35 @@ class FlowDomain:
             },
         )
 
+        snapshot_id = (
+            getattr(self.http_request.state, "runtime_snapshot_id", None)
+            if self.http_request is not None
+            else None
+        )
+        expected_digest = (
+            getattr(self.http_request.state, "runtime_snapshot_digest", None)
+            if self.http_request is not None
+            else None
+        )
+
         try:
-            snapshot = await self.flow_config_provider.get_snapshot()
+            snapshot = await self.flow_config_provider.get_snapshot(
+                snapshot_id=snapshot_id,
+                expected_digest=expected_digest,
+            )
+        except RuntimeSnapshotError as exc:
+            logger.error(f"[FlowDomain] runtime snapshot load failed: {exc}")
+            yield FlowDomainStreamEvent(
+                event="error",
+                data={
+                    "error": str(exc),
+                    "code": self._runtime_snapshot_error_code(exc),
+                    "finished": False,
+                },
+            )
+            return
+
+        try:
             self.scenario_hub.load_external_scenarios(snapshot.scenario_packs)
             self.skill_hub.load_external_skills(snapshot.flow_skill_descriptors)
 

@@ -60,7 +60,7 @@ def test_flow_domain_success_path_with_expected_phases(monkeypatch) -> None:
     monkeypatch.setattr(
         flow_domain.flow_config_provider,
         "get_snapshot",
-        lambda: asyncio.sleep(
+        lambda *, snapshot_id=None, expected_digest=None: asyncio.sleep(
             0,
             result=SimpleNamespace(
                 source="static",
@@ -132,7 +132,7 @@ def test_flow_domain_fallback_to_global_domain_when_no_scenario(monkeypatch) -> 
     monkeypatch.setattr(
         flow_domain.flow_config_provider,
         "get_snapshot",
-        lambda: asyncio.sleep(
+        lambda *, snapshot_id=None, expected_digest=None: asyncio.sleep(
             0,
             result=SimpleNamespace(
                 source="static",
@@ -187,7 +187,7 @@ def test_flow_domain_hard_fail_when_fallback_disabled(monkeypatch) -> None:
     monkeypatch.setattr(
         flow_domain.flow_config_provider,
         "get_snapshot",
-        lambda: asyncio.sleep(
+        lambda *, snapshot_id=None, expected_digest=None: asyncio.sleep(
             0,
             result=SimpleNamespace(
                 source="static",

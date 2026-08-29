@@ -66,7 +66,7 @@ def test_flow_graph_runs_in_dependency_order(monkeypatch) -> None:
     monkeypatch.setattr(
         flow_domain.flow_config_provider,
         "get_snapshot",
-        lambda: asyncio.sleep(
+        lambda *, snapshot_id=None, expected_digest=None: asyncio.sleep(
             0,
             result=SimpleNamespace(
                 source="static",

@@ -1,7 +1,7 @@
 import json
 import re
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import StreamingResponse
@@ -30,6 +30,35 @@ FLOW_STREAM_RESPONSES: dict[int | str, dict[str, Any]] = {
 
 
 _ID_HEADER_PATTERN = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
+_RUNTIME_SNAPSHOT_HEX_PATTERN = re.compile(r"^[0-9a-fA-F]{1,128}$")
+_RUNTIME_SNAPSHOT_DIGEST_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def _runtime_snapshot_id_value(raw: str | None) -> str | None:
+    """Return a sane pinned snapshot id: UUID or hex string of <=128 chars."""
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value or len(value) > 128:
+        return None
+    try:
+        UUID(value)
+        return value
+    except ValueError:
+        pass
+    if _RUNTIME_SNAPSHOT_HEX_PATTERN.fullmatch(value):
+        return value
+    return None
+
+
+def _runtime_snapshot_digest_value(raw: str | None) -> str | None:
+    """Return a 64-char lowercase/uppercase hex digest, else None."""
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not _RUNTIME_SNAPSHOT_DIGEST_PATTERN.fullmatch(value):
+        return None
+    return value
 
 
 def _validated_id_header(raw: str | None) -> str | None:
@@ -69,6 +98,15 @@ def _apply_runtime_headers(
     )
     http_request.state.workspace_id = _validated_id_header(
         http_request.headers.get("X-Workspace-ID")
+    )
+    # J6: pinned runtime snapshot identity comes from the BFF. Malformed or
+    # missing headers keep None here; the provider fails closed at the call
+    # site, never by fabricating a current-pointer fallback.
+    http_request.state.runtime_snapshot_id = _runtime_snapshot_id_value(
+        http_request.headers.get("X-Runtime-Snapshot-ID")
+    )
+    http_request.state.runtime_snapshot_digest = _runtime_snapshot_digest_value(
+        http_request.headers.get("X-Runtime-Snapshot-Digest")
     )
 
 

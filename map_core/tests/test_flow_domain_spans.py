@@ -67,7 +67,7 @@ def _base_patches(monkeypatch, flow_domain: FlowDomain, scenario, graph) -> None
     monkeypatch.setattr(
         flow_domain.flow_config_provider,
         "get_snapshot",
-        lambda: asyncio.sleep(
+        lambda *, snapshot_id=None, expected_digest=None: asyncio.sleep(
             0,
             result=SimpleNamespace(
                 source="static",

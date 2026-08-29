@@ -473,7 +473,7 @@ def _fake_snapshot_loader(snapshot: dict[str, Any] | None):
     )
     from map_core.service.flow_config_provider import FlowConfigSnapshot
 
-    def _loader() -> Any:
+    def _loader(*args: Any, **kwargs: Any) -> Any:
         scenarios = []
         for item in (snapshot or {}).get("scenario_packs") or []:
             scenarios.append(ScenarioPackSchema(**item))
@@ -494,8 +494,8 @@ def _fake_snapshot_loader(snapshot: dict[str, Any] | None):
             stale=False,
         )
 
-    async def _async_loader() -> Any:
-        return _loader()
+    async def _async_loader(*args: Any, **kwargs: Any) -> Any:
+        return _loader(*args, **kwargs)
 
     return _async_loader
 

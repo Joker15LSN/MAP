@@ -10,14 +10,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ..core_client import MapCoreClient
 from ..repositories.config import ConfigRepository
 from ..schemas import ChatRequest
 from ..services.runtime_payloads import build_runtime_chat_payload
-from .deps import get_core_client, get_store
+from .deps import get_core_client, get_runtime_snapshots, get_store
 
 router = APIRouter()
 
@@ -59,6 +59,12 @@ def _forward_headers(
         if value:
             headers[propagation_header] = value
     return headers
+
+
+def _apply_runtime_snapshot_headers(headers: dict[str, str], current: Any) -> None:
+    """Pin the BFF's current immutable runtime snapshot on flow requests."""
+    headers["X-Runtime-Snapshot-ID"] = str(current.id)
+    headers["X-Runtime-Snapshot-Digest"] = current.digest
 
 
 @router.get("/health")
@@ -143,8 +149,17 @@ async def chat_flow_v1(
     request_token: str | None = Header(default=None, alias="X-request-token"),
     store: ConfigRepository = Depends(get_store),
     core_client: MapCoreClient = Depends(get_core_client),
+    snapshots=Depends(get_runtime_snapshots),
 ) -> dict[str, Any]:
+    current = await snapshots.get_current()
+    if current is None:
+        raise HTTPException(
+            status_code=503,
+            detail="runtime snapshot unavailable",
+            headers={"X-MAP-Error-Code": "RUNTIME_SNAPSHOT_UNAVAILABLE"},
+        )
     headers = _forward_headers(request_token, request)
+    _apply_runtime_snapshot_headers(headers, current)
     request_payload = build_runtime_chat_payload(store, payload)
     try:
         return await core_client.chat_by_path(
@@ -172,8 +187,17 @@ async def chat_stream_flow_v1(
     request_token: str | None = Header(default=None, alias="X-request-token"),
     store: ConfigRepository = Depends(get_store),
     core_client: MapCoreClient = Depends(get_core_client),
+    snapshots=Depends(get_runtime_snapshots),
 ) -> StreamingResponse:
+    current = await snapshots.get_current()
+    if current is None:
+        raise HTTPException(
+            status_code=503,
+            detail="runtime snapshot unavailable",
+            headers={"X-MAP-Error-Code": "RUNTIME_SNAPSHOT_UNAVAILABLE"},
+        )
     headers = _forward_headers(request_token, request)
+    _apply_runtime_snapshot_headers(headers, current)
     request_payload = build_runtime_chat_payload(store, payload)
 
     async def stream() -> Any:
