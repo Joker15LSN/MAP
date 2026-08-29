@@ -2,8 +2,7 @@
 
 Immutable versioned projection snapshots with a singleton current pointer,
 draft -> published -> active -> rolled_back -> retired lifecycle, CAS
-activation and crash recovery. J1 provides storage + read path; J2 adds
-the lifecycle service.
+activation and crash recovery.
 """
 
 from __future__ import annotations
@@ -25,13 +24,20 @@ from .schemas import (
     RuntimeSnapshotRecord,
     build_runtime_projection,
 )
+from .service import (
+    AdminStateMutationStore,
+    RuntimeSnapshotService,
+    reconcile_runtime_snapshot_mutations,
+)
 
 __all__ = [
+    "AdminStateMutationStore",
     "MutationContext",
     "RuntimeProjection",
     "RuntimeSnapshotRead",
     "RuntimeSnapshotRecord",
     "RuntimeSnapshotRepository",
+    "RuntimeSnapshotService",
     "SnapshotAuditWriteError",
     "SnapshotConcurrentModificationError",
     "SnapshotDigestMismatchError",
@@ -41,5 +47,6 @@ __all__ = [
     "build_runtime_projection",
     "canonical_json_hash",
     "projection_digest",
+    "reconcile_runtime_snapshot_mutations",
     "snapshot_id_for_digest",
 ]
