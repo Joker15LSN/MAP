@@ -298,6 +298,20 @@ async def test_structured_parse_false_preserves_legacy_tolerant_content() -> Non
 
 
 @run_async
+async def test_empty_content_completion_succeeds_legacy_parity() -> None:
+    provider = ScriptedProvider(
+        [ProviderResponse(payload=_completion(content=""))]
+    )
+    invocation = ModelInvocation(_config(), provider=provider)
+
+    outcome = await invocation.invoke(_request())
+
+    assert outcome.status == "succeeded"
+    assert outcome.content == ""
+    assert outcome.error is None
+
+
+@run_async
 async def test_tools_empty_choices_is_empty_success_legacy_parity() -> None:
     provider = ScriptedProvider(
         [ProviderResponse(payload=_completion(content="", choices=[]))]

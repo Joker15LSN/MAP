@@ -341,13 +341,8 @@ class ModelInvocation:
         request_id = payload.get("id")
         latency_ms = (time.time() - started) * 1000.0
 
-        if not (content or tool_calls or structured is not None):
-            return self._failed_outcome(
-                "invalid_response",
-                "model returned empty content and no tool calls",
-                attempts,
-                started,
-            )
+        # Legacy parity: a provider response with choices and an empty assistant
+        # message is a valid (empty) success, never a failure.
         return ModelInvocationOutcome(
             status="succeeded",
             content=content,
