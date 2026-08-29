@@ -5,7 +5,7 @@ from typing import Literal
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from map_core.utils.llm_engine import LLMEngine
+from map_core.utils.model_invocation import ModelInvocation, ModelInvocationRequest
 
 CalculationType = Literal[
     "sum",
@@ -69,7 +69,7 @@ def _parse_code_block(content: str) -> str:
     return content.strip()
 
 
-async def extract_intent(question: str, llm: LLMEngine) -> CalculationIntent:
+async def extract_intent(question: str, llm: ModelInvocation) -> CalculationIntent:
     """
     根据问题提取计算意图
     """
@@ -111,8 +111,11 @@ NOTE: 只有问题中明确提到季度，比如说：第一季度、Q1这样的
 }}
 """
     try:
-        response = await llm.ainvoke([{"role": "user", "content": prompt}])
-        content = response.content
+        outcome = await llm.invoke(
+            ModelInvocationRequest(messages=[{"role": "user", "content": prompt}])
+        )
+        outcome.raise_for_status()
+        content = outcome.content
         parsed_content = _parse_code_block(content)
         data = json.loads(parsed_content)
         ext = LLMIntentExtraction.model_validate(data)

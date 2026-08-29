@@ -7,7 +7,7 @@ from typing import Callable
 
 from loguru import logger
 
-from map_core.utils.llm_engine import LLMEngine
+from map_core.utils.model_invocation import ModelInvocation, ModelInvocationRequest
 
 from ._prompts import REWRITING_PROMPT_TEMPLATE
 from ._schema import AtomizeContext, DecomposedTask, PrunedSchema
@@ -26,7 +26,7 @@ def _parse_code_block(content: str) -> str:
 async def atomize_question(
     context: AtomizeContext,
     pruned_schema: PrunedSchema,
-    llm: LLMEngine,
+    llm: ModelInvocation,
     usage_callback: Callable[[dict[str, int] | None], None] | None = None,
 ) -> list[DecomposedTask]:
     """
@@ -61,12 +61,14 @@ async def atomize_question(
 
     try:
         if context.system_prompt:
-            response = await llm.ainvoke([{"role": "system", "content": context.system_prompt}, {"role": "user", "content": prompt}])
+            messages = [{"role": "system", "content": context.system_prompt}, {"role": "user", "content": prompt}]
         else:
-            response = await llm.ainvoke([{"role": "user", "content": prompt}])
+            messages = [{"role": "user", "content": prompt}]
+        outcome = await llm.invoke(ModelInvocationRequest(messages=messages))
+        outcome.raise_for_status()
         if usage_callback is not None:
-            usage_callback(response.usage)
-        content = response.content
+            usage_callback(outcome.usage.to_dict() if outcome.usage else None)
+        content = outcome.content
         parsed_data = json.loads(_parse_code_block(content))
 
         sub_questions = parsed_data.get("sub_questions", [])
@@ -106,7 +108,7 @@ async def atomize_question(
 
 async def process_atomize_pipeline(
     context: AtomizeContext,
-    llm: LLMEngine,
+    llm: ModelInvocation,
     usage_callback: Callable[[dict[str, int] | None], None] | None = None,
 ) -> list[DecomposedTask]:
     """

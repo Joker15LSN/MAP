@@ -50,6 +50,7 @@ from loguru import logger
 from pydantic import BaseModel, Field, TypeAdapter
 
 from ....utils.global_context import agent_log_context
+from ....utils.model_invocation import ModelInvocationRequest
 from ..base import AgentRequest, AgentResult
 from ..traceable_agent import TraceableAgent
 from .base import SearchKbChunkOutput, build_item_as_dict, fetch_tool_self_dict
@@ -375,15 +376,20 @@ class MountedKBSearchAgent(TraceableAgent):
             "请基于以上信息，总结和用户问题相关的所有关键信息，包括但不限于关键发现/事实/定义/时间/数据等。"
         )
 
-        response = await self.llm.ainvoke(
-            [
-                {"role": "system", "content": summary_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            timeout=summary_timeout,
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=[
+                    {"role": "system", "content": summary_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                timeout=summary_timeout,
+            )
         )
-        self._accumulate_usage(response.usage)
-        return response.content.strip()
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        return outcome.content.strip()
 
     async def split_queries_with_schemas(
         self,
@@ -485,20 +491,25 @@ limit 表示针对子查询等返回检索结果条数限制，若不提供则�
 """
 
             # print(split_prompt)
-            response = await self.llm.ainvoke(
-                [
-                    {
-                        "role": "system",
-                        "content": "你是一个专业的查询分析助手，擅长查询拆解和知识库匹配。",
-                    },
-                    {"role": "user", "content": split_prompt},
-                ],
-                timeout=30.0,
+            outcome = await self.llm.invoke(
+                ModelInvocationRequest(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "你是一个专业的查询分析助手，擅长查询拆解和知识库匹配。",
+                        },
+                        {"role": "user", "content": split_prompt},
+                    ],
+                    timeout=30.0,
+                )
             )
-            self._accumulate_usage(response.usage)
+            outcome.raise_for_status()
+            self._accumulate_usage(
+                outcome.usage.to_dict() if outcome.usage else None
+            )
 
             # 解析LLM返回的JSON结果
-            result_text = response.content.strip()
+            result_text = outcome.content.strip()
             # 提取JSON部分（去除可能的markdown标记）
             if "```json" in result_text:
                 result_text = result_text.split("```json")[1].split("```")[0].strip()

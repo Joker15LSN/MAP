@@ -57,6 +57,7 @@ from pydantic import BaseModel, Field, RootModel, StringConstraints
 
 from ...config import AIM_GRAPH_SPACE, EFFI_API
 from ...utils.global_context import agent_log_context, request_id_ctx
+from ...utils.model_invocation import ModelInvocationRequest
 from .base import AgentRequest, AgentResult
 from .tool_context_utils import resolve_agent_tool_context_overlay
 from .traceable_agent import TraceableAgent
@@ -704,16 +705,21 @@ class EfficiencyPiAgent(TraceableAgent):
             "请开始总结摘要"
             # "请用1-3条要点输出，聚焦关键结论。"
         )
-        response = await self.llm.ainvoke(
-            [
-                {"role": "system", "content": summary_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            timeout=summary_timeout,
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=[
+                    {"role": "system", "content": summary_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                timeout=summary_timeout,
+            )
         )
-        self._accumulate_usage(response.usage)
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
 
-        return response.content.strip()
+        return outcome.content.strip()
 
     async def _summarize_multi_result(
         self, items: list[dict[str, Any]], query: str, prompt: str | None

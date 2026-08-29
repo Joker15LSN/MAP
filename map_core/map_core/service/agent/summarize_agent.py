@@ -12,6 +12,7 @@ from ...config.config_schema import LLMConfig
 from ...schema.agent_schema import Message
 from ...utils.global_context import agent_log_context
 from ...utils.llm_engine import LLMEngine
+from ...utils.model_invocation import ModelInvocationRequest
 from .base import AgentRequest, AgentResult, BaseAgent
 
 
@@ -408,16 +409,21 @@ class SummarizeAgent(BaseAgent):
             llm = self._resolve_llm(request)
 
             try:
-                response = await llm.ainvoke(
-                    [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_content},
-                    ]
+                outcome = await llm.invoke(
+                    ModelInvocationRequest(
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_content},
+                        ]
+                    )
                 )
-                self._accumulate_usage(response.usage)
+                outcome.raise_for_status()
+                self._accumulate_usage(
+                    outcome.usage.to_dict() if outcome.usage else None
+                )
                 return AgentResult(
                     name=self.name,
-                    content=response.content.strip(),
+                    content=outcome.content.strip(),
                     data_source={
                         "source": "dispatch_results",
                         "count": len(payload),

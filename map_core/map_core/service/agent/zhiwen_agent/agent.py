@@ -55,6 +55,7 @@ from pydantic import (
 
 from ....config import ZHIWEN_API_URL
 from ....utils.global_context import agent_log_context
+from ....utils.model_invocation import ModelInvocationRequest
 from ..base import AgentRequest, AgentResult
 from ..traceable_agent import TraceableAgent
 
@@ -538,15 +539,20 @@ class ZhiwenAgent(TraceableAgent):
             sub_query=sub_query,
             result_text=result_text
         )
-        response = await self.llm.ainvoke(
-            [
-                {"role": "system", "content": summary_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            timeout=summary_timeout,
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=[
+                    {"role": "system", "content": summary_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                timeout=summary_timeout,
+            )
         )
-        self._accumulate_usage(response.usage)
-        return response.content.strip()
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        return outcome.content.strip()
 
     async def _summarize_multi_result(
         self, items: list[dict[str, Any]], prompt: str | None

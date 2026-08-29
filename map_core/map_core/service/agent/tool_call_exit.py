@@ -10,6 +10,7 @@ from loguru import logger
 
 from ...schema.state_event_schema import AgentEventSchema
 from ...utils.llm_engine import LLMEngine
+from ...utils.model_invocation import ModelInvocationRequest
 from ..prompt.tool_call_prompt import (
     SCENE_POST_SUMMARY_SYSTEM_PROMPT,
     SCENE_POST_SUMMARY_USER_PROMPT_TEMPLATE,
@@ -212,23 +213,28 @@ class ToolCallExitHandler:
             )
         )
         try:
-            response = await self.scene_post_summary.llm.ainvoke(messages)
+            outcome = await self.scene_post_summary.llm.invoke(
+                ModelInvocationRequest(messages=messages)
+            )
+            outcome.raise_for_status()
         except Exception:
             logger.exception(
                 f"{self.log_tag_getter()}[Step {step}] Scene post-summary LLM call failed for '{self.owner.name}'"
             )
             raise
-        self.owner._accumulate_usage(response.usage)
-        summary_content = (response.content or "").strip()
+        self.owner._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        summary_content = (outcome.content or "").strip()
         end_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
         logger.info(
             "{}[Step {}] Scene post-summary LLM completed for '{}' in {:.3f}s with usage {} request_id={!r}".format(
                 self.log_tag_getter(),
                 step,
                 self.owner.name,
-                getattr(response, "response_time", 0.0),
-                response.usage or {},
-                getattr(response, "request_id", None),
+                outcome.latency_ms / 1000.0,
+                outcome.usage.to_dict() if outcome.usage else {},
+                outcome.request_id,
             )
         )
 
@@ -254,9 +260,9 @@ class ToolCallExitHandler:
             data_source={"source": "scene_post_summary"},
             meta={
                 "duration_s": (end_ts - start_ts).total_seconds(),
-                "token_usage": response.usage or {},
-                "llm_request_id": getattr(response, "request_id", None),
-                "llm_response_time": getattr(response, "response_time", None),
+                "token_usage": outcome.usage.to_dict() if outcome.usage else {},
+                "llm_request_id": outcome.request_id,
+                "llm_response_time": outcome.latency_ms / 1000.0,
                 "exit_reason": exit_metadata.get("reason"),
                 "scene_post_summary": self.scene_post_summary_log_meta(),
             },

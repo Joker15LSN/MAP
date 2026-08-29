@@ -6,7 +6,7 @@ from typing import Callable
 
 from loguru import logger
 
-from map_core.utils.llm_engine import LLMEngine
+from map_core.utils.model_invocation import ModelInvocation, ModelInvocationRequest
 
 from ....utils.milvus import get_milvus_client
 from ....utils.model_factory import aembed_text
@@ -40,7 +40,7 @@ def _parse_code_block(content: str) -> str:
 
 async def select_data_models(
     context: AtomizeContext,
-    llm: LLMEngine,
+    llm: ModelInvocation,
     usage_callback: Callable[[dict[str, int] | None], None] | None = None,
 ) -> list[FilteredDataModel]:
     """
@@ -203,7 +203,7 @@ async def _llm_select(
     context: AtomizeContext,
     candidates: list[FilteredDataModel],
     start_time: float,
-    llm: LLMEngine,
+    llm: ModelInvocation,
     usage_callback: Callable[[dict[str, int] | None], None] | None = None,
 ) -> list[FilteredDataModel]:
     formatted_candidates = []
@@ -235,10 +235,13 @@ async def _llm_select(
     )
 
     try:
-        response = await llm.ainvoke([{"role": "user", "content": prompt}])
+        outcome = await llm.invoke(
+            ModelInvocationRequest(messages=[{"role": "user", "content": prompt}])
+        )
+        outcome.raise_for_status()
         if usage_callback is not None:
-            usage_callback(response.usage)
-        content = response.content
+            usage_callback(outcome.usage.to_dict() if outcome.usage else None)
+        content = outcome.content
         parsed_data = json.loads(_parse_code_block(content))
 
         selected_ids = parsed_data.get("selected_ids", [])

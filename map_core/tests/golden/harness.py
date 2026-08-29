@@ -26,6 +26,13 @@ from map_core.service.flow_domain import FlowDomain
 from map_core.service.global_domain import GlobalDomain
 from map_core.service.master_pipeline import MasterPipeline
 from map_core.utils.llm_engine import LLMResponse, ToolCallResponse
+from map_core.utils.model_invocation import (
+    ModelInvocationEvent,
+    ModelInvocationOutcome,
+    ModelInvocationRequest,
+    ModelInvocationStream,
+    ModelUsage,
+)
 
 # ---------------------------------------------------------------------------
 # Recording state store (stands in for GlobalAgentStateStore / MongoDB events)
@@ -190,7 +197,101 @@ class FakeLLM:
             f"selectors={selectors!r} (calls so far: {self.calls})"
         )
 
-    # -- LLM surface --------------------------------------------------------
+    # -- new typed invoke surface -------------------------------------------
+    async def invoke(
+        self, req: ModelInvocationRequest
+    ) -> ModelInvocationOutcome | ModelInvocationStream:
+        if req.stream is True:
+            return await self._invoke_stream(req)
+        return self._invoke_non_stream(req)
+
+    def _classify(self, req: ModelInvocationRequest) -> tuple[str, dict[str, Any] | None]:
+        if req.tools is not None:
+            tool_names = []
+            for tool in req.tools:
+                if isinstance(tool, dict):
+                    fn = tool.get("function") or {}
+                    if isinstance(fn, dict) and fn.get("name"):
+                        tool_names.append(str(fn["name"]))
+            return "ask_tool", {"tool_names": tool_names}
+        if req.structured is not None:
+            return "asimple_chat", {"schema_name": req.structured.name}
+        return "ainvoke", None
+
+    def _invoke_non_stream(self, req: ModelInvocationRequest) -> ModelInvocationOutcome:
+        kind, selectors = self._classify(req)
+        call: dict[str, Any] = {"kind": kind}
+        if selectors is not None:
+            call.update(selectors)
+        self.calls.append(call)
+        item = self._next(kind, selectors)
+        return self._item_to_outcome(kind, item)
+
+    async def _invoke_stream(
+        self, req: ModelInvocationRequest
+    ) -> ModelInvocationStream:
+        kind = "asimple_chat_stream"
+        schema_name = req.structured.name if req.structured is not None else None
+        self.calls.append({"kind": kind, "schema_name": schema_name})
+        item = self._next(kind, {"schema_name": schema_name})
+
+        async def _events():
+            for chunk in item.get("chunks", []):
+                yield ModelInvocationEvent(
+                    type="content", data={"type": "content", "data": chunk}
+                )
+            usage = item.get("usage") or dict(_DEFAULT_USAGE)
+            yield ModelInvocationEvent(
+                type="usage", data={"type": "usage", "data": usage}
+            )
+            yield ModelInvocationEvent(
+                type="terminal",
+                status="succeeded",
+                data={"attempts": 1, "latency_ms": 0.0},
+                usage=self._usage_from_item(item),
+            )
+
+        return ModelInvocationStream(_events())
+
+    @staticmethod
+    def _usage_from_item(item: dict[str, Any]) -> ModelUsage:
+        usage = item.get("usage") or dict(_DEFAULT_USAGE)
+        return ModelUsage(
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+        )
+
+    def _item_to_outcome(
+        self, kind: str, item: dict[str, Any]
+    ) -> ModelInvocationOutcome:
+        tool_calls = None
+        raw_calls = item.get("tool_calls")
+        if raw_calls:
+            tool_calls = [
+                {
+                    "id": str(call.get("id") or f"call_{i}"),
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": str(call.get("arguments") or "{}"),
+                    },
+                }
+                for i, call in enumerate(raw_calls)
+            ]
+        return ModelInvocationOutcome(
+            status="succeeded",
+            content=item.get("content", ""),
+            tool_calls=tool_calls,
+            usage=self._usage_from_item(item),
+            finish_reason=item.get("finish_reason")
+            or ("tool_calls" if tool_calls else "stop"),
+            model="golden-fake-model",
+            attempts=1,
+            latency_ms=0.0,
+        )
+
+    # -- legacy LLM surface ---------------------------------------------------
     async def asimple_chat(
         self,
         prompt: str,

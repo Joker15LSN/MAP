@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...config import TEXT_TO_SQL_API
 from ...utils.global_context import agent_log_context
+from ...utils.model_invocation import ModelInvocationRequest
 from ._ask_database_atomize_request import (
     AtomizeContext,
     DecomposedTask,
@@ -351,29 +352,34 @@ class AskDatabaseAgent(TraceableAgent):
         text_to_sql_details_str = "\n".join(text_to_sql_details)
 
         # TODO: 注意 truncated 字段，表示因为数据量过大而做了截断，可以在返回的 summary 最后拼接“因返回数据量过大，超过模型上下文处理能力，部分数据已做截断，必须说明。”
-        response = await self.llm.ainvoke(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是数据库查询助手。请基于查询返回结果生成简洁、准确的中文总结，"
-                        "明确回答用户问题，并保留关键字段、统计值和限制条件。"
-                        "不要只复述接口成功状态，优先解读实际查询结果。"
-                        "严格禁止编造信息或数据。如果查询结果为空，则明确说明未查询到相关数据！"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"用户问题：{question}\n\n"
-                        f"{text_to_sql_details_str}\n\n"
-                        "请输出可直接给业务方查看的总结，避免臆测；若结果不足以回答，明确说明。"
-                    ),
-                },
-            ]
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是数据库查询助手。请基于查询返回结果生成简洁、准确的中文总结，"
+                            "明确回答用户问题，并保留关键字段、统计值和限制条件。"
+                            "不要只复述接口成功状态，优先解读实际查询结果。"
+                            "严格禁止编造信息或数据。如果查询结果为空，则明确说明未查询到相关数据！"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"用户问题：{question}\n\n"
+                            f"{text_to_sql_details_str}\n\n"
+                            "请输出可直接给业务方查看的总结，避免臆测；若结果不足以回答，明确说明。"
+                        ),
+                    },
+                ]
+            )
         )
-        self._accumulate_usage(response.usage)
-        summary = response.content.strip()
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        summary = outcome.content.strip()
         if truncated:
             summary += "\n\nWARNING: **因返回数据量过大，超过模型上下文处理能力，部分数据已做截断，必须说明。**"
         return summary

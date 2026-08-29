@@ -9,7 +9,7 @@ from typing import Any, Literal
 from loguru import logger
 
 from map_core.database.milvus import MilvusClient
-from map_core.utils.llm_engine import LLMEngine
+from map_core.utils.model_invocation import ModelInvocation, ModelInvocationRequest
 
 from ._match_dimension_values import find_matched_dimension_values
 from ._prompts import (
@@ -256,7 +256,7 @@ async def _identify_metrics_with_llm(
     question: str,
     dimension_context: str,
     all_metrics: list[dict[str, Any]],
-    llm: LLMEngine,
+    llm: ModelInvocation,
     split_question_examples: str | None = None,
     usage_callback: Callable[[dict[str, int] | None], None] | None = None,
 ) -> dict[str, Any]:
@@ -279,10 +279,13 @@ async def _identify_metrics_with_llm(
 
     logger.debug(f"{MSG_HEADER} Sending metrics identification prompt to LLM...")
     try:
-        response = await llm.ainvoke([{"role": "user", "content": prompt}])
+        outcome = await llm.invoke(
+            ModelInvocationRequest(messages=[{"role": "user", "content": prompt}])
+        )
+        outcome.raise_for_status()
         if usage_callback is not None:
-            usage_callback(response.usage)
-        content = response.content
+            usage_callback(outcome.usage.to_dict() if outcome.usage else None)
+        content = outcome.content
         parsed_content = _parse_code_block(content)
         data = json.loads(parsed_content)
         result = IdentifyMetricsResponse.model_validate(data)
@@ -298,7 +301,7 @@ async def _generate_sub_question_list(
     metric_info: dict[str, Any],
     dimension_context: str,
     dimension_instruction: str,
-    llm: LLMEngine,
+    llm: ModelInvocation,
     split_question_instructions: str | None = None,
     split_question_examples: str | None = None,
     usage_callback: Callable[[dict[str, int] | None], None] | None = None,
@@ -339,10 +342,11 @@ async def _generate_sub_question_list(
             )
 
         messages.append({"role": "user", "content": prompt})
-        response = await llm.ainvoke(messages)
+        outcome = await llm.invoke(ModelInvocationRequest(messages=messages))
+        outcome.raise_for_status()
         if usage_callback is not None:
-            usage_callback(response.usage)
-        content = response.content
+            usage_callback(outcome.usage.to_dict() if outcome.usage else None)
+        content = outcome.content
         parsed_content = _parse_code_block(content)
         data = json.loads(parsed_content)
         result = SubQuestionResponse.model_validate(data)
@@ -358,7 +362,7 @@ async def split_question(
     query: str,
     query_mode: Literal["publish", "edit"],
     milvus_client: MilvusClient,
-    llm: LLMEngine,
+    llm: ModelInvocation,
     system_prompt: str | None = None,
     user_prompt: str | None = None,
     usage_callback: Callable[[dict[str, int] | None], None] | None = None,

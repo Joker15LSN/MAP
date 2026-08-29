@@ -52,6 +52,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...config import METRIC_MILVUS_URI, TEXT_TO_METRICS_API
 from ...utils.global_context import agent_log_context
+from ...utils.model_invocation import ModelInvocationRequest
 from ._wenshu_split_question import MILVUS_DB_NAME_PREFIX, split_question
 from .base import AgentRequest, AgentResult
 from .traceable_agent import TraceableAgent
@@ -374,14 +375,19 @@ class WenshuAgent(TraceableAgent):
             f"用户问题：{question}\n\n查询结果：{result}"
             "\n\n请用将数据整理为可读性强的摘要。请务必保持数据的真实全面。"
         )
-        response = await self.llm.ainvoke(
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_content},
-            ]
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_content},
+                ]
+            )
         )
-        self._accumulate_usage(response.usage)
-        return response.content.strip()
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        return outcome.content.strip()
 
     async def run(self, request: AgentRequest, *, parid: str = "-") -> AgentResult:
         with agent_log_context(self.agent_id, parent_id=parid):

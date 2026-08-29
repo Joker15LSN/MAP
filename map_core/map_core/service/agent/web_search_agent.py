@@ -46,6 +46,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ...config import WEB_SEARCH_API
 from ...utils.global_context import agent_log_context
+from ...utils.model_invocation import ModelInvocationRequest
 from .base import AgentRequest, AgentResult
 from .prompt.web_search_prompt import web_search_prompt
 from .tool_context_utils import merge_extra_with_agent_tool_context_defaults
@@ -772,24 +773,29 @@ class WebSearchAgent(TraceableAgent):
         result_text = result.strip()
         if not result_text:
             return "未获取到有效搜索结果。"
-        response = await self.llm.ainvoke(
-            [
-                {
-                    "role": "system",
-                    "content": summarize_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"{self._current_date_text()}\n\n"
-                        f"子问题：{query}\n\n搜索结果：{result_text}\n\n"
-                        "请总结关键要点，并指出不确定信息。"
-                    ),
-                },
-            ]
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": summarize_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"{self._current_date_text()}\n\n"
+                            f"子问题：{query}\n\n搜索结果：{result_text}\n\n"
+                            "请总结关键要点，并指出不确定信息。"
+                        ),
+                    },
+                ]
+            )
         )
-        self._accumulate_usage(response.usage)
-        return response.content.strip()
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        return outcome.content.strip()
 
     async def _summarize_multi_result(
         self,
@@ -859,14 +865,19 @@ class WebSearchAgent(TraceableAgent):
             f"用户问题：{query}\n\n搜索结果：{result}\n\n"
             "请用不超过6条要点输出，必要时点明信息不确定性。"
         )
-        response = await self.llm.ainvoke(
-            [
-                {"role": "system", "content": summarize_prompt},
-                {"role": "user", "content": user_content},
-            ]
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=[
+                    {"role": "system", "content": summarize_prompt},
+                    {"role": "user", "content": user_content},
+                ]
+            )
         )
-        self._accumulate_usage(response.usage)
-        return response.content.strip()
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        return outcome.content.strip()
 
     async def run(self, request: AgentRequest, *, parid: str = "-") -> AgentResult:
         with agent_log_context(self.agent_id, parent_id=parid):

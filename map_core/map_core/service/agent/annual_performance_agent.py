@@ -20,6 +20,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from ...utils.global_context import agent_log_context
+from ...utils.model_invocation import ModelInvocationRequest
 from .base import AgentRequest, AgentResult
 from .traceable_agent import TraceableAgent
 
@@ -177,14 +178,19 @@ class AnnualPerformanceAgent(TraceableAgent):
             f"用户问题：{query}\n\n年度绩效报告：{result}\n\n"
             "请用不超过6条要点输出。"
         )
-        response = await self.llm.ainvoke(
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_content},
-            ]
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_content},
+                ]
+            )
         )
-        self._accumulate_usage(response.usage)
-        return response.content.strip()
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        return outcome.content.strip()
 
     async def run(self, request: AgentRequest, *, parid: str = "-") -> AgentResult:
         with agent_log_context(self.agent_id, parent_id=parid):

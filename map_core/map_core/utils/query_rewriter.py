@@ -9,7 +9,7 @@ from loguru import logger
 
 from ..schema.agent_schema import Message
 from ..schema.attachment_schema import UploadedKBFileSchema
-from .llm_engine import LLMEngine
+from .model_invocation import ModelInvocation, ModelInvocationRequest
 
 
 class QueryRewriter:
@@ -18,7 +18,7 @@ class QueryRewriter:
     def __init__(
         self,
         *,
-        llm: LLMEngine,
+        llm: ModelInvocation,
         timeout_s: float = DEFAULT_TIMEOUT_S,
         logger_: Any | None = None,
     ) -> None:
@@ -140,9 +140,13 @@ class QueryRewriter:
             f"{file_context}\n\n当前问题：{query}\n重写后的问题："
         )
 
-        return await self.llm.ainvoke(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ]
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ]
+            )
         )
+        outcome.raise_for_status()
+        return outcome

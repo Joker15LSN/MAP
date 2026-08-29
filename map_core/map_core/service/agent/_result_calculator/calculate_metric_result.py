@@ -5,7 +5,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from map_core.database.milvus import MilvusClient
-from map_core.utils.llm_engine import LLMEngine
+from map_core.utils.model_invocation import ModelInvocation, ModelInvocationRequest
 
 from ._final_result_parser import parse_final_results
 from .calculator import calculate
@@ -25,7 +25,7 @@ class SubQuestionSelection(BaseModel):
 
 
 
-async def pick_necessary_results(original_question: str, executed_results: list[dict], llm: LLMEngine) -> list[dict]:
+async def pick_necessary_results(original_question: str, executed_results: list[dict], llm: ModelInvocation) -> list[dict]:
     if not executed_results:
         return []
 
@@ -61,8 +61,11 @@ async def pick_necessary_results(original_question: str, executed_results: list[
 3. 如果原问题为“查询收入”，而子问题中包括“查询公司销售收入”和“查询各个行业的销售收入”，只需要选择“查询公司销售收入”即可，因为“查询各个行业的销售收入”是“查询公司销售收入”的细分，选择会导致重复计算！
 """
     try:
-        response = await llm.ainvoke([{"role": "user", "content": prompt}])
-        content = response.content
+        outcome = await llm.invoke(
+            ModelInvocationRequest(messages=[{"role": "user", "content": prompt}])
+        )
+        outcome.raise_for_status()
+        content = outcome.content
         parsed_content = _parse_code_block(content)
         data = json.loads(parsed_content)
         selection = SubQuestionSelection.model_validate(data)
@@ -93,7 +96,7 @@ async def calculate_final_metric_result(
     original_question: str,
     executed_results: list[dict],
     milvus_client: MilvusClient,
-    llm: LLMEngine,
+    llm: ModelInvocation,
     query_mode: Literal["draft", "published"],
 ) -> dict[str, Any]:
     """
