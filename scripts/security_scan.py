@@ -284,7 +284,7 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         expected_fingerprint="sha256:5ee001bc1d740c5c",
     ),
     Exemption(
-        "map_core/tests/test_sandbox_ledger.py", "uri_embedded_password", 113,
+        "map_core/tests/test_sandbox_ledger.py", "uri_embedded_password", 112,
         "S4-01 local dev DSN default (map:map), never a real credential",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:f384c1854ca16e74",
@@ -292,13 +292,13 @@ EXEMPTIONS: tuple[Exemption, ...] = (
     # S5-01 crash-recovery fixtures: the same local dev DSN default and the
     # same fake api_key used by the S4-01 suite; test doubles, never secrets.
     Exemption(
-        "map_core/tests/test_sandbox_ledger.py", "uri_embedded_password", 294,
+        "map_core/tests/test_sandbox_ledger.py", "uri_embedded_password", 293,
         "S5-01 local dev DSN default (map:map), never a real credential",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:f384c1854ca16e74",
     ),
     Exemption(
-        "map_core/tests/test_sandbox_ledger.py", "uri_embedded_password", 331,
+        "map_core/tests/test_sandbox_ledger.py", "uri_embedded_password", 330,
         "S5-01 local dev DSN default (map:map), never a real credential",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:f384c1854ca16e74",
