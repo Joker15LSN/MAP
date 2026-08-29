@@ -173,17 +173,19 @@ dispatcher/master/flow 默认走该模块，legacy 引擎仅作为组合根内�
 
 ### 4.4 模型调用（当前热点）
 
-`utils/llm_engine.py` 目前同时暴露同步、异步、流式、结构化输出、重试和观测等多种变化
-维度，是典型宽接口。目标 ModelInvocation 模块应把稳定语义固定在小接口中：
+`utils/model_invocation/`（PR-I B0–B5）已把同步、异步、流式、结构化输出、重试和观测
+等变化维度收敛为单一 async typed `invoke`；`utils/llm_engine.py` 目前只作为
+B6 待删的兼容薄壳，不再被任何 production caller import。ModelInvocation 的稳定语义：
 
-- 规范化请求与响应；
+- 规范化请求与 typed outcome / terminal event；
 - 流式 chunk / 终态协议；
 - 超时、重试和取消；
 - 用量、错误和 span 归属；
-- provider 差异的 adapter。
+- provider 差异的 adapter（direct openai 只在 `openai_compatible.py`）。
 
-迁移按调用族逐个进行，每迁移一族就删除旧入口；禁止建立同时覆盖所有现存参数的“新”
-万能接口。
+迁移按调用族逐个进行（B2–B5 已全部完成），每迁移一族就删除旧入口（B6）；禁止建立
+同时覆盖所有现存参数的“新”万能接口。新 caller 直接学 `invoke`，不得再 import
+`llm_engine`。
 
 ### 4.5 Sandbox（当前基础，待归一）
 

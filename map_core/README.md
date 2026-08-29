@@ -37,7 +37,9 @@ map_core/
 │   └── sandbox_*.py         # OpenSandbox 与调用 ledger
 ├── schema/                  # 请求、事件和运行数据结构
 ├── observability/           # OTel 与运行观测
-├── utils/llm_engine.py      # 当前宽模型接口热点
+├── utils/
+│   ├── model_invocation/    # 单一 typed ModelInvocation（invoke/stream/structured/tool）
+│   └── llm_engine.py        # B6 待删兼容薄壳（不再被 production import）
 └── tests/
 ```
 
