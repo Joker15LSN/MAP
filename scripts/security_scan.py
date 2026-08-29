@@ -200,6 +200,11 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
     ),
     Exemption(
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 186,
+        "test fixture value (fake token)", "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
+    ),
+    Exemption(
         "map_core/tests/test_mcp_egress_guard.py", "openai_key", 187,
         "test fixture value (fake token)", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
@@ -243,19 +248,19 @@ EXEMPTIONS: tuple[Exemption, ...] = (
     ),
     # README quickstart DSNs: documented dev placeholders, never secrets.
     Exemption(
-        "README.md", "uri_embedded_password", 335,
+        "README.md", "uri_embedded_password", 338,
         "documented dev DSN placeholder (P0-SEC-01 injection example)",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:8aac73349fc3c064",
     ),
     Exemption(
-        "README.md", "uri_embedded_password", 336,
+        "README.md", "uri_embedded_password", 339,
         "documented dev DSN placeholder (P0-SEC-01 injection example)",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:90f504e0156a0007",
     ),
     Exemption(
-        "README.md", "uri_embedded_password", 352,
+        "README.md", "uri_embedded_password", 355,
         "documented dev DSN placeholder (P0-SEC-01 injection example)",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:90f504e0156a0007",
