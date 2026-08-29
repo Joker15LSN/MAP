@@ -10,7 +10,7 @@ from ..schema.agent_schema import Message
 from ..schema.attachment_schema import UploadedKBFileSchema
 from ..schema.scene_classification_schema import SceneClassificationResult
 from ..schema.state_event_schema import AgentEventSchema
-from ..utils.llm_engine import LLMEngine
+from ..utils.model_invocation import ModelInvocation
 from ..utils.query_rewriter import QueryRewriter
 from .agent.agent_mapping import (
     SCENE_AGENT_CONFIGS,
@@ -44,7 +44,7 @@ class AgentDispatcher:
     def __init__(
         self,
         *,
-        llm: LLMEngine,
+        llm: ModelInvocation,
         tool_registry: dict[str, Tool] | None = None,
         scene_agent_configs: dict[str, SceneAgentConfig] | None = None,
         scene_agent_config_fetcher: (

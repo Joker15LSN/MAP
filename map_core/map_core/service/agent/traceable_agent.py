@@ -6,7 +6,7 @@ from abc import abstractmethod
 from typing import Any, AsyncGenerator, Awaitable
 
 from ...schema.state_event_schema import ToolCallData, ToolResultData
-from ...utils.llm_engine import LLMEngine
+from ...utils.model_invocation import ModelInvocation
 from ..state_store import (
     GlobalAgentStateStore,
     fire_and_forget,
@@ -22,7 +22,7 @@ class TraceableAgent(BaseAgent):
     """
 
     def __init__(
-        self, llm: LLMEngine, name: str = "TraceableAgent", aid: str | None = None
+        self, llm: ModelInvocation, name: str = "TraceableAgent", aid: str | None = None
     ) -> None:
         super().__init__(llm, name=name)
         self.state_store: GlobalAgentStateStore | None = None

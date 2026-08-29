@@ -1,12 +1,12 @@
 from typing import Any
 
-from map_core.utils.llm_engine import LLMEngine
+from map_core.utils.model_invocation import ModelInvocation
 
 from .engine import run_calculation
 from .extractor import extract_intent
 
 
-async def calculate(question: str, raw_data: list[dict[str, Any]], llm: LLMEngine) -> dict[str, Any]:
+async def calculate(question: str, raw_data: list[dict[str, Any]], llm: ModelInvocation) -> dict[str, Any]:
     """
     根据问题和原始数据计算结果。
 

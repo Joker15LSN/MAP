@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ...schema.agent_schema import Message
 from ...schema.scene_classification_schema import SceneClassificationResult
-from ...utils.llm_engine import LLMEngine
+from ...utils.model_invocation import ModelInvocation
 from ...utils.term_replacer import replace_request_query_for_agent
 
 
@@ -67,7 +67,7 @@ class BaseAgent(ABC):
     timeout: float | None = None
 
     def __init__(
-        self, llm: LLMEngine, agent_id: str | None = None, name: str = "BaseAgent"
+        self, llm: ModelInvocation, agent_id: str | None = None, name: str = "BaseAgent"
     ) -> None:
         self.llm = llm
         self.agent_id = agent_id or secrets.token_hex(10)

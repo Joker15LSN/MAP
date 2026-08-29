@@ -15,7 +15,6 @@ import re
 from types import SimpleNamespace
 from typing import Any
 
-from map_core.schema.agent_schema import Function, ToolCall
 from map_core.schema.flow_domain_schema import FlowChatRequest
 from map_core.schema.global_domain_schema import GlobalDomainChatSchema
 from map_core.schema.master_pipeline_schema import MasterAgentChatSchema
@@ -25,7 +24,6 @@ from map_core.service.agent_dispatcher import AgentDispatcher
 from map_core.service.flow_domain import FlowDomain
 from map_core.service.global_domain import GlobalDomain
 from map_core.service.master_pipeline import MasterPipeline
-from map_core.utils.llm_engine import LLMResponse, ToolCallResponse
 from map_core.utils.model_invocation import (
     ModelInvocationEvent,
     ModelInvocationOutcome,
@@ -292,87 +290,6 @@ class FakeLLM:
             attempts=1,
             latency_ms=0.0,
         )
-
-    # -- legacy LLM surface ---------------------------------------------------
-    async def asimple_chat(
-        self,
-        prompt: str,
-        system_prompt: str | None = None,
-        json_schema: dict[str, Any] | None = None,
-        schema_name: str | None = None,
-        **kwargs: Any,
-    ) -> LLMResponse:
-        self.calls.append({"kind": "asimple_chat", "schema_name": schema_name})
-        item = self._next("asimple_chat", {"schema_name": schema_name})
-        return LLMResponse(
-            content=item.get("content", ""),
-            usage=item.get("usage") or dict(_DEFAULT_USAGE),
-            finish_reason="stop",
-            model="golden-fake-model",
-        )
-
-    async def ask_tool(
-        self,
-        messages: Any,
-        system_msgs: Any = None,
-        tools: Any = None,
-        tool_choice: Any = None,
-        **kwargs: Any,
-    ) -> ToolCallResponse:
-        tool_names = []
-        for tool in tools or []:
-            if isinstance(tool, dict):
-                fn = tool.get("function") or {}
-                if isinstance(fn, dict) and fn.get("name"):
-                    tool_names.append(str(fn["name"]))
-        self.calls.append({"kind": "ask_tool", "tool_names": tool_names})
-        item = self._next("ask_tool", {"tool_names": tool_names})
-        tool_calls = None
-        raw_calls = item.get("tool_calls")
-        if raw_calls:
-            tool_calls = [
-                ToolCall(
-                    id=str(call.get("id") or f"call_{i}"),
-                    function=Function(
-                        name=call["name"],
-                        arguments=str(call.get("arguments") or "{}"),
-                    ),
-                )
-                for i, call in enumerate(raw_calls)
-            ]
-        return ToolCallResponse(
-            content=item.get("content"),
-            tool_calls=tool_calls,
-            usage=item.get("usage") or dict(_DEFAULT_USAGE),
-            finish_reason=item.get("finish_reason")
-            or ("tool_calls" if tool_calls else "stop"),
-            model="golden-fake-model",
-        )
-
-    async def asimple_chat_stream(
-        self,
-        prompt: str,
-        system_prompt: str | None = None,
-        json_schema: dict[str, Any] | None = None,
-        schema_name: str | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        self.calls.append({"kind": "asimple_chat_stream", "schema_name": schema_name})
-        item = self._next("asimple_chat_stream", {"schema_name": schema_name})
-        for chunk in item.get("chunks", []):
-            yield {"type": "content", "data": chunk}
-        yield {"type": "usage", "data": item.get("usage") or dict(_DEFAULT_USAGE)}
-
-    async def ainvoke(self, messages: Any, **kwargs: Any) -> LLMResponse:
-        self.calls.append({"kind": "ainvoke"})
-        item = self._next("ainvoke")
-        return LLMResponse(
-            content=item.get("content", ""),
-            usage=item.get("usage") or dict(_DEFAULT_USAGE),
-            finish_reason="stop",
-            model="golden-fake-model",
-        )
-
 
 # ---------------------------------------------------------------------------
 # Fake tools

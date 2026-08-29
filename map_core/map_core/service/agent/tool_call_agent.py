@@ -8,9 +8,9 @@ from loguru import logger
 
 from ...schema.agent_schema import Function, ToolCall
 from ...utils.global_context import agent_log_context
-from ...utils.llm_engine import LLMEngine
 from ...utils.llm_trace_context import llm_trace_context
 from ...utils.model_invocation import (
+    ModelInvocation,
     ModelInvocationOutcome,
     ModelInvocationRequest,
 )
@@ -71,7 +71,7 @@ class ToolCallAgent(TraceableAgent):
 
     def __init__(
         self,
-        llm: LLMEngine,
+        llm: ModelInvocation,
         *,
         name: str = "tool_call_agent",
         aid: str | None = None,

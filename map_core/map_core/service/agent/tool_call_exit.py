@@ -9,8 +9,7 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 
 from ...schema.state_event_schema import AgentEventSchema
-from ...utils.llm_engine import LLMEngine
-from ...utils.model_invocation import ModelInvocationRequest
+from ...utils.model_invocation import ModelInvocation, ModelInvocationRequest
 from ..prompt.tool_call_prompt import (
     SCENE_POST_SUMMARY_SYSTEM_PROMPT,
     SCENE_POST_SUMMARY_USER_PROMPT_TEMPLATE,
@@ -23,7 +22,7 @@ from .traceable_agent import TraceableAgent
 
 @dataclass(frozen=True)
 class ScenePostSummaryRuntimeConfig:
-    llm: LLMEngine
+    llm: ModelInvocation
     system_prompt: str = SCENE_POST_SUMMARY_SYSTEM_PROMPT
     user_prompt_template: str = SCENE_POST_SUMMARY_USER_PROMPT_TEMPLATE
 

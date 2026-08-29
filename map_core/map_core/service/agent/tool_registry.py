@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ...utils.llm_engine import LLMEngine
+from ...utils.model_invocation import ModelInvocation
 from .annual_performance_agent import AnnualPerformanceAgent
 from .ask_database_agent import AskDatabaseAgent
 from .base import BaseAgent
@@ -37,10 +37,10 @@ from .zhiwen_agent import ZhiwenAgent
 @dataclass(frozen=True)
 class ToolRegistration:
     spec_provider: Callable[[], dict[str, Any]]
-    agent_factory: Callable[[LLMEngine], BaseAgent]
+    agent_factory: Callable[[ModelInvocation], BaseAgent]
 
 
-def _build_tool(registration: ToolRegistration, llm: LLMEngine) -> AgentTool:
+def _build_tool(registration: ToolRegistration, llm: ModelInvocation) -> AgentTool:
     spec = registration.spec_provider()
     return AgentTool(
         name=spec["name"],
@@ -175,7 +175,7 @@ def get_registered_agent_tool(
     return tool
 
 
-def build_tool_registry(llm: LLMEngine) -> dict[str, Tool]:
+def build_tool_registry(llm: ModelInvocation) -> dict[str, Tool]:
     registrations = _tool_registrations()
     standalone_tools = _standalone_tools()
 
