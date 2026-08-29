@@ -46,7 +46,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ...config import WEB_SEARCH_API
 from ...utils.global_context import agent_log_context
-from ...utils.model_invocation import ModelInvocationRequest
+from ...utils.model_invocation import (
+    ModelInvocationRequest,
+    StructuredOutput,
+)
 from .base import AgentRequest, AgentResult
 from .prompt.web_search_prompt import web_search_prompt
 from .tool_context_utils import merge_extra_with_agent_tool_context_defaults
@@ -612,20 +615,32 @@ class WebSearchAgent(TraceableAgent):
         )
         prompt = f"{self._current_date_text()}\n\n{prompt.replace('{query}', query)}"
 
-        response = await self.llm.asimple_chat(
-            prompt=prompt,
-            system_prompt=(
-                self._read_prompt(system_prompt)
-                or WebSearchToolContext.model_fields[
-                    "disassembly_system_prompt"
-                ].default
-            ),
-            json_schema=self._build_disassembly_json_schema(max_items),
-            schema_name=self._disassembly_schema_name,
-            schema_strict=True,
+        resolved_system_prompt = (
+            self._read_prompt(system_prompt)
+            or WebSearchToolContext.model_fields[
+                "disassembly_system_prompt"
+            ].default
         )
-        self._accumulate_usage(response.usage)
-        raw_items = self._parse_disassembly_plan(response.content)
+        messages = [
+            {"role": "system", "content": resolved_system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=messages,
+                structured=StructuredOutput(
+                    schema=self._build_disassembly_json_schema(max_items),
+                    name=self._disassembly_schema_name,
+                    strict=True,
+                    parse=False,
+                ),
+            )
+        )
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        raw_items = self._parse_disassembly_plan(outcome.content)
         cleaned: list[RoutedSearchQuery] = []
         seen: set[tuple[str, str]] = set()
         for item in raw_items:

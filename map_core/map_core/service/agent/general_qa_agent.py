@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ...utils.model_invocation import ModelInvocationRequest
 from .base import AgentRequest, AgentResult
 from .traceable_agent import TraceableAgent
 
@@ -40,13 +41,21 @@ class GeneralQAAgent(TraceableAgent):
         )
 
         try:
-            response = await self.llm.asimple_chat(
-                prompt=query,
-                system_prompt=system_prompt,
-                max_tokens=2048,
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query},
+            ]
+            outcome = await self.llm.invoke(
+                ModelInvocationRequest(
+                    messages=messages,
+                    max_tokens=2048,
+                )
             )
-            self._accumulate_usage(response.usage)
-            content = (response.content or "").strip()
+            outcome.raise_for_status()
+            self._accumulate_usage(
+                outcome.usage.to_dict() if outcome.usage else None
+            )
+            content = (outcome.content or "").strip()
             if not content:
                 content = "我暂时没有生成有效回答，请换一种问法试试。"
 
@@ -55,8 +64,8 @@ class GeneralQAAgent(TraceableAgent):
                 {
                     "success": True,
                     "content": content,
-                    "model": response.model,
-                    "usage": response.usage,
+                    "model": outcome.model,
+                    "usage": outcome.usage.to_dict() if outcome.usage else None,
                 },
             )
             self.record_message("assistant", content)
@@ -66,13 +75,13 @@ class GeneralQAAgent(TraceableAgent):
                 content=content,
                 data_source={
                     "source": "general_qa_agent",
-                    "model": response.model,
-                    "request_id": response.request_id,
+                    "model": outcome.model,
+                    "request_id": outcome.request_id,
                 },
                 meta_data={
-                    "model": response.model,
-                    "usage": response.usage or {},
-                    "request_id": response.request_id,
+                    "model": outcome.model,
+                    "usage": outcome.usage.to_dict() if outcome.usage else {},
+                    "request_id": outcome.request_id,
                 },
             )
         except Exception as exc:

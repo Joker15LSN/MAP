@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 from map_core.service.agent.base import AgentRequest
 from map_core.service.agent.tool_registry import find_invalid_tool_names
@@ -11,13 +10,34 @@ from map_core.service.dynamic_tools import (
     mcp_tool_runtime_name,
     skill_runtime_tool_name,
 )
+from map_core.utils.model_invocation import (
+    ModelInvocationOutcome,
+    ModelInvocationRequest,
+    ModelUsage,
+)
 
 
 class FakeLLM:
-    async def asimple_chat(self, *, prompt: str, system_prompt: str):
-        return SimpleNamespace(
-            content=f"{system_prompt[:10]}::{prompt[:10]}",
-            usage={"total_tokens": 3},
+    async def invoke(self, req: ModelInvocationRequest) -> ModelInvocationOutcome:
+        system_prompt = ""
+        user_prompt = ""
+        for message in req.messages:
+            role = getattr(message, "role", None) or (
+                message.get("role") if isinstance(message, dict) else None
+            )
+            content = getattr(message, "content", None) or (
+                message.get("content") if isinstance(message, dict) else None
+            )
+            if role == "system":
+                system_prompt = str(content or "")
+            elif role == "user":
+                user_prompt = str(content or "")
+        return ModelInvocationOutcome(
+            status="succeeded",
+            content=f"{system_prompt[:10]}::{user_prompt[:10]}",
+            usage=ModelUsage(total_tokens=3),
+            attempts=1,
+            latency_ms=0.0,
         )
 
 

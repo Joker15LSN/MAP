@@ -36,8 +36,13 @@ from ..service.prompt.scene_classification_prompt import (
     SUB_SCENE_CLASSIFICATION_PROMPT,
     SUB_SCENE_SYSTEM_PROMPT,
 )
-from ..utils.llm_engine import LLMEngine, LLMResponse
+from ..utils.llm_engine import LLMEngine
 from ..utils.llm_trace_context import llm_trace_context
+from ..utils.model_invocation import (
+    ModelInvocationOutcome,
+    ModelInvocationRequest,
+    StructuredOutput,
+)
 
 GlobalDomainRequest = GlobalDomainChatSchema | GlobalDomainChatV3Schema
 
@@ -653,7 +658,7 @@ class SceneSelector:
         request: GlobalDomainRequest,
         runtime_config: SceneSelectionRuntimeConfig | None = None,
         history_context: str | None = None,
-    ) -> tuple[BigSceneClassificationResult, LLMResponse | None]:
+    ) -> tuple[BigSceneClassificationResult, ModelInvocationOutcome | None]:
         query = request.query
         try:
             config = runtime_config or self.resolve_runtime_config(request)
@@ -687,14 +692,23 @@ class SceneSelector:
 
         logger.info(f"Big scene selection started for query: {query}")
         try:
-            response = await self._llm.asimple_chat(
-                system_prompt=config.big_scene_system_prompt,
-                prompt=prompt,
-                json_schema=self._build_big_scene_json_schema(
-                    list(config.scene_registry.keys())
-                ),
-                schema_name="scene_classification",
+            messages = [
+                {"role": "system", "content": config.big_scene_system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+            outcome = await self._llm.invoke(
+                ModelInvocationRequest(
+                    messages=messages,
+                    structured=StructuredOutput(
+                        schema=self._build_big_scene_json_schema(
+                            list(config.scene_registry.keys())
+                        ),
+                        name="scene_classification",
+                        parse=False,
+                    ),
+                )
             )
+            outcome.raise_for_status()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -702,25 +716,25 @@ class SceneSelector:
             return BigSceneClassificationResult.model_construct(big_scenes=[]), None
 
         try:
-            result = BigSceneClassificationResult.model_validate_json(response.content)
+            result = BigSceneClassificationResult.model_validate_json(outcome.content)
             result, dropped = self._normalize_big_scene_labels(
                 result, config.scene_registry.keys()
             )
             if dropped:
                 logger.warning(f"Dropped invalid big_scenes: {dropped}")
-            return result, response
+            return result, outcome
         except ValidationError as exc:
             logger.error(
                 "Big scene response validation failed: "
-                f"{exc}. content={self._truncate_text(response.content)}"
+                f"{exc}. content={self._truncate_text(outcome.content)}"
             )
-            return BigSceneClassificationResult.model_construct(big_scenes=[]), response
+            return BigSceneClassificationResult.model_construct(big_scenes=[]), outcome
         except Exception as exc:
             logger.error(
                 "Big scene response parsing failed: "
-                f"{exc}. content={self._truncate_text(response.content)}"
+                f"{exc}. content={self._truncate_text(outcome.content)}"
             )
-            return BigSceneClassificationResult.model_construct(big_scenes=[]), response
+            return BigSceneClassificationResult.model_construct(big_scenes=[]), outcome
 
     async def select_scene(
         self,
@@ -818,7 +832,7 @@ class SceneSelector:
             {"query": request.query, "available_agents": available_agents},
         )
         route_start = time.perf_counter()
-        response: LLMResponse | None = None
+        response: ModelInvocationOutcome | None = None
         route_items: list[dict[str, Any]] = []
         try:
             with llm_trace_context(
@@ -839,41 +853,54 @@ class SceneSelector:
                 phase="master_route",
                 call_kind="route",
             ):
-                response = await route_llm.asimple_chat(
-                    prompt=user_prompt,
-                    system_prompt=route_prompt,
-                    json_schema={
-                        "type": "object",
-                        "properties": {
-                            "agent_routes": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "agent_code": {
-                                            "type": "string",
-                                            "enum": sorted(allowed_codes),
-                                        },
-                                        "confidence": {
-                                            "type": "number",
-                                            "minimum": 0,
-                                            "maximum": 1,
-                                        },
-                                        "reason": {"type": "string"},
+                route_schema = {
+                    "type": "object",
+                    "properties": {
+                        "agent_routes": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "agent_code": {
+                                        "type": "string",
+                                        "enum": sorted(allowed_codes),
                                     },
-                                    "required": [
-                                        "agent_code",
-                                        "confidence",
-                                        "reason",
-                                    ],
+                                    "confidence": {
+                                        "type": "number",
+                                        "minimum": 0,
+                                        "maximum": 1,
+                                    },
+                                    "reason": {"type": "string"},
                                 },
-                            }
-                        },
-                        "required": ["agent_routes"],
+                                "required": [
+                                    "agent_code",
+                                    "confidence",
+                                    "reason",
+                                ],
+                            },
+                        }
                     },
-                    schema_name="direct_sub_agent_route",
+                    "required": ["agent_routes"],
+                }
+                messages = [
+                    {"role": "system", "content": route_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+                response = await route_llm.invoke(
+                    ModelInvocationRequest(
+                        messages=messages,
+                        structured=StructuredOutput(
+                            schema=route_schema,
+                            name="direct_sub_agent_route",
+                            parse=False,
+                        ),
+                    )
                 )
-            self._merge_token_usage(token_usage, response.usage)
+                response.raise_for_status()
+            self._merge_token_usage(
+                token_usage,
+                response.usage.to_dict() if response.usage else None,
+            )
             parsed = self._parse_json_object(response.content)
             raw_routes = parsed.get("agent_routes") if isinstance(parsed, dict) else []
             if isinstance(raw_routes, list):
@@ -949,7 +976,9 @@ class SceneSelector:
                 "agent_routes": selected,
                 "meta": {
                     "duration_s": route_duration,
-                    "token_usage": response.usage if response else None,
+                    "token_usage": (
+                        response.usage.to_dict() if response and response.usage else None
+                    ),
                 },
             },
         )
@@ -1027,7 +1056,7 @@ class SceneSelector:
 
         async def _select_one(
             big_scene: str,
-        ) -> tuple[SubSceneResult | None, LLMResponse | None]:
+        ) -> tuple[SubSceneResult | None, ModelInvocationOutcome | None]:
             if big_scene not in descriptions:
                 logger.warning(f"No sub-scene description for big_scene: {big_scene}")
                 return None, None
@@ -1048,14 +1077,23 @@ class SceneSelector:
                 )
                 return None, None
 
-            response: LLMResponse | None = None
+            response: ModelInvocationOutcome | None = None
             try:
-                response = await self._llm.asimple_chat(
-                    system_prompt=SUB_SCENE_SYSTEM_PROMPT,
-                    prompt=prompt,
-                    json_schema=self._build_sub_scene_json_schema(big_scene, scene_map),
-                    schema_name="sub_scene_classification",
+                messages = [
+                    {"role": "system", "content": SUB_SCENE_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ]
+                response = await self._llm.invoke(
+                    ModelInvocationRequest(
+                        messages=messages,
+                        structured=StructuredOutput(
+                            schema=self._build_sub_scene_json_schema(big_scene, scene_map),
+                            name="sub_scene_classification",
+                            parse=False,
+                        ),
+                    )
                 )
+                response.raise_for_status()
                 result = SubSceneResult.model_validate_json(
                     response.content,
                     context={"big_scene_to_sub_scenes": scene_map},
@@ -1102,7 +1140,7 @@ class SceneSelector:
             if sub_scene_result is not None:
                 cleaned.append(sub_scene_result)
             if llm_response is not None and llm_response.usage:
-                for key, value in llm_response.usage.items():
+                for key, value in llm_response.usage.to_dict().items():
                     if isinstance(value, int):
                         token_usage[key] = token_usage.get(key, 0) + value
         return cleaned, token_usage

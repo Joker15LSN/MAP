@@ -14,6 +14,10 @@ from ...config.common import REVIEWER_LLM_CONFIG
 from ...config.config_schema import LLMConfig
 from ...schema.global_domain_schema import GlobalDomainStreamEvent
 from ..llm_engine import LLMEngine
+from ..model_invocation import (
+    ModelInvocationRequest,
+    ProviderParams,
+)
 from .review_flags import (
     ENABLED_REVIEW_FLAG_CODES,
     lookup_review_flag,
@@ -394,12 +398,25 @@ class StreamContentReviewer:
                     self._preview_text(normalized_text),
                 )
             llm = self._get_or_create_llm()
-            review_stream = llm.asimple_chat_stream(
-                prompt=self._build_user_prompt(normalized_text),
-                system_prompt=self._build_stream_system_prompt(),
-                logprobs=True,
-                top_logprobs=CONTENT_REVIEW_TOP_LOGPROBS,
-                max_tokens=REVIEWER_LLM_CONFIG.max_tokens,
+            review_stream = await llm.invoke(
+                ModelInvocationRequest(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": self._build_stream_system_prompt(),
+                        },
+                        {
+                            "role": "user",
+                            "content": self._build_user_prompt(normalized_text),
+                        },
+                    ],
+                    stream=True,
+                    max_tokens=REVIEWER_LLM_CONFIG.max_tokens,
+                    provider_params=ProviderParams(
+                        logprobs=True,
+                        top_logprobs=CONTENT_REVIEW_TOP_LOGPROBS,
+                    ),
+                )
             )
 
             blocked_signal_sent = False
@@ -407,7 +424,21 @@ class StreamContentReviewer:
             output_parts: list[str] = []
             classification_text = ""
 
-            async for chunk in review_stream:
+            async for event in review_stream:
+                if event.type in ("content", "reasoning", "usage"):
+                    chunk = event.data
+                    if chunk is None:
+                        continue
+                elif event.type == "terminal":
+                    if event.status != "succeeded":
+                        raise RuntimeError(
+                            f"LLM stream {event.status} (code="
+                            f"{event.error.code if event.error else 'unknown'})"
+                        )
+                    continue
+                else:
+                    continue
+
                 if not isinstance(chunk, dict) or chunk.get("type") != "content":
                     continue
 

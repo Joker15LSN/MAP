@@ -7,7 +7,11 @@ from typing import Any
 from loguru import logger
 
 from ...schema.agent_schema import Message
-from ..llm_engine import LLMEngine
+from ..model_invocation import (
+    ModelInvocation,
+    ModelInvocationRequest,
+    StructuredOutput,
+)
 from .prompts import (
     CONTEXT_COMPRESSION_SYSTEM_PROMPT,
     CONTEXT_COMPRESSION_USER_PROMPT_TEMPLATE,
@@ -31,7 +35,7 @@ _ALLOWED_KEYS_BY_ROLE: dict[str, set[str]] = {
 async def compress_history(
     history: Sequence[Message | dict[str, Any]] | None,
     *,
-    llm: LLMEngine,
+    llm: ModelInvocation,
     config: ContextCompressorConfig | None = None,
     focus_instruction: str | None = None,
 ) -> ContextCompressionResult:
@@ -92,19 +96,30 @@ async def compress_history(
     )
 
     try:
-        response = await llm.asimple_chat(
-            prompt=prompt,
-            system_prompt=CONTEXT_COMPRESSION_SYSTEM_PROMPT,
-            json_schema=ContextCompressionLLMOutput.model_json_schema(),
-            schema_name="context_compression",
-            temperature=resolved_config.temperature,
-            max_tokens=resolved_config.max_tokens,
-            timeout=resolved_config.timeout,
+        messages = [
+            {"role": "system", "content": CONTEXT_COMPRESSION_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        outcome = await llm.invoke(
+            ModelInvocationRequest(
+                messages=messages,
+                temperature=resolved_config.temperature,
+                max_tokens=resolved_config.max_tokens,
+                timeout=resolved_config.timeout,
+                structured=StructuredOutput(
+                    schema=ContextCompressionLLMOutput.model_json_schema(),
+                    name="context_compression",
+                    parse=False,
+                ),
+            )
         )
-        parsed = parse_llm_output(str(getattr(response, "content", "") or ""))
+        outcome.raise_for_status()
+        parsed = parse_llm_output(str(outcome.content or ""))
         summary = format_summary(parsed, max_chars=resolved_config.max_summary_chars)
         compressed_history = [build_summary_message(summary), *preserved_messages]
-        usage = _normalize_usage(getattr(response, "usage", None))
+        usage = _normalize_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
         return _result(
             compressed_history=compressed_history,
             preserved_messages=preserved_messages,

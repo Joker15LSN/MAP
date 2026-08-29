@@ -375,12 +375,30 @@ class SummarizeAgent(BaseAgent):
                         request, stream=True
                     )
                     llm = self._resolve_llm(request)
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ]
 
                     try:
-                        async for chunk in llm.asimple_chat_stream(
-                            prompt=user_content,
-                            system_prompt=system_prompt,
-                        ):
+                        stream_obj = await llm.invoke(
+                            ModelInvocationRequest(messages=messages, stream=True)
+                        )
+                        async for event in stream_obj:
+                            if event.type in ("content", "reasoning", "usage"):
+                                chunk = event.data
+                                if chunk is None:
+                                    continue
+                            elif event.type == "terminal":
+                                if event.status != "succeeded":
+                                    raise RuntimeError(
+                                        f"LLM stream {event.status} (code="
+                                        f"{event.error.code if event.error else 'unknown'})"
+                                    )
+                                continue
+                            else:
+                                continue
+
                             if isinstance(chunk, dict):
                                 chunk_type = chunk.get("type")
                                 if chunk_type == "usage":

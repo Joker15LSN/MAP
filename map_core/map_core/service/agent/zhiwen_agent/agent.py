@@ -55,7 +55,10 @@ from pydantic import (
 
 from ....config import ZHIWEN_API_URL
 from ....utils.global_context import agent_log_context
-from ....utils.model_invocation import ModelInvocationRequest
+from ....utils.model_invocation import (
+    ModelInvocationRequest,
+    StructuredOutput,
+)
 from ..base import AgentRequest, AgentResult
 from ..traceable_agent import TraceableAgent
 
@@ -413,15 +416,26 @@ class ZhiwenAgent(TraceableAgent):
                      f"system: {len(system_prompt or '')}"
                      f"user: {len(user_content or '')}"))
         # logger.info(f'user_c: \n{user_content}')
-        response = await self.llm.asimple_chat(
-            prompt=user_content,
-            system_prompt=system_prompt or "",
-            json_schema=self._build_disassembly_json_schema(max_items),
-            schema_name=self._disassembly_schema_name,
-            schema_strict=True,
+        messages = [
+            {"role": "system", "content": system_prompt or ""},
+            {"role": "user", "content": user_content},
+        ]
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=messages,
+                structured=StructuredOutput(
+                    schema=self._build_disassembly_json_schema(max_items),
+                    name=self._disassembly_schema_name,
+                    strict=True,
+                    parse=False,
+                ),
+            )
         )
-        self._accumulate_usage(response.usage)
-        raw_items = self._parse_disassembly_array(response.content)
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        raw_items = self._parse_disassembly_array(outcome.content)
         cleaned: list[str] = []
         seen: set[str] = set()
         for item in raw_items:

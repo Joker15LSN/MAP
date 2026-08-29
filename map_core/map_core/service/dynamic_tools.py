@@ -6,7 +6,7 @@ from typing import Any
 
 from opentelemetry.propagate import inject as otel_inject
 
-from ..utils.llm_engine import LLMEngine
+from ..utils.model_invocation import ModelInvocation, ModelInvocationRequest
 from ..utils.sensitive_data import make_redactor
 from .agent.base import AgentRequest, ToolResult
 from .agent.tool_runtime import Tool
@@ -259,7 +259,7 @@ def build_prompt_skill_tools(
     *,
     skills: list[dict[str, Any]],
     descriptors: list[dict[str, Any]],
-    llm: LLMEngine,
+    llm: ModelInvocation,
 ) -> dict[str, Tool]:
     by_id: dict[str, dict[str, Any]] = {}
     for item in skills or []:
@@ -293,18 +293,24 @@ def build_prompt_skill_tools(
                 f"用户问题：{query}\n\n"
                 f"调用参数：{json.dumps(args, ensure_ascii=False)}"
             )
-            response = await llm.asimple_chat(
-                prompt=prompt,
-                system_prompt=current_content
-                or "你是一个可复用的业务 skill，请根据用户问题和参数完成任务。",
+            system_prompt = current_content or (
+                "你是一个可复用的业务 skill，请根据用户问题和参数完成任务。"
             )
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+            outcome = await llm.invoke(
+                ModelInvocationRequest(messages=messages)
+            )
+            outcome.raise_for_status()
             return ToolResult(
                 name=str(current_skill.get("tool_name") or skill_runtime_tool_name(str(current_skill.get("skill_id")))),
-                content=response.content.strip(),
+                content=outcome.content.strip(),
                 data_source={
                     "source": "prompt_skill",
                     "skill_id": current_skill.get("skill_id"),
-                    "usage": response.usage,
+                    "usage": outcome.usage.to_dict() if outcome.usage else None,
                 },
             )
 

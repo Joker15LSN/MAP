@@ -50,7 +50,10 @@ from loguru import logger
 from pydantic import BaseModel, Field, TypeAdapter
 
 from ....utils.global_context import agent_log_context
-from ....utils.model_invocation import ModelInvocationRequest
+from ....utils.model_invocation import (
+    ModelInvocationRequest,
+    StructuredOutput,
+)
 from ..base import AgentRequest, AgentResult
 from ..traceable_agent import TraceableAgent
 from .base import SearchKbChunkOutput, build_item_as_dict, fetch_tool_self_dict
@@ -406,15 +409,26 @@ class MountedKBSearchAgent(TraceableAgent):
             max_sub_query=max_sub_query,
         )
         output_schema = self._build_disassembly_json_schema(max_sub_query)
-        response = await self.llm.asimple_chat(
-            prompt=split_prompt,
-            system_prompt=system_prompt or "",
-            json_schema=output_schema,
-            schema_name='response_schema',
-            schema_strict=True,
+        messages = [
+            {"role": "system", "content": system_prompt or ""},
+            {"role": "user", "content": split_prompt},
+        ]
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=messages,
+                structured=StructuredOutput(
+                    schema=output_schema,
+                    name='response_schema',
+                    strict=True,
+                    parse=False,
+                ),
+            )
         )
-        self._accumulate_usage(response.usage)
-        content = response.content
+        outcome.raise_for_status()
+        self._accumulate_usage(
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        content = outcome.content
         parts = json.loads(content)
         assert isinstance(parts, list)
         inputs = []
