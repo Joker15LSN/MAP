@@ -185,17 +185,17 @@ EXEMPTIONS: tuple[Exemption, ...] = (
     ),
     # S4-02 rewrite shifted these canary lines; the exemptions follow.
     Exemption(
-        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 37,
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 36,
         "test canary fixture (fake token)", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:3ffa01e518c4680f",
     ),
     Exemption(
-        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 182,
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 181,
         "test fixture value (fake token)", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
     ),
     Exemption(
-        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 186,
+        "map_core/tests/test_mcp_egress_guard.py", "openai_key", 185,
         "test fixture value (fake token)", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
     ),
@@ -205,7 +205,7 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         expected_fingerprint="sha256:0e3b7d6dfa4cd4f9",
     ),
     Exemption(
-        "map_core/tests/test_industry_chat_canary.py", "openai_key", 14,
+        "map_core/tests/test_industry_chat_canary.py", "openai_key", 13,
         "test canary fixture (fake token)", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:73581a736bb0307c",
     ),
@@ -319,7 +319,42 @@ EXEMPTIONS: tuple[Exemption, ...] = (
     ),
     Exemption(
         "map_core/tests/test_sandbox_router.py",
-        "literal_secret_assignment", 159,
+        "literal_secret_assignment", 156,
+        "S5-01/S6-03 router fixture: fake api_key for the OpenSandbox double",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:5ee001bc1d740c5c",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_router.py",
+        "literal_secret_assignment", 477,
+        "S5-01/S6-03 router fixture: fake api_key for the OpenSandbox double",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:5ee001bc1d740c5c",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_router.py",
+        "literal_secret_assignment", 525,
+        "S5-01/S6-03 router fixture: fake api_key for the OpenSandbox double",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:5ee001bc1d740c5c",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_router.py",
+        "literal_secret_assignment", 564,
+        "S5-01/S6-03 router fixture: fake api_key for the OpenSandbox double",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:5ee001bc1d740c5c",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_router.py",
+        "literal_secret_assignment", 699,
+        "S5-01/S6-03 router fixture: fake api_key for the OpenSandbox double",
+        "platform-security", "2027-08-31",
+        expected_fingerprint="sha256:5ee001bc1d740c5c",
+    ),
+    Exemption(
+        "map_core/tests/test_sandbox_router.py",
+        "literal_secret_assignment", 744,
         "S5-01/S6-03 router fixture: fake api_key for the OpenSandbox double",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:5ee001bc1d740c5c",
