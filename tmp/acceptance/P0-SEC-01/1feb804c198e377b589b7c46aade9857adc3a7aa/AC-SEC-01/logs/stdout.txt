@@ -1,0 +1,61 @@
+tree:README.md:338: uri_embedded_password sha256:8aac73349fc3c064
+tree:README.md:339: uri_embedded_password sha256:90f504e0156a0007
+tree:README.md:355: uri_embedded_password sha256:90f504e0156a0007
+tree:map_core/tests/test_industry_chat_canary.py:13: openai_key sha256:73581a736bb0307c
+tree:map_core/tests/test_mcp_egress_guard.py:36: openai_key sha256:3ffa01e518c4680f
+tree:map_core/tests/test_mcp_egress_guard.py:181: openai_key sha256:0e3b7d6dfa4cd4f9
+tree:map_core/tests/test_mcp_egress_guard.py:185: openai_key sha256:0e3b7d6dfa4cd4f9
+tree:map_core/tests/test_sandbox_ledger.py:293: uri_embedded_password sha256:f384c1854ca16e74
+tree:map_core/tests/test_sandbox_ledger.py:330: uri_embedded_password sha256:f384c1854ca16e74
+tree:map_core/tests/test_sandbox_router.py:156: literal_secret_assignment sha256:5ee001bc1d740c5c
+tree:map_core/tests/test_sandbox_router.py:477: literal_secret_assignment sha256:5ee001bc1d740c5c
+tree:map_core/tests/test_sandbox_router.py:525: literal_secret_assignment sha256:5ee001bc1d740c5c
+tree:map_core/tests/test_sandbox_router.py:564: literal_secret_assignment sha256:5ee001bc1d740c5c
+tree:map_core/tests/test_sandbox_router.py:699: literal_secret_assignment sha256:5ee001bc1d740c5c
+tree:map_core/tests/test_sandbox_router.py:744: literal_secret_assignment sha256:5ee001bc1d740c5c
+index:README.md:338: uri_embedded_password sha256:8aac73349fc3c064
+index:README.md:339: uri_embedded_password sha256:90f504e0156a0007
+index:README.md:355: uri_embedded_password sha256:90f504e0156a0007
+index:map_core/tests/test_industry_chat_canary.py:13: openai_key sha256:73581a736bb0307c
+index:map_core/tests/test_mcp_egress_guard.py:36: openai_key sha256:3ffa01e518c4680f
+index:map_core/tests/test_mcp_egress_guard.py:181: openai_key sha256:0e3b7d6dfa4cd4f9
+index:map_core/tests/test_mcp_egress_guard.py:185: openai_key sha256:0e3b7d6dfa4cd4f9
+index:map_core/tests/test_sandbox_ledger.py:293: uri_embedded_password sha256:f384c1854ca16e74
+index:map_core/tests/test_sandbox_ledger.py:330: uri_embedded_password sha256:f384c1854ca16e74
+index:map_core/tests/test_sandbox_router.py:156: literal_secret_assignment sha256:5ee001bc1d740c5c
+index:map_core/tests/test_sandbox_router.py:477: literal_secret_assignment sha256:5ee001bc1d740c5c
+index:map_core/tests/test_sandbox_router.py:525: literal_secret_assignment sha256:5ee001bc1d740c5c
+index:map_core/tests/test_sandbox_router.py:564: literal_secret_assignment sha256:5ee001bc1d740c5c
+index:map_core/tests/test_sandbox_router.py:699: literal_secret_assignment sha256:5ee001bc1d740c5c
+index:map_core/tests/test_sandbox_router.py:744: literal_secret_assignment sha256:5ee001bc1d740c5c
+security scan: 30 hit(s) in tree,index,build-context
+security scan: 0 third-party hit(s) (dependency code, reported only)
+security scan: exemption .env.example:34 (env_password_literal; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption .env.example:38 (env_password_literal; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sensitive_data.py:9 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_mcp_egress_guard.py:37 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_mcp_egress_guard.py:182 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_mcp_egress_guard.py:186 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_mcp_egress_guard.py:187 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_industry_chat_canary.py:14 (openai_key; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map-business-backend/tests/integration/test_config_audit.py:42 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map-business-backend/tests/integration/test_feedback.py:34 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map-business-backend/tests/integration/test_v1_error_matrix.py:39 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map-business-backend/tests/test_auth_boundary.py:28 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sensitive_data.py:32 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption README.md:335 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption README.md:336 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption README.md:352 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_cors_schema.py:57 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map-business-backend/tests/test_cors_schema.py:75 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sandbox_integration.py:102 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sandbox_ledger.py:113 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sandbox_ledger.py:294 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sandbox_ledger.py:331 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sandbox_crash_recovery.py:52 (uri_embedded_password; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sandbox_reconciler.py:149 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sandbox_router.py:159 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sandbox_tools.py:594 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption map_core/tests/test_sandbox_tools.py:639 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption scripts/test_security_scan.py:354 (literal_secret_assignment; owner=platform-security; expires=2027-08-31; active)
+security scan: exemption scripts/test_security_scan.py:355 (literal_password_assignment; owner=platform-security; expires=2027-08-31; active)

@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.2.0",
+  "task_id": "P1-OTEL-01",
+  "ac_id": "AC-OTEL-06",
+  "status": "blocked",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "1feb804c198e377b589b7c46aade9857adc3a7aa",
+  "environment_digest": "d80d4199a2a9a83b4aafffd40d4ae0a98cb10a4498d52d4b51f2025c57dc712e",
+  "started_at": "2026-08-29T00:01:02.793991+00:00",
+  "finished_at": "2026-08-29T00:01:04.058027+00:00",
+  "command": "python3 scripts/validate_acceptance_evidence.py --profile TODO/acceptance-profile.yaml --task P1-OTEL-01 --ac AC-OTEL-06 --require-final",
+  "exit_code": 1,
+  "artifacts": [
+    {
+      "path": "TODO/acceptance-profile.yaml",
+      "sha256": "dca9d1a85a44acbd08bd53d97d8b5a2fbd8b82f88966032fe93464aaf089e8e7",
+      "media_type": "text/yaml"
+    },
+    {
+      "path": "SPEC/contracts/run.md",
+      "sha256": "a770e267002443dc115418ad9460117ca2786cb0f326d465c73fd2f16b9a2505",
+      "media_type": "text/markdown"
+    },
+    {
+      "path": "tmp/acceptance/P1-OTEL-01/1feb804c198e377b589b7c46aade9857adc3a7aa/AC-OTEL-06/logs/stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "media_type": "text/plain"
+    },
+    {
+      "path": "tmp/acceptance/P1-OTEL-01/1feb804c198e377b589b7c46aade9857adc3a7aa/AC-OTEL-06/logs/stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "media_type": "text/plain"
+    },
+    {
+      "path": "tmp/acceptance/P1-OTEL-01/1feb804c198e377b589b7c46aade9857adc3a7aa/AC-OTEL-06/logs/exit-code.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "media_type": "text/plain"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "implementation_complete",
+      "expected": "P1-OTEL-01 AC-OTEL-06 acceptance per the golden taskbook and acceptance-profile",
+      "actual": "not implemented in this change set; see blocked_reason",
+      "result": "fail"
+    }
+  ],
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": "OTel semantic-convention convergence not implemented in this change set",
+  "blocker_owner": "development owner (golden-taskbook implementation)",
+  "superseded_by": null,
+  "superseded_reason": null,
+  "producer": {
+    "agent": "map-acceptance-evidence",
+    "version": "2.0.0"
+  }
+}
