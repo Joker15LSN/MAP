@@ -1,14 +1,16 @@
-"""P1 acceptance tests: streaming LLM requests must carry an LLM span.
+"""P1 acceptance tests rewritten on the public ModelInvocation seam.
 
-Regression for the review finding that only non-streaming LLM calls created
-CLIENT/LLM spans and injected traceparent, while streaming paths bypassed the
-span entirely.
+Streaming LLM requests must carry an LLM span; the outbound request must carry
+a W3C ``traceparent``; span status must reflect success/failure/cancellation.
+The old ``object.__new__`` + monkeypatch-private-methods style is replaced by a
+scripted provider (span lifecycle) and a fake AsyncOpenAI injected into the
+real OpenAI-compatible adapter (traceparent propagation).
 """
 
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+from collections.abc import AsyncIterator
 from typing import Any
 
 from opentelemetry.sdk.trace import TracerProvider
@@ -16,75 +18,99 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
-from map_core.utils import llm_engine as llm_engine_module
+from map_core.config.config_schema import LLMConfig
 from map_core.utils.llm_engine import LLMEngine
+from map_core.utils.model_invocation import (
+    ModelInvocation,
+    ModelInvocationRequest,
+    ProviderError,
+    ProviderStream,
+    openai_compatible,
+)
+from map_core.utils.model_invocation import engine as engine_module
+from tests.model_invocation.scripted_provider import (
+    ScriptedProvider,
+    content_chunk,
+    usage_chunk,
+)
 
 
 def _install_tracer(monkeypatch) -> InMemorySpanExporter:
     provider = TracerProvider()
     exporter = InMemorySpanExporter()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    monkeypatch.setattr(
-        llm_engine_module.otel_trace, "get_tracer", provider.get_tracer
-    )
+    monkeypatch.setattr(engine_module.otel_trace, "get_tracer", provider.get_tracer)
     return exporter
 
 
-def _bare_engine(monkeypatch) -> LLMEngine:
-    engine = object.__new__(LLMEngine)
-    engine.config = SimpleNamespace(
+def _config() -> LLMConfig:
+    return LLMConfig(
+        base_url="http://llm.test/v1",
+        api_key="k",
         model="test-model",
-        base_url="http://llm.test",
         max_retries=0,
     )
-    engine.logger = SimpleNamespace(
-        error=lambda *a, **k: None,
-        warning=lambda *a, **k: None,
-        debug=lambda *a, **k: None,
-    )
-    monkeypatch.setattr(engine, "_prepare_messages", lambda msgs: msgs)
-    monkeypatch.setattr(
-        engine, "_prepare_params", lambda stream, **kwargs: {"stream": stream}
-    )
-    return engine
+
+
+def _install_fake_openai(monkeypatch, chunks: list[dict[str, Any]]) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs: Any):
+            captured.update(kwargs)
+
+            async def _gen() -> AsyncIterator[dict[str, Any]]:
+                for chunk in chunks:
+                    yield chunk
+
+            return _gen()
+
+    class FakeChat:
+        def __init__(self) -> None:
+            self.completions = FakeCompletions()
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.chat = FakeChat()
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(openai_compatible, "AsyncOpenAI", FakeClient)
+    return captured
+
+
+def _finished_spans(exporter: InMemorySpanExporter) -> dict[str, Any]:
+    return {span.name: span for span in exporter.get_finished_spans()}
 
 
 def test_async_stream_creates_llm_span_and_injects_traceparent(monkeypatch) -> None:
     exporter = _install_tracer(monkeypatch)
-    engine = _bare_engine(monkeypatch)
-
-    captured: dict[str, Any] = {}
-
-    async def fake_create(**kwargs: Any):
-        captured.update(kwargs)
-
-        async def _chunks():
-            return
-            yield  # pragma: no cover
-
-        return _chunks()
-
-    engine._async_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
-    )
-    monkeypatch.setattr(
-        engine,
-        "_handle_async_stream",
-        lambda response: _async_iter([{"type": "token", "data": "hi"}]),
+    captured = _install_fake_openai(
+        monkeypatch,
+        [
+            content_chunk("hi", model="test-model"),
+            usage_chunk(),
+        ],
     )
 
-    async def scenario() -> list[Any]:
-        gen = await engine._astream_once([{"role": "user", "content": "q"}])
-        return [chunk async for chunk in gen]
+    async def scenario() -> None:
+        adapter = openai_compatible.OpenAICompatibleProvider(_config())
+        invocation = ModelInvocation(_config(), provider=adapter)
+        stream = await invocation.invoke(
+            ModelInvocationRequest(
+                messages=[{"role": "user", "content": "q"}], stream=True
+            )
+        )
+        events = [event async for event in stream]
+        assert events[-1].status == "succeeded"
 
-    chunks = asyncio.run(scenario())
+    asyncio.run(scenario())
 
-    assert chunks == [{"type": "token", "data": "hi"}]
-    # traceparent propagated to the outbound LLM request
     headers = captured.get("extra_headers") or {}
     assert "traceparent" in headers
 
-    spans = {span.name: span for span in exporter.get_finished_spans()}
+    spans = _finished_spans(exporter)
     assert "stream test-model" in spans
     span = spans["stream test-model"]
     assert span.attributes["openinference.span.kind"] == "LLM"
@@ -92,43 +118,28 @@ def test_async_stream_creates_llm_span_and_injects_traceparent(monkeypatch) -> N
     assert span.status.status_code != StatusCode.ERROR
 
 
-async def _async_iter(items):
-    for item in items:
-        yield item
-
-
 def test_async_stream_error_sets_span_error(monkeypatch) -> None:
     exporter = _install_tracer(monkeypatch)
-    engine = _bare_engine(monkeypatch)
 
-    async def fake_create(**kwargs: Any):
-        async def _chunks():
-            return
-            yield  # pragma: no cover
+    async def broken_chunks() -> AsyncIterator[dict[str, Any]]:
+        yield content_chunk("partial")
+        raise ProviderError("provider_error", "upstream exploded", True)
 
-        return _chunks()
-
-    engine._async_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
-    )
-
-    async def broken_stream(response):
-        yield {"type": "token", "data": "partial"}
-        raise RuntimeError("upstream exploded")
-
-    monkeypatch.setattr(engine, "_handle_async_stream", broken_stream)
+    provider = ScriptedProvider([ProviderStream(broken_chunks(), complete=False)])
+    invocation = ModelInvocation(_config(), provider=provider)
 
     async def scenario() -> None:
-        gen = await engine._astream_once([{"role": "user", "content": "q"}])
-        async for _ in gen:
+        stream = await invocation.invoke(
+            ModelInvocationRequest(
+                messages=[{"role": "user", "content": "q"}], stream=True
+            )
+        )
+        async for _ in stream:
             pass
 
-    try:
-        asyncio.run(scenario())
-    except RuntimeError:
-        pass
+    asyncio.run(scenario())
 
-    spans = {span.name: span for span in exporter.get_finished_spans()}
+    spans = _finished_spans(exporter)
     span = spans["stream test-model"]
     assert span.status.status_code == StatusCode.ERROR
     assert any(event.name == "exception" for event in span.events)
@@ -136,58 +147,47 @@ def test_async_stream_error_sets_span_error(monkeypatch) -> None:
 
 def test_async_stream_cancellation_still_ends_span(monkeypatch) -> None:
     exporter = _install_tracer(monkeypatch)
-    engine = _bare_engine(monkeypatch)
 
-    async def fake_create(**kwargs: Any):
-        async def _chunks():
-            return
-            yield  # pragma: no cover
-
-        return _chunks()
-
-    engine._async_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
-    )
-
-    async def endless_stream(response):
+    async def endless_chunks() -> AsyncIterator[dict[str, Any]]:
         index = 0
         while True:
             index += 1
-            yield {"type": "token", "data": str(index)}
+            yield content_chunk(str(index))
 
-    monkeypatch.setattr(engine, "_handle_async_stream", endless_stream)
+    provider = ScriptedProvider([ProviderStream(endless_chunks(), complete=False)])
+    invocation = ModelInvocation(_config(), provider=provider)
 
     async def scenario() -> None:
-        gen = await engine._astream_once([{"role": "user", "content": "q"}])
-        first = await gen.__anext__()
-        assert first["data"] == "1"
-        await gen.aclose()  # client disconnect / cancellation
+        stream = await invocation.invoke(
+            ModelInvocationRequest(
+                messages=[{"role": "user", "content": "q"}], stream=True
+            )
+        )
+        first = await stream.__anext__()
+        assert first.data is not None and first.data["data"] == "1"
+        await stream.aclose()  # client disconnect / cancellation
 
     asyncio.run(scenario())
 
-    spans = {span.name: span for span in exporter.get_finished_spans()}
+    spans = _finished_spans(exporter)
     assert "stream test-model" in spans, "cancelled stream leaked an open span"
 
 
-def test_sync_stream_creates_llm_span(monkeypatch) -> None:
+def test_shell_sync_stream_creates_llm_span(monkeypatch) -> None:
     exporter = _install_tracer(monkeypatch)
-    engine = _bare_engine(monkeypatch)
-
-    captured: dict[str, Any] = {}
-
-    def fake_create(**kwargs: Any):
-        captured.update(kwargs)
-        return iter(())
-
-    engine._sync_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+    captured = _install_fake_openai(
+        monkeypatch,
+        [
+            content_chunk("a", model="test-model"),
+            content_chunk("b", model="test-model"),
+            usage_chunk(),
+        ],
     )
-    monkeypatch.setattr(engine, "_handle_sync_stream", lambda response: iter(["a", "b"]))
 
-    gen = engine._stream_once([{"role": "user", "content": "q"}])
-    assert list(gen) == ["a", "b"]
+    engine = LLMEngine(_config())
+    assert list(engine.stream([{"role": "user", "content": "q"}])) == ["a", "b"]
 
     headers = captured.get("extra_headers") or {}
     assert "traceparent" in headers
-    spans = {span.name: span for span in exporter.get_finished_spans()}
+    spans = _finished_spans(exporter)
     assert "stream test-model" in spans

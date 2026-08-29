@@ -1,73 +1,36 @@
-"""Light-weight LLM engine wrapper (OpenAI compatible) with a LangChain-ish API.
+"""Backward-compatible thin shell around the typed ModelInvocation module.
 
-Goals / Design:
-* Keep dependency surface minimal (only openai compatible sdk + pydantic).
-* Provide a clear, cohesive public API with explicit sync/async & streaming variants:
-        - invoke / ainvoke          -> single shot completion returning ``LLMResponse``.
-        - stream / astream          -> generators yielding tokens (and reasoning chunks).
-* Backwards compatibility: existing ``chat``, ``achat``, ``simple_chat`` family kept
-    as thin wrappers around the new API to avoid touching call-sites.
-* Internal helpers for: parameter preparation, message normalisation, retries,
-    timing, safe closing.
-* Extensible: retry policy & hooks (callbacks) can be expanded later without
-    changing method signatures.
-
-NOT in scope (keep lean): tool calling, function calling orchestration, caching.
+Public symbols and method signatures are preserved for existing callers.
+All provider access, retry, usage and OTel logic lives in
+``map_core.utils.model_invocation``; this module only translates between the
+legacy models/methods and ``ModelInvocation.invoke``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import inspect
-import json
-import time
 from collections.abc import AsyncGenerator, Generator
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime
-from typing import (
-    Any,
-    Awaitable,
-    Callable,
-    Literal,
-    Sequence,
-    cast,
-    overload,
-)
-from zoneinfo import ZoneInfo
+from typing import Any, Awaitable, Callable, Literal, Sequence, overload
 
 from loguru import logger as loguru_logger
-from openai import AsyncOpenAI, OpenAI
-from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
-from opentelemetry import context as otel_context
-from opentelemetry import trace as otel_trace
-from opentelemetry.propagate import inject as otel_inject
-from opentelemetry.trace import Span, SpanKind
-from opentelemetry.trace import StatusCode as OtelStatusCode
 from pydantic import BaseModel
-from tenacity import (
-    AsyncRetrying,
-    RetryCallState,
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from ..config.config_schema import LLMConfig
 from ..schema.agent_schema import Function, Message, ToolCall
-from .llm_trace_context import (
-    get_llm_trace_context,
-    now_shanghai,
-    summarize_llm_messages,
+from .model_invocation import (
+    ModelInvocation,
+    ModelInvocationOutcome,
+    ModelInvocationRequest,
+    ModelMessage,
+    ProviderParams,
+    StructuredOutput,
 )
 
 
-def datetime_from_epoch(value: float) -> datetime:
-    return datetime.fromtimestamp(value, tz=ZoneInfo("Asia/Shanghai"))
-
-JSON_SCHEMA_UNAVAILABLE_MESSAGE = "This response_format type is unavailable now"
-JSON_OBJECT_OUTPUT_INSTRUCTION = "Use JSON format as output."
-JSON_OBJECT_SCHEMA_INSTRUCTION = "Follow this JSON schema:"
+class _ShellInvocationError(RuntimeError):
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class LLMMessage(BaseModel):
@@ -110,23 +73,19 @@ class ToolCallResponse(BaseModel):
     raw: Any | None = None
 
 
-@dataclass
 class RetryState:
     attempt: int
-    last_exception: BaseException | None = None
+    last_exception: BaseException | None
+
+    def __init__(
+        self, attempt: int, last_exception: BaseException | None = None
+    ) -> None:
+        self.attempt = attempt
+        self.last_exception = last_exception
 
 
 class LLMEngine:
-    """LLM Engine encapsulating OpenAI-compatible chat completions.
-
-    Typical usage (async):
-        async with LLMEngine(cfg, logger) as engine:
-            resp = await engine.ainvoke([LLMMessage(role="user", content="hi")])
-            async for chunk in engine.astream([LLMMessage(role="user", content="hi")]):
-                ...
-
-    Synchronous usage supported via context manager as well.
-    """
+    """Legacy LLM engine API, now translated to ``ModelInvocation``."""
 
     def __init__(
         self,
@@ -140,19 +99,10 @@ class LLMEngine:
         self.logger = logger or loguru_logger
         self.before_retry = before_retry
         self.after_success = after_success
-        self._sync_client = OpenAI(
-            api_key=config.api_key,
-            base_url=config.base_url,
-            timeout=config.timeout,
-            max_retries=0,
-            default_headers=config.extra_headers or None,
-        )
-        self._async_client = AsyncOpenAI(
-            api_key=config.api_key,
-            base_url=config.base_url,
-            timeout=config.timeout,
-            max_retries=0,
-            default_headers=config.extra_headers or None,
+        self._invocation = ModelInvocation(
+            config,
+            logger=self.logger,
+            before_retry=self._before_retry_adapter if before_retry else None,
         )
 
     @classmethod
@@ -166,11 +116,7 @@ class LLMEngine:
         logger: Any | None = None,
         **kwargs,
     ) -> "LLMEngine":
-        """Initialize LLMEngine with minimal parameters.
-
-        Required parameters: base_url, api_key, model, temperature.
-        Additional LLMConfig fields can be passed via **kwargs.
-        """
+        """Initialize LLMEngine with minimal parameters."""
         config = LLMConfig(
             base_url=base_url,
             api_key=api_key,
@@ -180,63 +126,50 @@ class LLMEngine:
         )
         return cls(config, logger)
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     def invoke(
         self,
         messages: Sequence[LLMMessage | dict[str, Any]],
         **kwargs,
     ) -> LLMResponse:
-        """Synchronous single completion (tenacity retry)."""
-
-        @retry(
-            reraise=True,
-            stop=stop_after_attempt(self.config.max_retries + 1),
-            wait=wait_exponential(multiplier=1, min=1, max=8),
-            before_sleep=self._tenacity_before_retry,
-            retry_error_callback=self._tenacity_error_callback,
-        )
-        def _do():
-            return self._invoke_once(messages, **kwargs)
-
-        return _do()
+        """Synchronous single completion."""
+        req = self._build_request(messages, stream=False, **kwargs)
+        outcome = asyncio.run(self._invocation.invoke(req))
+        return self._outcome_to_llm_response(outcome)
 
     async def ainvoke(
         self,
         messages: Sequence[LLMMessage | dict[str, Any]],
         **kwargs,
     ) -> LLMResponse:
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(self.config.max_retries + 1),
-            wait=wait_exponential(multiplier=1, min=1, max=8),
-            reraise=True,
-            before_sleep=self._atenacity_before_retry,
-            retry_error_callback=self._tenacity_error_callback,
-        ):
-            with attempt:
-                return await self._ainvoke_once(messages, **kwargs)
-        raise RuntimeError("ainvoke retry logic exhausted")
+        req = self._build_request(messages, stream=False, **kwargs)
+        outcome = await self._invocation.invoke(req)
+        return self._outcome_to_llm_response(outcome)
 
     def stream(
         self,
         messages: Sequence[LLMMessage | dict[str, Any]],
         **kwargs,
     ) -> Generator[str, None, None]:
-        """Synchronous streaming with retry.
+        """Synchronous streaming (yields plain text chunks)."""
+        req = self._build_request(messages, stream=True, **kwargs)
 
-        On retry, already yielded parts from previous attempts are lost (caller
-        only sees final successful attempt). This keeps implementation simple.
-        """
+        async def _consume() -> list[str]:
+            parts: list[str] = []
+            stream_obj = await self._invocation.invoke(req)
+            async for event in stream_obj:
+                if event.type == "content":
+                    data = event.data or {}
+                    token = data.get("data", "")
+                    if token:
+                        parts.append(str(token))
+                elif event.type == "terminal":
+                    self._raise_for_terminal(event)
+            return parts
 
-        @retry(
-            reraise=True,
-            stop=stop_after_attempt(self.config.max_retries + 1),
-            wait=wait_exponential(multiplier=1, min=1, max=8),
-            before_sleep=self._tenacity_before_retry,
-            retry_error_callback=self._tenacity_error_callback,
-        )
-        def _produce():
-            return list(self._stream_once(messages, **kwargs))
-
-        for token in _produce():
+        for token in asyncio.run(_consume()):
             yield token
 
     async def astream(
@@ -244,29 +177,14 @@ class LLMEngine:
         messages: Sequence[LLMMessage | dict[str, Any]],
         **kwargs,
     ) -> AsyncGenerator[dict[str, str | dict[str, int]], None]:
-        attempt_number = 0
-        max_attempts = self.config.max_retries + 1
-        while attempt_number < max_attempts:
-            attempt_number += 1
-            try:
-                async_gen = await self._astream_once(messages, **kwargs)
-                async for chunk in async_gen:
-                    yield chunk
-                break
-            except Exception as e:
-                if attempt_number >= max_attempts:
-                    raise
-                if self.before_retry:
-                    try:
-                        self.before_retry(
-                            RetryState(attempt=attempt_number - 1, last_exception=e)
-                        )
-                    except Exception:
-                        self.logger.debug("before_retry callback failed", exc_info=True)
-                self.logger.warning(
-                    f"Retrying async stream attempt {attempt_number}/{max_attempts} due to: {e}"
-                )
-                await asyncio.sleep(min(2 ** (attempt_number - 1), 8))
+        req = self._build_request(messages, stream=True, **kwargs)
+        stream_obj = await self._invocation.invoke(req)
+        async for event in stream_obj:
+            if event.type in ("content", "reasoning", "usage"):
+                if event.data is not None:
+                    yield event.data
+            elif event.type == "terminal":
+                self._raise_for_terminal(event)
 
     async def ask_tool(
         self,
@@ -277,165 +195,23 @@ class LLMEngine:
         **kwargs,
     ) -> ToolCallResponse:
         """Async tool-calling helper using OpenAI-compatible schema."""
-        attempt_number = 0
-        max_attempts = self.config.max_retries + 1
-        while attempt_number < max_attempts:
-            attempt_number += 1
-            try:
-                return await self._ask_tool_once(
-                    messages,
-                    system_msgs=system_msgs,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    **kwargs,
-                )
-            except Exception as exc:
-                if attempt_number >= max_attempts:
-                    raise
-                if self.before_retry:
-                    try:
-                        self.before_retry(
-                            RetryState(attempt=attempt_number, last_exception=exc)
-                        )
-                    except Exception:  # pragma: no cover
-                        self.logger.debug("before_retry callback failed", exc_info=True)
-                self.logger.warning(
-                    "Retrying async tool call attempt {}/{} due to: {}".format(
-                        attempt_number + 1, max_attempts, exc
-                    )
-                )
-                await asyncio.sleep(min(2 ** (attempt_number - 1), 8))
-        raise RuntimeError("ask_tool retry logic exhausted")
-
-    async def _ask_tool_once(
-        self,
-        messages: Sequence[LLMMessage | dict[str, Any]],
-        system_msgs: Sequence[LLMMessage | dict[str, Any]] | None = None,
-        tools: Sequence[dict[str, Any]] | None = None,
-        tool_choice: Any | None = None,
-        **kwargs,
-    ) -> ToolCallResponse:
-        started = time.time()
         all_messages: list[LLMMessage | dict[str, Any]] = []
         if system_msgs:
             all_messages.extend(list(system_msgs))
         all_messages.extend(list(messages))
-        msgs = self._prepare_messages(list(all_messages))
 
-        params = self._prepare_params(stream=False, **kwargs)
-        if tools is not None:
-            params["tools"] = list(tools)
-        if tool_choice is not None:
-            if hasattr(tool_choice, "value"):
-                params["tool_choice"] = tool_choice.value
-            else:
-                params["tool_choice"] = tool_choice
-
-        # The LLM span must cover the full lifecycle (request, response
-        # parsing, event recording) so Mongo events bind the real span id.
-        with self._llm_outbound_span("tool_selection"):
-            return await self._ask_tool_once_traced(
-                msgs=msgs, params=params, started=started
-            )
-
-    async def _ask_tool_once_traced(
-        self,
-        *,
-        msgs: list[ChatCompletionMessageParam],
-        params: dict[str, Any],
-        started: float,
-    ) -> ToolCallResponse:
-        try:
-            extra_headers = self._outbound_trace_headers()
-            completions = self._async_client.chat.completions
-            raw_completions = getattr(completions, "with_raw_response", None)
-            if raw_completions is not None:
-                raw_response = await raw_completions.create(
-                    messages=msgs, extra_headers=extra_headers, **params
-                )
-                response = await self._acoerce_raw_chat_completion_response(
-                    raw_response
-                )
-            else:
-                response = await completions.create(
-                    messages=msgs, extra_headers=extra_headers, **params
-                )
-                response = self._coerce_chat_completion_response(response)
-        except Exception as e:  # pragma: no cover
-            response = self._coerce_chat_completion_exception(e)
-            if response is None:
-                self.logger.error(f"Async ask_tool failed: {e}")
-                self._record_llm_call(
-                    messages=msgs,
-                    params=params,
-                    started_at=started,
-                    status="failed",
-                    call_kind="tool_selection",
-                    error=e,
-                )
-                raise
-
-        # Normalize response
-        if not response.choices:
-            llm_resp = self._handle_async_response(response, started_at=started)
-            result = ToolCallResponse(
-                content="",
-                tool_calls=[],
-                model=llm_resp.model,
-                usage=llm_resp.usage,
-                finish_reason=llm_resp.finish_reason,
-                response_time=llm_resp.response_time,
-                request_id=llm_resp.request_id,
-                raw=response,
-            )
-            self._record_llm_call(
-                messages=msgs,
-                params=params,
-                started_at=started,
-                status="success",
-                call_kind="tool_selection",
-                response=result,
-            )
-            return result
-
-        message = response.choices[0].message
-        content = message.content or ""
-        raw_tool_calls = getattr(message, "tool_calls", None) or []
-        tool_calls: list[ToolCall] = []
-        for call in raw_tool_calls:
-            fn = getattr(call, "function", None)
-            name = getattr(fn, "name", "") if fn else ""
-            arguments = getattr(fn, "arguments", "") if fn else ""
-            if arguments is None:
-                arguments = ""
-            tool_calls.append(
-                ToolCall(
-                    id=getattr(call, "id", ""),
-                    type="function",
-                    function=Function(name=name, arguments=str(arguments)),
-                )
-            )
-
-        llm_resp = self._handle_async_response(response, started_at=started)
-        result = ToolCallResponse(
-            content=content,
-            tool_calls=tool_calls,
-            model=llm_resp.model,
-            usage=llm_resp.usage,
-            finish_reason=llm_resp.finish_reason,
-            response_time=llm_resp.response_time,
-            request_id=llm_resp.request_id,
-            raw=response,
+        if tool_choice is not None and hasattr(tool_choice, "value"):
+            tool_choice = tool_choice.value
+        req = self._build_request(
+            all_messages,
+            stream=False,
+            tools=list(tools) if tools is not None else None,
+            tool_choice=tool_choice,
+            **kwargs,
         )
-        self._record_llm_call(
-            messages=msgs,
-            params=params,
-            started_at=started,
-            status="success",
-            call_kind="tool_selection",
-            response=result,
-        )
-        return result
+        outcome = await self._invocation.invoke(req)
+        self._raise_for_outcome(outcome)
+        return self._outcome_to_tool_response(outcome)
 
     def chat(
         self,
@@ -473,13 +249,7 @@ class LLMEngine:
     ) -> Awaitable[LLMResponse] | AsyncGenerator[dict[str, str | dict[str, int]], None]:
         """Backward compatible wrapper around ainvoke/astream.
 
-        Important: This is intentionally a *non-async* function.
-        - stream=False: returns an awaitable (caller should `await engine.achat(...)`).
-        - stream=True: returns an async generator (caller should `async for ... in engine.achat(stream=True, ...)`).
-
-        This avoids the Python pitfall where an `async def` wrapper would always
-        return a coroutine, making `async for` fail with:
-        "'async for' requires an object with __aiter__ method, got coroutine".
+        This is intentionally a non-async function.
         """
         if stream:
             if "timeout" in kwargs:
@@ -516,7 +286,6 @@ class LLMEngine:
         result = self.chat(messages, **kwargs)
         if isinstance(result, LLMResponse):
             return result
-        # Fallback: stream path incorrectly used without stream flag
         return LLMResponse(
             content="".join(result), model=self.config.model, response_time=0.0
         )
@@ -588,676 +357,10 @@ class LLMEngine:
             else:
                 yield chunk
 
-    def _prepare_messages(
-        self,
-        messages: Sequence[LLMMessage | Message | dict[str, Any]],
-    ) -> list[ChatCompletionMessageParam]:
-        prepared: list[ChatCompletionMessageParam] = []
-        for msg in messages:
-            if isinstance(msg, LLMMessage):
-                prepared.append(cast(ChatCompletionMessageParam, msg.to_dict()))
-            elif isinstance(msg, Message):
-                prepared.append(cast(ChatCompletionMessageParam, msg.to_dict()))
-            elif isinstance(msg, dict):
-                # Normalize/validate OpenAI-compatible message dicts.
-                # Tool-calling messages may omit `content` on the assistant role.
-                if "role" not in msg:
-                    raise ValueError("Message dict must contain 'role'")
-
-                role = msg.get("role")
-
-                # Don't mutate the caller's dict.
-                normalized: dict[str, Any] = dict(msg)
-
-                # Back-compat: some call-sites use a legacy tool message shape:
-                # {"role":"tool","type":"function_call_output","call_id":...,"output":...}
-                if role == "tool":
-                    if "tool_call_id" not in normalized and "call_id" in normalized:
-                        normalized["tool_call_id"] = normalized.get("call_id")
-                    if "content" not in normalized and "output" in normalized:
-                        normalized["content"] = normalized.get("output")
-
-                if "content" not in normalized:
-                    # OpenAI tool-calling assistant message shape can omit content.
-                    if role == "assistant" and (
-                        "tool_calls" in normalized or "function_call" in normalized
-                    ):
-                        normalized["content"] = ""
-                    else:
-                        raise ValueError(
-                            "Message dict must contain 'content' unless it is an assistant tool-calling message"
-                        )
-
-                # For tool role, both tool_call_id and content are required.
-                if role == "tool":
-                    if "tool_call_id" not in normalized:
-                        raise ValueError(
-                            "Tool message dict must contain 'tool_call_id' and 'content'"
-                        )
-
-                # Ensure content is a string when present (OpenAI accepts empty string).
-                if normalized.get("content") is None:
-                    if role == "assistant":
-                        normalized["content"] = ""
-                    else:
-                        raise ValueError(
-                            "Message dict 'content' cannot be None for non-assistant roles"
-                        )
-                elif not isinstance(normalized.get("content"), str):
-                    normalized["content"] = str(normalized.get("content"))
-
-                # Drop non-standard keys that may cause OpenAI SDK validation errors.
-                allowed_keys_by_role: dict[str, set[str]] = {
-                    "system": {"role", "content", "name"},
-                    "user": {"role", "content", "name"},
-                    "assistant": {
-                        "role",
-                        "content",
-                        "name",
-                        "tool_calls",
-                        "function_call",
-                    },
-                    "tool": {"role", "content", "tool_call_id"},
-                }
-                allowed_keys = allowed_keys_by_role.get(str(role))
-                if allowed_keys is not None:
-                    normalized = {
-                        k: v for k, v in normalized.items() if k in allowed_keys
-                    }
-
-                prepared.append(cast(ChatCompletionMessageParam, normalized))
-            else:
-                raise TypeError(f"Unsupported message type: {type(msg)}")
-        return prepared
-
-    def _prepare_params(self, stream: bool = False, **kwargs) -> dict[str, Any]:
-        params = {
-            "model": self.config.model,
-            "temperature": kwargs.get("temperature", self.config.temperature),
-            "logprobs": kwargs.get("logprobs", self.config.logprobs),
-            "top_logprobs": kwargs.get("top_logprobs", self.config.top_logprobs),
-            "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
-            "top_p": kwargs.get("top_p", self.config.top_p),
-            "frequency_penalty": kwargs.get(
-                "frequency_penalty", self.config.frequency_penalty
-            ),
-            "presence_penalty": kwargs.get(
-                "presence_penalty", self.config.presence_penalty
-            ),
-            "timeout": kwargs.get("timeout"),
-            "stream": stream,
-        }
-
-        # support for json_schema parameter using SGLang response_format
-        if "json_schema" in kwargs:
-            json_schema_data = kwargs["json_schema"]
-            params["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": kwargs.get("schema_name", "response_schema"),
-                    "schema": json_schema_data,
-                    "strict": kwargs.get("schema_strict", False),
-                },
-            }
-
-        # support for qwen3 thinking mode
-        extra_body = {}
-        thinking = kwargs.get("thinking", self.config.thinking)
-        if thinking is not None:
-            extra_body["thinking"] = thinking
-        if self.config.chat_template_kwargs:
-            extra_body["chat_template_kwargs"] = self.config.chat_template_kwargs
-
-        if extra_body:
-            params["extra_body"] = extra_body
-
-        if "stream_options" in kwargs:
-            params["stream_options"] = kwargs["stream_options"]
-
-        params = {k: v for k, v in params.items() if v is not None}
-
-        return params
-
-    @staticmethod
-    def _uses_json_schema_response_format(params: dict[str, Any]) -> bool:
-        response_format = params.get("response_format")
-        return (
-            isinstance(response_format, dict)
-            and response_format.get("type") == "json_schema"
-        )
-
-    @classmethod
-    def _parse_exception_payload_candidate(cls, candidate: Any) -> dict[str, Any] | None:
-        if callable(candidate):
-            candidate = candidate()
-        if inspect.isawaitable(candidate):
-            return None
-        if isinstance(candidate, bytes):
-            candidate = candidate.decode("utf-8")
-        if isinstance(candidate, str):
-            return cls._parse_non_stream_payload(candidate)
-        if isinstance(candidate, dict):
-            return candidate
-        return None
-
-    @classmethod
-    def _iter_exception_payloads(cls, exc: BaseException) -> Generator[dict[str, Any]]:
-        response = getattr(exc, "response", None)
-        candidates = [
-            getattr(exc, "body", None),
-            getattr(response, "text", None),
-            getattr(response, "content", None),
-        ]
-        for candidate in candidates:
-            payload = cls._parse_exception_payload_candidate(candidate)
-            if payload is not None:
-                yield payload
-
-    @classmethod
-    def _is_json_schema_unavailable_error(cls, exc: BaseException) -> bool:
-        for payload in cls._iter_exception_payloads(exc):
-            error = payload.get("error")
-            if not isinstance(error, dict):
-                continue
-            if error.get("message") == JSON_SCHEMA_UNAVAILABLE_MESSAGE:
-                return True
-        return False
-
-    @staticmethod
-    def _append_json_output_instruction(
-        messages: Sequence[ChatCompletionMessageParam],
-        json_schema: dict[str, Any] | None = None,
-    ) -> list[ChatCompletionMessageParam]:
-        fallback_messages = [dict(cast(dict[str, Any], message)) for message in messages]
-        instruction_parts = [JSON_OBJECT_OUTPUT_INSTRUCTION]
-        if json_schema is not None:
-            schema_text = json.dumps(json_schema, ensure_ascii=False, indent=2)
-            instruction_parts.append(f"{JSON_OBJECT_SCHEMA_INSTRUCTION}\n{schema_text}")
-        instruction = "\n\n".join(instruction_parts)
-
-        last_system_index: int | None = None
-        for index, message in enumerate(fallback_messages):
-            if message.get("role") == "system":
-                last_system_index = index
-
-        if last_system_index is None:
-            fallback_messages.insert(
-                0,
-                {
-                    "role": "system",
-                    "content": instruction,
-                },
-            )
-            return cast(list[ChatCompletionMessageParam], fallback_messages)
-
-        system_message = dict(fallback_messages[last_system_index])
-        content = str(system_message.get("content") or "")
-        separator = "\n\n" if content else ""
-        system_message["content"] = f"{content}{separator}{instruction}"
-        fallback_messages[last_system_index] = system_message
-        return cast(list[ChatCompletionMessageParam], fallback_messages)
-
-    @classmethod
-    def _build_json_object_fallback_request(
-        cls,
-        messages: Sequence[ChatCompletionMessageParam],
-        params: dict[str, Any],
-    ) -> tuple[list[ChatCompletionMessageParam], dict[str, Any]]:
-        fallback_params = dict(params)
-        json_schema = None
-        response_format = params.get("response_format")
-        if isinstance(response_format, dict):
-            json_schema_format = response_format.get("json_schema")
-            if isinstance(json_schema_format, dict):
-                schema = json_schema_format.get("schema")
-                if isinstance(schema, dict):
-                    json_schema = schema
-        fallback_params["response_format"] = {"type": "json_object"}
-        return (
-            cls._append_json_output_instruction(messages, json_schema=json_schema),
-            fallback_params,
-        )
-
-    def _should_fallback_to_json_object(
-        self, exc: BaseException, params: dict[str, Any]
-    ) -> bool:
-        return self._uses_json_schema_response_format(
-            params
-        ) and self._is_json_schema_unavailable_error(exc)
-
     # ------------------------------------------------------------------
-    # Message helpers
+    # Lifecycle
     # ------------------------------------------------------------------
-    def _build_basic_messages(
-        self,
-        prompt: str,
-        system_prompt: str | None,
-        json_schema: dict[str, Any] | None,
-        schema_name: str,
-        kwargs: dict[str, Any],
-    ) -> tuple[list[LLMMessage], dict[str, Any]]:
-        messages: list[LLMMessage] = []
-        if system_prompt:
-            messages.append(LLMMessage(role="system", content=system_prompt))
-        messages.append(LLMMessage(role="user", content=prompt))
-        if json_schema is not None:
-            kwargs = dict(kwargs)  # shallow copy to avoid side effects
-            kwargs["json_schema"] = json_schema
-            kwargs["schema_name"] = schema_name
-        return messages, kwargs
-
-    @staticmethod
-    def _extract_reasoning_content(message_or_delta: Any) -> str | None:
-        """Read reasoning content from OpenAI-compatible response objects."""
-        if message_or_delta is None:
-            return None
-
-        for field_name in ("reasoning_content", "reasoning"):
-            value = getattr(message_or_delta, field_name, None)
-            if value:
-                return str(value)
-
-        if hasattr(message_or_delta, "model_dump"):
-            dumped = message_or_delta.model_dump()
-            if isinstance(dumped, dict):
-                for field_name in ("reasoning_content", "reasoning"):
-                    value = dumped.get(field_name)
-                    if value:
-                        return str(value)
-
-        if isinstance(message_or_delta, dict):
-            for field_name in ("reasoning_content", "reasoning"):
-                value = message_or_delta.get(field_name)
-                if value:
-                    return str(value)
-
-        return None
-
-    def _handle_sync_response(
-        self, response: ChatCompletion, *, started_at: float | None = None
-    ) -> LLMResponse:
-        response = self._coerce_chat_completion_response(response)
-        choice = response.choices[0]
-        prompt_token_ids = getattr(response, "prompt_token_ids", None)
-        if prompt_token_ids is not None:
-            prompt_token_ids = [int(token_id) for token_id in prompt_token_ids]
-
-        usage = None
-        if response.usage:
-            usage_dict = response.usage.model_dump()
-            usage = {
-                k: v
-                for k, v in usage_dict.items()
-                if v is not None and isinstance(v, int)
-            }
-        response_time = 0.0
-        if started_at is not None:
-            response_time = time.time() - started_at
-
-        llm_resp = LLMResponse(
-            content=choice.message.content or "",
-            reasoning_content=self._extract_reasoning_content(choice.message),
-            logprobs=self._dump_compat(getattr(choice, "logprobs", None)),
-            prompt_token_ids=prompt_token_ids,
-            model=response.model,
-            usage=usage if usage else None,
-            finish_reason=choice.finish_reason,
-            request_id=getattr(response, "id", None),
-            response_time=response_time,
-            raw=response,
-        )
-        if self.after_success:
-            try:
-                self.after_success(llm_resp)
-            except Exception:  # pragma: no cover - defensive
-                self.logger.debug("after_success callback failed", exc_info=True)
-        return llm_resp
-
-    def _handle_async_response(
-        self, response: ChatCompletion, *, started_at: float | None = None
-    ) -> LLMResponse:
-        return self._handle_sync_response(response, started_at=started_at)
-
-    def _handle_sync_stream(self, response) -> Generator[str, None, None]:
-        try:
-            for chunk in response:
-                if not chunk.choices or not chunk.choices[0].delta:
-                    continue
-                content = getattr(chunk.choices[0].delta, "content", None)
-                if content:
-                    yield content
-        except Exception as e:
-            self.logger.error(f"Error in sync stream: {e}")
-            raise
-
-    async def _handle_async_stream(
-        self, response
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        try:
-            async for chunk in response:
-                serialized_chunk = self._dump_compat(chunk)
-                if not chunk.choices:
-                    # Usage-only chunk emitted by the API when
-                    # stream_options={"include_usage": True} is set.
-                    if chunk.usage:
-                        usage_dict = {
-                            k: v
-                            for k, v in chunk.usage.model_dump().items()
-                            if isinstance(v, int)
-                        }
-                        if usage_dict:
-                            yield {"type": "usage", "data": usage_dict}
-                    continue
-                if not chunk.choices[0].delta:
-                    continue
-                delta = chunk.choices[0].delta
-                choice_payload = {}
-                if isinstance(serialized_chunk, dict):
-                    raw_choices = serialized_chunk.get("choices")
-                    if isinstance(raw_choices, list) and raw_choices:
-                        first_choice = raw_choices[0]
-                        if isinstance(first_choice, dict):
-                            choice_payload = first_choice
-                delta_payload = choice_payload.get("delta", {})
-                content = getattr(delta, "content", None)
-                logprobs = choice_payload.get("logprobs")
-                has_content_event = (
-                    "content" in delta_payload
-                    or "role" in delta_payload
-                    or "logprobs" in choice_payload
-                )
-                if has_content_event:
-                    yield {
-                        "type": "content",
-                        "data": "" if content is None else str(content),
-                        "id": serialized_chunk.get("id")
-                        if isinstance(serialized_chunk, dict)
-                        else None,
-                        "object": serialized_chunk.get("object")
-                        if isinstance(serialized_chunk, dict)
-                        else None,
-                        "created": serialized_chunk.get("created")
-                        if isinstance(serialized_chunk, dict)
-                        else None,
-                        "model": serialized_chunk.get("model")
-                        if isinstance(serialized_chunk, dict)
-                        else None,
-                        "choices": serialized_chunk.get("choices")
-                        if isinstance(serialized_chunk, dict)
-                        else None,
-                        "prompt_token_ids": serialized_chunk.get("prompt_token_ids")
-                        if isinstance(serialized_chunk, dict)
-                        else None,
-                        "logprobs": logprobs,
-                        "raw_chunk": serialized_chunk,
-                    }
-                reasoning_chunk = self._extract_reasoning_content(delta)
-                if reasoning_chunk:
-                    yield {"type": "reasoning", "data": reasoning_chunk}
-        except Exception as e:
-            self.logger.error(f"Error in async stream: {e}")
-            raise
-
-    @classmethod
-    def _dump_compat(cls, value: Any) -> Any:
-        if value is None or isinstance(value, (str, int, float, bool)):
-            return value
-        if isinstance(value, list):
-            return [cls._dump_compat(item) for item in value]
-        if isinstance(value, tuple):
-            return [cls._dump_compat(item) for item in value]
-        if isinstance(value, dict):
-            return {str(k): cls._dump_compat(v) for k, v in value.items()}
-        if hasattr(value, "model_dump") and callable(value.model_dump):
-            dumped = value.model_dump()
-            return cls._dump_compat(dumped)
-        if hasattr(value, "__dict__"):
-            return {
-                str(k): cls._dump_compat(v)
-                for k, v in vars(value).items()
-                if not k.startswith("_")
-            }
-        return value
-
-    @classmethod
-    def _coerce_chat_completion_response(cls, response: Any) -> ChatCompletion:
-        """Accept OpenAI-compatible non-stream responses wrapped as SSE text."""
-        if isinstance(response, ChatCompletion):
-            return response
-
-        payload: dict[str, Any] | None = None
-        if isinstance(response, bytes):
-            response = response.decode("utf-8")
-        if isinstance(response, str):
-            payload = cls._parse_non_stream_payload(response)
-        elif isinstance(response, dict):
-            payload = response
-
-        if payload is None:
-            return cast(ChatCompletion, response)
-        return ChatCompletion.model_validate(payload)
-
-    @staticmethod
-    def _parse_non_stream_payload(text: str) -> dict[str, Any] | None:
-        stripped = text.strip()
-        if not stripped:
-            return None
-
-        candidates = [stripped]
-        has_data_line = any(
-            line.strip().startswith("data:") for line in stripped.splitlines()
-        )
-        if has_data_line:
-            loguru_logger.warning(
-                "Non-stream LLM response is wrapped as SSE data lines."
-            )
-            candidates.append(stripped.removeprefix("data:").strip())
-
-            data_lines: list[str] = []
-            for line in stripped.splitlines():
-                line_stripped = line.strip()
-                if not line_stripped:
-                    if data_lines:
-                        break
-                    continue
-                if line_stripped.startswith("data:"):
-                    data = line_stripped.removeprefix("data:").strip()
-                    if data == "[DONE]":
-                        continue
-                    data_lines.append(data)
-                elif data_lines:
-                    data_lines.append(line)
-            if data_lines:
-                candidates.append("\n".join(data_lines).strip())
-
-        for candidate in candidates:
-            if not candidate or candidate == "[DONE]":
-                continue
-            try:
-                payload = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                return payload
-        return None
-
-    @staticmethod
-    def _raw_response_text(raw_response: Any) -> str | None:
-        text = getattr(raw_response, "text", None)
-        if callable(text):
-            text = text()
-        if isinstance(text, bytes):
-            text = text.decode("utf-8")
-        if isinstance(text, str):
-            return text
-
-        content = getattr(raw_response, "content", None)
-        if callable(content):
-            content = content()
-        if isinstance(content, bytes):
-            return content.decode("utf-8")
-        if isinstance(content, str):
-            return content
-        return None
-
-    @staticmethod
-    async def _araw_response_text(raw_response: Any) -> str | None:
-        text = getattr(raw_response, "text", None)
-        if callable(text):
-            text = text()
-        if inspect.isawaitable(text):
-            text = await text
-        if isinstance(text, bytes):
-            text = text.decode("utf-8")
-        if isinstance(text, str):
-            return text
-
-        content = getattr(raw_response, "content", None)
-        if callable(content):
-            content = content()
-        if inspect.isawaitable(content):
-            content = await content
-        if isinstance(content, bytes):
-            return content.decode("utf-8")
-        if isinstance(content, str):
-            return content
-        return None
-
-    @classmethod
-    def _coerce_raw_chat_completion_response(cls, raw_response: Any) -> ChatCompletion:
-        text = cls._raw_response_text(raw_response)
-        if text is not None:
-            payload = cls._parse_non_stream_payload(text)
-            if payload is not None:
-                return ChatCompletion.model_validate(payload)
-
-        parsed = raw_response.parse()
-        return cls._coerce_chat_completion_response(parsed)
-
-    @classmethod
-    async def _acoerce_raw_chat_completion_response(
-        cls, raw_response: Any
-    ) -> ChatCompletion:
-        text = await cls._araw_response_text(raw_response)
-        if text is not None:
-            payload = cls._parse_non_stream_payload(text)
-            if payload is not None:
-                return ChatCompletion.model_validate(payload)
-
-        parsed = raw_response.parse()
-        if inspect.isawaitable(parsed):
-            parsed = await parsed
-        return cls._coerce_chat_completion_response(parsed)
-
-    @classmethod
-    def _coerce_chat_completion_exception(
-        cls, exc: BaseException
-    ) -> ChatCompletion | None:
-        for payload in cls._iter_exception_payloads(exc):
-            try:
-                return ChatCompletion.model_validate(payload)
-            except Exception:
-                continue
-        return None
-
-    def _create_sync_chat_completion(
-        self,
-        *,
-        messages: Sequence[ChatCompletionMessageParam],
-        params: dict[str, Any],
-    ) -> ChatCompletion:
-        # Owning LLM span is opened by the caller (_invoke_once) so it also
-        # covers response parsing and Mongo event recording.
-        extra_headers = self._outbound_trace_headers()
-        completions = self._sync_client.chat.completions
-        raw_completions = getattr(completions, "with_raw_response", None)
-        if raw_completions is not None:
-            raw_response = raw_completions.create(
-                messages=messages, extra_headers=extra_headers, **params
-            )
-            return self._coerce_raw_chat_completion_response(raw_response)
-        response = completions.create(
-            messages=messages, extra_headers=extra_headers, **params
-        )
-        return self._coerce_chat_completion_response(response)
-
-    async def _create_async_chat_completion(
-        self,
-        *,
-        messages: Sequence[ChatCompletionMessageParam],
-        params: dict[str, Any],
-    ) -> ChatCompletion:
-        # Owning LLM span is opened by the caller (_ainvoke_once) so it also
-        # covers response parsing and Mongo event recording.
-        extra_headers = self._outbound_trace_headers()
-        completions = self._async_client.chat.completions
-        raw_completions = getattr(completions, "with_raw_response", None)
-        if raw_completions is not None:
-            raw_response = await raw_completions.create(
-                messages=messages, extra_headers=extra_headers, **params
-            )
-            return await self._acoerce_raw_chat_completion_response(raw_response)
-        response = await completions.create(
-            messages=messages, extra_headers=extra_headers, **params
-        )
-        return self._coerce_chat_completion_response(response)
-
-    @contextmanager
-    def _llm_outbound_span(self, call_kind: str):
-        """CLIENT span around an outbound LLM call (zero-cost when OTel off)."""
-        tracer = otel_trace.get_tracer("map.llm")
-        with tracer.start_as_current_span(
-            f"{call_kind} {self.config.model}",
-            kind=SpanKind.CLIENT,
-            attributes={
-                "openinference.span.kind": "LLM",
-                "llm.model_name": str(self.config.model or ""),
-                "llm.provider": str(self.config.base_url or ""),
-                "map.llm.call_kind": call_kind,
-            },
-        ) as span:
-            yield span
-
-    @staticmethod
-    def _outbound_trace_headers() -> dict[str, str]:
-        """Inject W3C traceparent into outbound LLM request headers."""
-        headers: dict[str, str] = {}
-        otel_inject(headers)
-        return headers
-
-    def _start_llm_span(self, call_kind: str) -> Span:
-        """Start (without attaching) an LLM span that outlives the caller scope.
-
-        Streaming responses are consumed by generators, so the span must be
-        managed manually across the whole iteration lifecycle instead of a
-        ``with`` block.
-        """
-        tracer = otel_trace.get_tracer("map.llm")
-        return tracer.start_span(
-            f"{call_kind} {self.config.model}",
-            kind=SpanKind.CLIENT,
-            attributes={
-                "openinference.span.kind": "LLM",
-                "llm.model_name": str(self.config.model or ""),
-                "llm.provider": str(self.config.base_url or ""),
-                "map.llm.call_kind": call_kind,
-            },
-        )
-
-    @staticmethod
-    def _fail_llm_span(span: Span | None, exc: BaseException) -> None:
-        if span is None:
-            return
-        span.record_exception(exc)
-        span.set_status(OtelStatusCode.ERROR, str(exc))
-        span.end()
-
     def close(self):
-        try:
-            self._sync_client.close()
-        except Exception as e:
-            self.logger.warning(f"Error closing sync client: {e}")
-
         try:
             loop: asyncio.AbstractEventLoop | None = None
             try:
@@ -1266,16 +369,15 @@ class LLMEngine:
                 loop = None
 
             if loop and loop.is_running():
-                loop.create_task(self._async_client.close())
+                loop.create_task(self._invocation.aclose())
             else:
-                asyncio.run(self._async_client.close())
+                asyncio.run(self._invocation.aclose())
         except Exception as e:
             self.logger.warning(f"Error closing async client gracefully: {e}")
 
     async def aclose(self):
         try:
-            self._sync_client.close()
-            await self._async_client.close()
+            await self._invocation.aclose()
         except Exception as e:
             self.logger.warning(f"Error closing clients: {e}")
 
@@ -1291,535 +393,194 @@ class LLMEngine:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.aclose()
 
-    def _record_llm_call(
-        self,
-        *,
-        messages: Sequence[ChatCompletionMessageParam],
-        params: dict[str, Any],
-        started_at: float,
-        status: str,
-        call_kind: str,
-        response: LLMResponse | ToolCallResponse | None = None,
-        error: BaseException | str | None = None,
-        usage: dict[str, int] | None = None,
-        otel_span: Span | None = None,
-    ) -> None:
-        trace_context = get_llm_trace_context()
-        state_store = trace_context.get("state_store")
-        state_id = trace_context.get("state_id")
-        if state_store is None or not state_id:
-            return
-
-        end_ts = now_shanghai()
-        started_dt = datetime_from_epoch(started_at)
-        tools = params.get("tools")
-        tool_names: list[str] | None = None
-        if isinstance(tools, list):
-            tool_names = []
-            for item in tools:
-                if not isinstance(item, dict):
-                    continue
-                fn = item.get("function")
-                if isinstance(fn, dict) and fn.get("name"):
-                    tool_names.append(str(fn["name"]))
-
-        payload = {
-            "request_id": trace_context.get("request_id"),
-            "session_id": trace_context.get("session_id"),
-            "staff_code": trace_context.get("staff_code"),
-            "agent_code": trace_context.get("agent_code"),
-            "agent_name": trace_context.get("agent_name"),
-            "component": trace_context.get("component")
-            or trace_context.get("agent_code")
-            or call_kind,
-            "phase": trace_context.get("phase"),
-            "step": trace_context.get("step"),
-            "call_kind": trace_context.get("call_kind") or call_kind,
-            "model": getattr(response, "model", None) or params.get("model") or self.config.model,
-            "provider_request_id": getattr(response, "request_id", None),
-            "start_ts": started_dt,
-            "end_ts": end_ts,
-            "duration_s": time.time() - started_at,
-            "status": status,
-            "usage": usage or getattr(response, "usage", None),
-            "error": str(error) if error is not None else None,
-            "finish_reason": getattr(response, "finish_reason", None),
-            "prompt_summary": summarize_llm_messages(list(messages)),
-            "tool_names": tool_names,
-        }
-        from ..observability import current_trace_context
-
-        # Prefer the owning LLM span (streaming spans outlive their `with`
-        # scope); fall back to the live current span context.
-        otel_ctx: dict[str, str] = {}
-        if otel_span is not None:
-            span_ctx = otel_span.get_span_context()
-            if span_ctx is not None and span_ctx.is_valid:
-                otel_ctx = {
-                    "trace_id": format(span_ctx.trace_id, "032x"),
-                    "span_id": format(span_ctx.span_id, "016x"),
-                }
-        if not otel_ctx:
-            otel_ctx = current_trace_context()
-        if otel_ctx:
-            payload["trace_id"] = otel_ctx.get("trace_id")
-            payload["span_id"] = otel_ctx.get("span_id")
-        try:
-            from ..service.state_store import fire_and_forget
-
-            fire_and_forget(
-                state_store.record_event(
-                    state_id=str(state_id),
-                    event_type="llm_call",
-                    payload=payload,
-                )
-            )
-        except Exception:
-            self.logger.debug("LLM trace recording skipped", exc_info=True)
-
     # ------------------------------------------------------------------
-    # Internal single-attempt operations (no retries)
+    # Translation helpers
     # ------------------------------------------------------------------
-    def _invoke_once(
-        self, messages: Sequence[LLMMessage | dict[str, Any]], **kwargs
-    ) -> LLMResponse:
-        started = time.time()
-        msgs = self._prepare_messages(list(messages))
-        params = self._prepare_params(stream=False, **kwargs)
-        # The LLM span must cover the full lifecycle (request, response
-        # parsing, json_object fallback, event recording) so Mongo events
-        # bind the real LLM span id instead of the parent request span.
-        with self._llm_outbound_span("chat"):
-            return self._invoke_once_traced(msgs=msgs, params=params, started=started)
-
-    def _invoke_once_traced(
+    def _build_request(
         self,
+        messages: Sequence[LLMMessage | dict[str, Any]],
         *,
-        msgs: list[ChatCompletionMessageParam],
-        params: dict[str, Any],
-        started: float,
-    ) -> LLMResponse:
-        try:
-            response = self._create_sync_chat_completion(messages=msgs, params=params)
-            result = self._handle_sync_response(response, started_at=started)
-            self._record_llm_call(
-                messages=msgs,
-                params=params,
-                started_at=started,
-                status="success",
-                call_kind="chat",
-                response=result,
+        stream: bool,
+        tools: Sequence[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
+        **kwargs,
+    ) -> ModelInvocationRequest:
+        structured: StructuredOutput | None = None
+        if "json_schema" in kwargs:
+            structured = StructuredOutput(
+                schema=kwargs["json_schema"],
+                name=kwargs.get("schema_name", "response_schema"),
+                strict=kwargs.get("schema_strict", False),
             )
-            return result
-        except Exception as e:
-            if self._should_fallback_to_json_object(e, params):
-                self.logger.warning(
-                    "LLM upstream does not support json_schema response_format; "
-                    "retrying once with json_object."
-                )
-                fallback_msgs, fallback_params = self._build_json_object_fallback_request(
-                    msgs, params
-                )
-                try:
-                    response = self._create_sync_chat_completion(
-                        messages=fallback_msgs,
-                        params=fallback_params,
-                    )
-                    result = self._handle_sync_response(response, started_at=started)
-                    self._record_llm_call(
-                        messages=fallback_msgs,
-                        params=fallback_params,
-                        started_at=started,
-                        status="success",
-                        call_kind="chat",
-                        response=result,
-                    )
-                    return result
-                except Exception as fallback_error:
-                    response = self._coerce_chat_completion_exception(fallback_error)
-                    if response is not None:
-                        result = self._handle_sync_response(
-                            response,
-                            started_at=started,
-                        )
-                        self._record_llm_call(
-                            messages=fallback_msgs,
-                            params=fallback_params,
-                            started_at=started,
-                            status="success",
-                            call_kind="chat",
-                            response=result,
-                        )
-                        return result
-                    self.logger.error(
-                        f"Sync invoke json_object fallback failed: {fallback_error}"
-                    )
-                    self._record_llm_call(
-                        messages=fallback_msgs,
-                        params=fallback_params,
-                        started_at=started,
-                        status="failed",
-                        call_kind="chat",
-                        error=fallback_error,
-                    )
-                    raise
-            response = self._coerce_chat_completion_exception(e)
-            if response is not None:
-                result = self._handle_sync_response(response, started_at=started)
-                self._record_llm_call(
-                    messages=msgs,
-                    params=params,
-                    started_at=started,
-                    status="success",
-                    call_kind="chat",
-                    response=result,
-                )
-                return result
-            self.logger.error(f"Sync invoke failed: {e}")
-            self._record_llm_call(
-                messages=msgs,
-                params=params,
-                started_at=started,
-                status="failed",
-                call_kind="chat",
-                error=e,
-            )
-            raise
-
-    async def _ainvoke_once(
-        self, messages: Sequence[LLMMessage | dict[str, Any]], **kwargs
-    ) -> LLMResponse:
-        started = time.time()
-        msgs = self._prepare_messages(list(messages))
-        params = self._prepare_params(stream=False, **kwargs)
-        # The LLM span must cover the full lifecycle (request, response
-        # parsing, json_object fallback, event recording) so Mongo events
-        # bind the real LLM span id instead of the parent request span.
-        with self._llm_outbound_span("chat"):
-            return await self._ainvoke_once_traced(
-                msgs=msgs, params=params, started=started
-            )
-
-    async def _ainvoke_once_traced(
-        self,
-        *,
-        msgs: list[ChatCompletionMessageParam],
-        params: dict[str, Any],
-        started: float,
-    ) -> LLMResponse:
-        try:
-            response = await self._create_async_chat_completion(
-                messages=msgs,
-                params=params,
-            )
-            result = self._handle_async_response(response, started_at=started)
-            self._record_llm_call(
-                messages=msgs,
-                params=params,
-                started_at=started,
-                status="success",
-                call_kind="chat",
-                response=result,
-            )
-            return result
-        except Exception as e:
-            if self._should_fallback_to_json_object(e, params):
-                self.logger.warning(
-                    "LLM upstream does not support json_schema response_format; "
-                    "retrying once with json_object."
-                )
-                fallback_msgs, fallback_params = self._build_json_object_fallback_request(
-                    msgs, params
-                )
-                try:
-                    response = await self._create_async_chat_completion(
-                        messages=fallback_msgs,
-                        params=fallback_params,
-                    )
-                    result = self._handle_async_response(response, started_at=started)
-                    self._record_llm_call(
-                        messages=fallback_msgs,
-                        params=fallback_params,
-                        started_at=started,
-                        status="success",
-                        call_kind="chat",
-                        response=result,
-                    )
-                    return result
-                except Exception as fallback_error:
-                    response = self._coerce_chat_completion_exception(fallback_error)
-                    if response is not None:
-                        result = self._handle_async_response(
-                            response,
-                            started_at=started,
-                        )
-                        self._record_llm_call(
-                            messages=fallback_msgs,
-                            params=fallback_params,
-                            started_at=started,
-                            status="success",
-                            call_kind="chat",
-                            response=result,
-                        )
-                        return result
-                    self.logger.error(
-                        f"Async invoke json_object fallback failed: {fallback_error}"
-                    )
-                    self._record_llm_call(
-                        messages=fallback_msgs,
-                        params=fallback_params,
-                        started_at=started,
-                        status="failed",
-                        call_kind="chat",
-                        error=fallback_error,
-                    )
-                    raise
-            response = self._coerce_chat_completion_exception(e)
-            if response is not None:
-                result = self._handle_async_response(response, started_at=started)
-                self._record_llm_call(
-                    messages=msgs,
-                    params=params,
-                    started_at=started,
-                    status="success",
-                    call_kind="chat",
-                    response=result,
-                )
-                return result
-            self.logger.error(
-                f"Async invoke failed after {time.time() - started:.2f}s: "
-                f"{type(e).__name__}: {e}"
-            )
-            self._record_llm_call(
-                messages=msgs,
-                params=params,
-                started_at=started,
-                status="failed",
-                call_kind="chat",
-                error=e,
-            )
-            raise
-
-    def _stream_once(
-        self, messages: Sequence[LLMMessage | dict[str, Any]], **kwargs
-    ) -> Generator[str, None, None]:
-        started = time.time()
-        msgs = self._prepare_messages(list(messages))
-        params = self._prepare_params(stream=True, **kwargs)
-        span = self._start_llm_span("stream")
-        token = otel_context.attach(otel_trace.set_span_in_context(span))
-        try:
-            extra_headers = self._outbound_trace_headers()
-            response = self._sync_client.chat.completions.create(
-                messages=msgs, extra_headers=extra_headers, **params
-            )
-        except Exception as e:
-            self.logger.error(f"Sync stream failed: {e}")
-            self._record_llm_call(
-                messages=msgs,
-                params=params,
-                started_at=started,
-                status="failed",
-                call_kind="stream",
-                error=e,
-                otel_span=span,
-            )
-            self._fail_llm_span(span, e)
-            raise
-        finally:
-            otel_context.detach(token)
-        return self._trace_sync_stream(
-            self._handle_sync_stream(response),
-            messages=msgs,
-            params=params,
-            started_at=started,
-            span=span,
+        return ModelInvocationRequest(
+            messages=self._convert_messages(messages),
+            stream=stream,
+            temperature=kwargs.get("temperature"),
+            max_tokens=kwargs.get("max_tokens"),
+            tools=list(tools) if tools is not None else None,
+            tool_choice=tool_choice if tool_choice is not None else "auto",
+            structured=structured,
+            provider_params=self._build_provider_params(kwargs),
+            timeout=kwargs.get("timeout"),
+            raw_compat=True,
         )
 
-    async def _astream_once(
-        self, messages: Sequence[LLMMessage | dict[str, Any]], **kwargs
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        started = time.time()
-        msgs = self._prepare_messages(list(messages))
-        params = self._prepare_params(stream=True, **kwargs)
-        # Request usage stats in the final streaming chunk so callers can
-        # accumulate token counts even in streaming mode.
-        stream_options = params.get("stream_options")
-        if isinstance(stream_options, dict):
-            params["stream_options"] = {
-                **stream_options,
-                "include_usage": stream_options.get("include_usage", True),
-            }
-        else:
-            params.setdefault("stream_options", {"include_usage": True})
-        try:
-            span = self._start_llm_span("stream")
-            token = otel_context.attach(otel_trace.set_span_in_context(span))
-            try:
-                extra_headers = self._outbound_trace_headers()
-                response = await self._async_client.chat.completions.create(
-                    messages=msgs, extra_headers=extra_headers, **params
-                )
-            finally:
-                otel_context.detach(token)
-        except Exception as e:
-            self.logger.error(f"Async stream failed: {e}")
-            self._record_llm_call(
-                messages=msgs,
-                params=params,
-                started_at=started,
-                status="failed",
-                call_kind="stream",
-                error=e,
-                otel_span=span,
-            )
-            self._fail_llm_span(span, e)
-            raise
-        return self._trace_async_stream(
-            self._handle_async_stream(response),
-            messages=msgs,
-            params=params,
-            started_at=started,
-            span=span,
+    def _build_provider_params(self, kwargs: dict[str, Any]) -> ProviderParams:
+        extra_body: dict[str, Any] = {}
+        thinking = kwargs.get("thinking", self.config.thinking)
+        if thinking is not None:
+            extra_body["thinking"] = thinking
+        if self.config.chat_template_kwargs:
+            extra_body["chat_template_kwargs"] = self.config.chat_template_kwargs
+        return ProviderParams(
+            top_p=kwargs.get("top_p"),
+            frequency_penalty=kwargs.get("frequency_penalty"),
+            presence_penalty=kwargs.get("presence_penalty"),
+            logprobs=kwargs.get("logprobs"),
+            top_logprobs=kwargs.get("top_logprobs"),
+            extra_body=extra_body if extra_body else None,
+            stream_options=kwargs.get("stream_options"),
         )
 
-    def _trace_sync_stream(
-        self,
-        stream: Generator[str, None, None],
-        *,
-        messages: Sequence[ChatCompletionMessageParam],
-        params: dict[str, Any],
-        started_at: float,
-        span: Span | None = None,
-    ) -> Generator[str, None, None]:
-        try:
-            for chunk in stream:
-                yield chunk
-        except BaseException as exc:
-            # Covers upstream errors AND generator close/cancellation
-            # (GeneratorExit / CancelledError) — the span must always end.
-            self._record_llm_call(
-                messages=messages,
-                params=params,
-                started_at=started_at,
-                status="failed",
-                call_kind="stream",
-                error=exc,
-                otel_span=span,
-            )
-            self._fail_llm_span(span, exc)
-            raise
-        else:
-            self._record_llm_call(
-                messages=messages,
-                params=params,
-                started_at=started_at,
-                status="success",
-                call_kind="stream",
-                otel_span=span,
-            )
-            if span is not None:
-                span.end()
-
-    async def _trace_async_stream(
-        self,
-        stream: AsyncGenerator[dict[str, Any], None],
-        *,
-        messages: Sequence[ChatCompletionMessageParam],
-        params: dict[str, Any],
-        started_at: float,
-        span: Span | None = None,
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        usage: dict[str, int] | None = None
-        try:
-            async for chunk in stream:
-                if isinstance(chunk, dict) and chunk.get("type") == "usage":
-                    raw_usage = chunk.get("data")
-                    if isinstance(raw_usage, dict):
-                        usage = {
-                            str(k): int(v)
-                            for k, v in raw_usage.items()
-                            if isinstance(v, int)
-                        }
-                yield chunk
-        except BaseException as exc:
-            # Covers upstream errors AND consumer cancellation/disconnect
-            # (CancelledError) — the span must always end.
-            self._record_llm_call(
-                messages=messages,
-                params=params,
-                started_at=started_at,
-                status="failed",
-                call_kind="stream",
-                error=exc,
-                otel_span=span,
-            )
-            self._fail_llm_span(span, exc)
-            raise
-        else:
-            self._record_llm_call(
-                messages=messages,
-                params=params,
-                started_at=started_at,
-                status="success",
-                call_kind="stream",
-                usage=usage,
-                otel_span=span,
-            )
-            if span is not None:
-                if usage:
-                    span.set_attribute("llm.token_count.prompt", usage.get("prompt_tokens", 0))
-                    span.set_attribute(
-                        "llm.token_count.completion", usage.get("completion_tokens", 0)
-                    )
-                span.end()
-
-    # ------------------------------------------------------------------
-    # Tenacity hooks
-    # ------------------------------------------------------------------
-    def _tenacity_before_retry(self, retry_state: RetryCallState):  # sync
-        if retry_state.attempt_number == 1:
-            return
-        exc = retry_state.outcome.exception() if retry_state.outcome else None
-        if self.before_retry:
-            try:
-                self.before_retry(
-                    RetryState(
-                        attempt=retry_state.attempt_number - 1, last_exception=exc
-                    )
-                )
-            except Exception:  # pragma: no cover
-                self.logger.debug("before_retry callback failed", exc_info=True)
-        if exc:
-            self.logger.warning(
-                f"Retrying sync attempt {retry_state.attempt_number} due to: {exc}"
-            )
-
-    def _atenacity_before_retry(self, retry_state: RetryCallState):  # async path
-        if retry_state.attempt_number == 1:
-            return
-        exc = retry_state.outcome.exception() if retry_state.outcome else None
-        if self.before_retry:
-            try:
-                self.before_retry(
-                    RetryState(
-                        attempt=retry_state.attempt_number - 1, last_exception=exc
-                    )
-                )
-            except Exception:  # pragma: no cover
-                self.logger.debug("before_retry callback failed", exc_info=True)
-        if exc:
-            self.logger.warning(
-                f"Retrying async attempt {retry_state.attempt_number} due to: {exc}"
-            )
-
-    def _tenacity_error_callback(self, retry_state: RetryCallState):
-        # Final failure callback: re-raise original exception if present
-        if retry_state.outcome:
-            if retry_state.outcome.failed:
-                exc = retry_state.outcome.exception()
-                if exc is not None:
-                    raise exc
+    @staticmethod
+    def _convert_messages(
+        messages: Sequence[LLMMessage | dict[str, Any]],
+    ) -> list[ModelMessage | dict[str, Any]]:
+        converted: list[ModelMessage | dict[str, Any]] = []
+        for msg in messages:
+            if isinstance(msg, LLMMessage):
+                converted.append(msg.to_dict())
+            elif isinstance(msg, Message):
+                converted.append(msg.to_dict())
+            elif isinstance(msg, dict):
+                converted.append(msg)
             else:
-                return retry_state.outcome.result()
-        return None
+                raise TypeError(f"Unsupported message type: {type(msg)}")
+        return converted
+
+    def _outcome_to_llm_response(self, outcome: ModelInvocationOutcome) -> LLMResponse:
+        self._raise_for_outcome(outcome)
+        llm_resp = LLMResponse(
+            content=outcome.content or "",
+            reasoning_content=outcome.reasoning_content,
+            logprobs=self._raw_logprobs(outcome),
+            prompt_token_ids=self._raw_prompt_token_ids(outcome),
+            model=outcome.model,
+            usage=outcome.usage.to_dict() if outcome.usage else None,
+            finish_reason=outcome.finish_reason,
+            response_time=outcome.latency_ms / 1000.0,
+            request_id=outcome.request_id,
+            raw=outcome.raw,
+        )
+        self._call_after_success(llm_resp)
+        return llm_resp
+
+    def _outcome_to_tool_response(
+        self, outcome: ModelInvocationOutcome
+    ) -> ToolCallResponse:
+        tool_calls: list[ToolCall] = []
+        for call in outcome.tool_calls or []:
+            fn = call.get("function") if isinstance(call, dict) else None
+            if isinstance(fn, dict):
+                tool_calls.append(
+                    ToolCall(
+                        id=call.get("id") or "",
+                        function=Function(
+                            name=fn.get("name") or "",
+                            arguments=str(fn.get("arguments") or ""),
+                        ),
+                    )
+                )
+        return ToolCallResponse(
+            content=outcome.content or "",
+            tool_calls=tool_calls,
+            model=outcome.model,
+            usage=outcome.usage.to_dict() if outcome.usage else None,
+            finish_reason=outcome.finish_reason,
+            response_time=outcome.latency_ms / 1000.0,
+            request_id=outcome.request_id,
+            raw=outcome.raw,
+        )
+
+    def _raise_for_outcome(self, outcome: ModelInvocationOutcome) -> None:
+        if outcome.status == "succeeded":
+            return
+        error = outcome.error
+        code = error.code if error else outcome.status
+        message = error.message if error else outcome.status
+        raise _ShellInvocationError(
+            f"LLM invocation {outcome.status} (code={code}): {message}", code=code
+        )
+
+    def _raise_for_terminal(self, event: Any) -> None:
+        if getattr(event, "status", None) == "succeeded":
+            return
+        error = getattr(event, "error", None)
+        code = error.code if error else getattr(event, "status", "unknown")
+        message = error.message if error else getattr(event, "status", "unknown")
+        raise _ShellInvocationError(
+            f"LLM stream {getattr(event, 'status', 'unknown')} (code={code}): {message}",
+            code=code,
+        )
+
+    @staticmethod
+    def _raw_logprobs(outcome: ModelInvocationOutcome) -> Any | None:
+        raw = outcome.raw
+        if not isinstance(raw, dict):
+            return None
+        choices = raw.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return None
+        first = choices[0]
+        return first.get("logprobs") if isinstance(first, dict) else None
+
+    @staticmethod
+    def _raw_prompt_token_ids(
+        outcome: ModelInvocationOutcome,
+    ) -> list[int] | None:
+        raw = outcome.raw
+        if not isinstance(raw, dict):
+            return None
+        token_ids = raw.get("prompt_token_ids")
+        if not isinstance(token_ids, list):
+            return None
+        try:
+            return [int(token_id) for token_id in token_ids]
+        except (TypeError, ValueError):
+            return None
+
+    def _call_after_success(self, llm_resp: LLMResponse) -> None:
+        if self.after_success:
+            try:
+                self.after_success(llm_resp)
+            except Exception:  # pragma: no cover - defensive
+                self.logger.debug("after_success callback failed", exc_info=True)
+
+    def _before_retry_adapter(
+        self, attempt: int, last_exception: BaseException | None
+    ) -> None:
+        if self.before_retry:
+            try:
+                self.before_retry(
+                    RetryState(attempt=attempt, last_exception=last_exception)
+                )
+            except Exception:  # pragma: no cover
+                self.logger.debug("before_retry callback failed", exc_info=True)
+
+    def _build_basic_messages(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        json_schema: dict[str, Any] | None,
+        schema_name: str,
+        kwargs: dict[str, Any],
+    ) -> tuple[list[LLMMessage], dict[str, Any]]:
+        messages: list[LLMMessage] = []
+        if system_prompt:
+            messages.append(LLMMessage(role="system", content=system_prompt))
+        messages.append(LLMMessage(role="user", content=prompt))
+        if json_schema is not None:
+            kwargs = dict(kwargs)
+            kwargs["json_schema"] = json_schema
+            kwargs["schema_name"] = schema_name
+        return messages, kwargs

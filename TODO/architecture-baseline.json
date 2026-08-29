@@ -260,14 +260,14 @@
   "direct_sdk_imports": {
     "openai": [
       {
-        "file": "map_core/map_core/utils/llm_engine.py",
+        "file": "map_core/map_core/utils/model_invocation/openai_compatible.py",
         "symbol": "openai",
-        "line": 40
+        "line": 17
       },
       {
-        "file": "map_core/map_core/utils/llm_engine.py",
+        "file": "map_core/map_core/utils/model_invocation/openai_compatible.py",
         "symbol": "openai.types.chat",
-        "line": 41
+        "line": 26
       }
     ]
   }
