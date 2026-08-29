@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.core.identity import AuthMode
 from app.db.session import get_db_session
 from app.main import create_app
+from app.services.runtime_snapshot.schemas import RuntimeProjection
 from app.settings import Settings
 from app.store import AdminStateStore
 
@@ -742,6 +743,59 @@ async def _run_skill_upload(client, session=None):
     )
 
 
+def _snapshot_fixture_projection(tag: str) -> RuntimeProjection:
+    return RuntimeProjection(
+        schema_version=1,
+        scene_selection={"fixture": tag},
+        dispatch_config={},
+        flow_policy={},
+        scenario_packs=[],
+        flow_skill_descriptors=[],
+    )
+
+
+async def _seed_snapshot_fixture(session, tag: str, status: str) -> uuid.UUID:
+    """Seed one deterministic snapshot row for the lifecycle fixtures.
+
+    The lifecycle POST routes only need the row to exist in the right
+    status; this is setup, not the operation under test, so it emits no
+    audit events.
+    """
+    from app.services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
+    from app.services.runtime_snapshot.digest import projection_digest, snapshot_id_for_digest
+
+    projection = _snapshot_fixture_projection(tag)
+    digest = projection_digest(projection)
+    snapshot_id = snapshot_id_for_digest(digest)
+    await PgRuntimeSnapshotRepository(session).insert(
+        snapshot_id, projection, digest, None, status
+    )
+    await session.commit()
+    return snapshot_id
+
+
+async def _run_snapshot_publish(client, session):
+    snapshot_id = await _seed_snapshot_fixture(session, "fixture-publish", "draft")
+    return await client.post(f"/api/admin/runtime-snapshots/{snapshot_id}/publish")
+
+
+async def _run_snapshot_activate(client, session):
+    snapshot_id = await _seed_snapshot_fixture(session, "fixture-activate", "published")
+    # No body: the route derives the CAS expectation from the server-side
+    # current pointer (fail-closed), exactly like the service contract.
+    return await client.post(f"/api/admin/runtime-snapshots/{snapshot_id}/activate")
+
+
+async def _run_snapshot_rollback(client, session):
+    snapshot_id = await _seed_snapshot_fixture(session, "fixture-rollback", "rolled_back")
+    return await client.post(f"/api/admin/runtime-snapshots/{snapshot_id}/rollback")
+
+
+async def _run_snapshot_retire(client, session):
+    snapshot_id = await _seed_snapshot_fixture(session, "fixture-retire", "published")
+    return await client.post(f"/api/admin/runtime-snapshots/{snapshot_id}/retire")
+
+
 ADMIN_WRITE_FIXTURES: dict[str, dict] = {}
 for _path in _PUT_SECTION_PATHS:
     ADMIN_WRITE_FIXTURES[f"PUT {_path}"] = {
@@ -797,10 +851,34 @@ ADMIN_WRITE_FIXTURES.update(
             "admin_audit_delta": 1,
             "snapshot_audit_delta": 1,
         },
+        # Runtime snapshot lifecycle: no AdminState write, exactly one
+        # snapshot audit event each.
+        "POST /api/admin/runtime-snapshots/{snapshot_id}/publish": {
+            "run": _run_snapshot_publish,
+            "admin_audit_delta": 0,
+            "snapshot_audit_delta": 1,
+        },
+        "POST /api/admin/runtime-snapshots/{snapshot_id}/activate": {
+            "run": _run_snapshot_activate,
+            "admin_audit_delta": 0,
+            "snapshot_audit_delta": 1,
+        },
+        "POST /api/admin/runtime-snapshots/{snapshot_id}/rollback": {
+            "run": _run_snapshot_rollback,
+            "admin_audit_delta": 0,
+            "snapshot_audit_delta": 1,
+        },
+        "POST /api/admin/runtime-snapshots/{snapshot_id}/retire": {
+            "run": _run_snapshot_retire,
+            "admin_audit_delta": 0,
+            "snapshot_audit_delta": 1,
+        },
     }
 )
 
-# Dependency-safe execution order (create before update/refresh/rollback).
+# Dependency-safe execution order (create before update/refresh/rollback;
+# lifecycle ops run last, after admin writes have materialized a current
+# active snapshot and rolled_back predecessors).
 _ORDERED_OPS = [f"PUT {path}" for path in _PUT_SECTION_PATHS] + [
     "POST /api/admin/release-history",
     "POST /api/admin/master-agent/publish",
@@ -811,6 +889,10 @@ _ORDERED_OPS = [f"PUT {path}" for path in _PUT_SECTION_PATHS] + [
     "POST /api/admin/mcp-servers",
     "POST /api/admin/mcp-servers/{server_id}/refresh-tools",
     "POST /api/admin/skills/upload",
+    "POST /api/admin/runtime-snapshots/{snapshot_id}/publish",
+    "POST /api/admin/runtime-snapshots/{snapshot_id}/activate",
+    "POST /api/admin/runtime-snapshots/{snapshot_id}/rollback",
+    "POST /api/admin/runtime-snapshots/{snapshot_id}/retire",
 ]
 
 

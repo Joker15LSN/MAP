@@ -169,12 +169,22 @@ class PgRuntimeSnapshotRepository:
             .one_or_none()
         )
 
-        # Idempotent: the pointer already references this id/digest.
+        # Idempotent: the pointer already references this id/digest. A
+        # caller-provided CAS expectation is still validated first so a
+        # latecomer with a stale digest loses with 409 instead of
+        # silently treating the earlier winner's activation as its own.
         if (
             pointer is not None
             and pointer.current_snapshot_id == snapshot_id
             and pointer.current_digest == target.digest
         ):
+            if (
+                expected_current_digest is not None
+                and pointer.current_digest != expected_current_digest
+            ):
+                raise SnapshotConcurrentModificationError(
+                    "runtime snapshot current digest changed since the request was read"
+                )
             return _record_from_orm(target)
 
         if pointer is None:

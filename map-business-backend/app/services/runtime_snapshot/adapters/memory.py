@@ -89,6 +89,13 @@ class InMemoryRuntimeSnapshotRepository:
                 raise SnapshotNotFoundError(f"snapshot {snapshot_id} not found")
 
             if self._current_snapshot_id == snapshot_id and self._current_digest == target.digest:
+                if (
+                    expected_current_digest is not None
+                    and self._current_digest != expected_current_digest
+                ):
+                    raise SnapshotConcurrentModificationError(
+                        "runtime snapshot current digest changed since the request was read"
+                    )
                 return target
 
             if self._current_digest != expected_current_digest:

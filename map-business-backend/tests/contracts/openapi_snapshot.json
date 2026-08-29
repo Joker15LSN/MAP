@@ -1,6 +1,24 @@
 {
   "components": {
     "schemas": {
+      "ActivateSnapshotRequest": {
+        "description": "Minimal activation body.\n\n``expected_current_digest`` is optional. When omitted, the route\nderives the expectation from the server-side current pointer\n(fail-closed): it never silently passes ``None`` when a current\nsnapshot exists.",
+        "properties": {
+          "expected_current_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Current Digest"
+          }
+        },
+        "title": "ActivateSnapshotRequest",
+        "type": "object"
+      },
       "AddressConfigItem": {
         "properties": {
           "address_code": {
@@ -1964,6 +1982,59 @@
           "projection"
         ],
         "title": "RuntimeSnapshotRead",
+        "type": "object"
+      },
+      "RuntimeSnapshotRecord": {
+        "description": "A stored snapshot row with provenance.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/RuntimeProjection"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "schema_version",
+          "digest",
+          "parent_id",
+          "status",
+          "created_at",
+          "projection"
+        ],
+        "title": "RuntimeSnapshotRecord",
         "type": "object"
       },
       "ScenarioPackConfig": {
@@ -4119,6 +4190,247 @@
           }
         },
         "summary": "Put Role Policies"
+      }
+    },
+    "/api/admin/runtime-snapshots/current": {
+      "get": {
+        "description": "Return the current active snapshot record (404 when none).",
+        "operationId": "get_current_runtime_snapshot_api_admin_runtime_snapshots_current_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeSnapshotRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Current Runtime Snapshot"
+      }
+    },
+    "/api/admin/runtime-snapshots/{snapshot_id}": {
+      "get": {
+        "description": "Return one snapshot record by id (404 when missing).",
+        "operationId": "get_runtime_snapshot_api_admin_runtime_snapshots__snapshot_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeSnapshotRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Runtime Snapshot"
+      }
+    },
+    "/api/admin/runtime-snapshots/{snapshot_id}/activate": {
+      "post": {
+        "description": "Activate a published/rolled_back snapshot (CAS on current digest).",
+        "operationId": "activate_runtime_snapshot_api_admin_runtime_snapshots__snapshot_id__activate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ActivateSnapshotRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeSnapshotRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activate Runtime Snapshot"
+      }
+    },
+    "/api/admin/runtime-snapshots/{snapshot_id}/publish": {
+      "post": {
+        "description": "Publish a draft snapshot.",
+        "operationId": "publish_runtime_snapshot_api_admin_runtime_snapshots__snapshot_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeSnapshotRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Runtime Snapshot"
+      }
+    },
+    "/api/admin/runtime-snapshots/{snapshot_id}/retire": {
+      "post": {
+        "description": "Retire a non-active snapshot.",
+        "operationId": "retire_runtime_snapshot_api_admin_runtime_snapshots__snapshot_id__retire_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeSnapshotRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retire Runtime Snapshot"
+      }
+    },
+    "/api/admin/runtime-snapshots/{snapshot_id}/rollback": {
+      "post": {
+        "description": "Roll the current pointer back to ``snapshot_id`` (CAS).",
+        "operationId": "rollback_runtime_snapshot_api_admin_runtime_snapshots__snapshot_id__rollback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeSnapshotRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rollback Runtime Snapshot"
       }
     },
     "/api/admin/scenario-packs": {

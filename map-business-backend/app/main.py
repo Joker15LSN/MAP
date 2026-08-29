@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.admin_assets import router as admin_assets_router
 from .api.admin_config import router as admin_config_router
 from .api.admin_master import router as admin_master_router
+from .api.admin_snapshots import router as admin_snapshots_router
 from .api.audit_events import router as audit_events_router
 from .api.chat import router as chat_router
 from .api.conversations import router as conversations_router
@@ -229,6 +230,7 @@ def create_app(
     app.include_router(admin_config_router)
     app.include_router(admin_master_router)
     app.include_router(admin_assets_router)
+    app.include_router(admin_snapshots_router)
 
     return app
 
