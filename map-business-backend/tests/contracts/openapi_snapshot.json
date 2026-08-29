@@ -1867,6 +1867,105 @@
         "title": "RolePolicy",
         "type": "object"
       },
+      "RuntimeProjection": {
+        "description": "The runtime-relevant projection of an AdminState (secrets stripped).\n\n``schema_version`` is the projection contract version; unknown major\nversions must be rejected by readers (fail-closed).",
+        "properties": {
+          "dispatch_config": {
+            "additionalProperties": true,
+            "title": "Dispatch Config",
+            "type": "object"
+          },
+          "flow_policy": {
+            "additionalProperties": true,
+            "title": "Flow Policy",
+            "type": "object"
+          },
+          "flow_skill_descriptors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Flow Skill Descriptors",
+            "type": "array"
+          },
+          "scenario_packs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Scenario Packs",
+            "type": "array"
+          },
+          "scene_selection": {
+            "additionalProperties": true,
+            "title": "Scene Selection",
+            "type": "object"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "scene_selection",
+          "dispatch_config",
+          "flow_policy",
+          "scenario_packs",
+          "flow_skill_descriptors"
+        ],
+        "title": "RuntimeProjection",
+        "type": "object"
+      },
+      "RuntimeSnapshotRead": {
+        "description": "Public read projection for the internal read route.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/RuntimeProjection"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "schema_version",
+          "digest",
+          "parent_id",
+          "created_at",
+          "projection"
+        ],
+        "title": "RuntimeSnapshotRead",
+        "type": "object"
+      },
       "ScenarioPackConfig": {
         "properties": {
           "auth_scopes": {
@@ -5891,6 +5990,50 @@
           }
         },
         "summary": "Ping",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/internal/v1/runtime-config-snapshots/{snapshot_id}": {
+      "get": {
+        "description": "Read one immutable runtime snapshot by id (no current-pointer fetch).\n\nDraft snapshots are not readable (404, same as missing). The digest is\nrecomputed from the stored projection on every read; any mismatch is a\nfail-closed 500, never a successful response.",
+        "operationId": "get_runtime_config_snapshot_internal_v1_runtime_config_snapshots__snapshot_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeSnapshotRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Runtime Config Snapshot",
         "tags": [
           "internal"
         ]

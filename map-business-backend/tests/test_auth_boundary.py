@@ -376,6 +376,38 @@ def test_service_ping_missing_scope_is_403() -> None:
     assert response.json()["code"] == "FORBIDDEN"
 
 
+def test_runtime_snapshot_read_route_requires_service_scope() -> None:
+    """The snapshot read route is service-identity only and requires its
+    own scope; a valid credential without it is 403."""
+    limited = ServiceCredential(
+        key_id="obs-limited-v2",
+        token="svc-token-limited-2",
+        service_name="obs-backend",
+        audience="map-bff",
+        scopes=("internal.ping", "audit.read"),
+    )
+    app = _app(_secure(credentials=(limited,)))
+    client = TestClient(app)
+    response = client.get(
+        "/internal/v1/runtime-config-snapshots/00000000-0000-0000-0000-000000000001",
+        headers={"Authorization": f"Bearer {limited.token}"},
+    )
+    assert response.status_code == 403
+    assert response.json()["code"] == "FORBIDDEN"
+
+
+def test_runtime_snapshot_read_route_rejects_credential_without_scope() -> None:
+    """A valid service credential without the snapshot scope gets 403."""
+    app = _app(_secure())
+    client = TestClient(app)
+    response = client.get(
+        "/internal/v1/runtime-config-snapshots/00000000-0000-0000-0000-000000000001",
+        headers={"Authorization": f"Bearer {OBS_CRED.token}"},
+    )
+    assert response.status_code == 403
+    assert response.json()["code"] == "FORBIDDEN"
+
+
 def test_rotation_dual_key_window_then_revocation() -> None:
     """Rotation: old+new key_id both valid during the window; revoking the
     old key rejects it instantly while the new key keeps working."""

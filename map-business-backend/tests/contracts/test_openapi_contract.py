@@ -58,6 +58,7 @@ NEW_API_PATHS = {
     ("GET", "/api/v1/admin/audit-events"),
     ("GET", "/api/v1/admin/audit-events/verify"),
     ("GET", "/internal/v1/ping"),
+    ("GET", "/internal/v1/runtime-config-snapshots/{snapshot_id}"),
     ("GET", "/ready"),
     ("GET", "/health"),
 }

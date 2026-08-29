@@ -10,13 +10,19 @@ anything. Browser/user tokens are rejected.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from ..core.identity import ServicePrincipal
 from ..core.service_identity import (
     ServiceAuthenticationError,
     authenticate_service,
 )
+from ..db.session import DbSession
+from ..services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
+from ..services.runtime_snapshot.digest import projection_digest
+from ..services.runtime_snapshot.schemas import RuntimeSnapshotRead
 from ..settings import Settings
 from .deps import get_settings
 
@@ -70,3 +76,45 @@ async def ping(
         "scopes": list(principal.scopes),
         "key_id": principal.key_id,
     }
+
+
+@router.get("/runtime-config-snapshots/{snapshot_id}")
+async def get_runtime_config_snapshot(
+    snapshot_id: uuid.UUID,
+    response: Response,
+    session: DbSession,
+    _: ServicePrincipal = Depends(require_service("runtime-config.snapshots.read")),
+) -> RuntimeSnapshotRead:
+    """Read one immutable runtime snapshot by id (no current-pointer fetch).
+
+    Draft snapshots are not readable (404, same as missing). The digest is
+    recomputed from the stored projection on every read; any mismatch is a
+    fail-closed 500, never a successful response.
+    """
+    record = await PgRuntimeSnapshotRepository(session).get(snapshot_id)
+    if record is None or record.status == "draft":
+        raise HTTPException(
+            status_code=404,
+            detail="runtime config snapshot not found",
+            headers={"X-MAP-Error-Code": "SNAPSHOT_NOT_FOUND"},
+        )
+
+    recomputed_digest = projection_digest(record.projection)
+    if recomputed_digest != record.digest:
+        raise HTTPException(
+            status_code=500,
+            detail="runtime config snapshot digest mismatch",
+            headers={"X-MAP-Error-Code": "SNAPSHOT_DIGEST_MISMATCH"},
+        )
+
+    response.headers["ETag"] = f'"{record.digest}"'
+    response.headers["X-MAP-Snapshot-Digest"] = record.digest
+    response.headers["Cache-Control"] = "no-store"
+    return RuntimeSnapshotRead(
+        id=record.id,
+        schema_version=record.schema_version,
+        digest=record.digest,
+        parent_id=record.parent_id,
+        created_at=record.created_at,
+        projection=record.projection,
+    )

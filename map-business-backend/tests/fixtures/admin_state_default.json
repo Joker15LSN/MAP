@@ -1,0 +1,186 @@
+{
+  "address_configs": [
+    {
+      "address_code": "map_core",
+      "address_name": "MAP Core API",
+      "base_url": "http://map_core:10000",
+      "enabled": true,
+      "remarks": "算法服务入口",
+      "timeout_s": 60
+    }
+  ],
+  "agent_engine": null,
+  "basic_settings": [
+    {
+      "category": "运行时",
+      "description": "控制全局请求并发上限",
+      "editable": true,
+      "setting_code": "max_concurrency",
+      "setting_name": "系统并发上限",
+      "setting_value": "100"
+    },
+    {
+      "category": "流式协议",
+      "description": "前后台默认使用的 SSE 协议版本",
+      "editable": true,
+      "setting_code": "default_stream_version",
+      "setting_name": "默认流式版本",
+      "setting_value": "v2"
+    },
+    {
+      "category": "存储",
+      "description": "会话与运行日志保留时长",
+      "editable": true,
+      "setting_code": "session_retention_days",
+      "setting_name": "会话保留天数",
+      "setting_value": "90"
+    }
+  ],
+  "business_agents": [
+    {
+      "agent_code": "General_Assistant",
+      "agent_type": "business",
+      "allowed_roles": [
+        "all"
+      ],
+      "data_scope": "global",
+      "description": "用于基础问答、知识介绍与一般咨询。",
+      "display_name": "通用问答智能体",
+      "enabled": true,
+      "glossary_terms": [],
+      "last_updated": "2026-08-29T22:50:39.286017",
+      "model": "deepseek-v4-flash",
+      "mounted_resources": [],
+      "owner_team": "平台团队",
+      "parallel_limit": 3,
+      "prompt_config": {
+        "base_model": "deepseek-v4-flash",
+        "current_version": "v1",
+        "history_versions": [],
+        "max_tokens": 4096,
+        "summary_prompt": "请给出简洁总结与关键信息点。",
+        "system_prompt": "你是企业通用问答助手，请直接回答用户问题。如果信息不确定请明确说明不确定性。",
+        "temperature": 0.1,
+        "tool_call_prompt": "你是企业通用问答助手，请根据用户问题选择最合适的工具或 skill。如果无需外部数据，可以直接总结回答。",
+        "tool_internal_prompts": [
+          {
+            "enabled": true,
+            "prompt": "直接给出中文结论，必要时分点回答。",
+            "tool_name": "general_qa_agent"
+          }
+        ],
+        "tool_prompts": [
+          {
+            "system_prompt": "直接给出中文结论，必要时分点回答。",
+            "tool_name": "general_qa_agent",
+            "user_prompt": "{query}"
+          }
+        ],
+        "user_prompt": "{query}",
+        "version_note": "初始化配置（真实环境）"
+      },
+      "prompt_template": "你是通用问答助手，回答要准确、简洁、可读。当问题涉及地理/历史知识时，优先给结构化要点。",
+      "resource_mounts": [],
+      "retry_limit": 1,
+      "scene_name": "通用问答",
+      "test_config": {
+        "draft_messages": [],
+        "last_saved_at": "2026-08-29T22:50:39.286017",
+        "publish_status": "已发布"
+      },
+      "timeout_s": 120,
+      "tools": [
+        "general_qa_agent"
+      ],
+      "weight": 100
+    }
+  ],
+  "dashboard_cards": [],
+  "data_access_items": [],
+  "data_assets": [],
+  "flow_policy": {
+    "fallback_to_global": true,
+    "max_node_budget": 12,
+    "notes": "默认自动策略：场景自动匹配，失败可回退全域模式。",
+    "scenario_policy": {
+      "allow_graph_repair": true,
+      "allowed_scenarios": [],
+      "enabled": true,
+      "max_graph_cycles": 2,
+      "mode": "auto"
+    },
+    "skill_policy": {
+      "enabled": true,
+      "mount_mode": "agent_scoped",
+      "runtime_auth_check": true
+    }
+  },
+  "flow_skill_descriptors": [],
+  "glossary_terms": [],
+  "homepage_recommendations": [],
+  "knowledge_bindings": [],
+  "master_agent": {
+    "agent_code": "Master",
+    "current_version": "v1",
+    "display_name": "Master 智能体",
+    "draft_version": "v1-draft",
+    "max_tokens": 4096,
+    "model": "deepseek-v4-flash",
+    "policies": [
+      "优先根据用户问题直接路由到业务智能体",
+      "无法命中业务智能体时由通用问答兜底",
+      "置信度不足时提示补充信息"
+    ],
+    "prompt_versions": [
+      {
+        "created_at": "2026-08-29T22:50:39.286017",
+        "max_tokens": 4096,
+        "model": "deepseek-v4-flash",
+        "note": "初始化 Master 提示词配置",
+        "operator": "system",
+        "route_model": "deepseek-v4-flash",
+        "route_prompt": "你是 MAP Master 路由智能体。请根据用户问题、历史上下文和可用业务智能体，直接判断应调用哪些 sub-agent，输出候选 agent_code、confidence 与 reason。",
+        "summary_model": "deepseek-v4-flash",
+        "summary_prompt": "请整合各业务智能体结果，优先给出结论、证据来源和下一步建议。",
+        "temperature": 0.2,
+        "version": "v1"
+      }
+    ],
+    "route_model": "deepseek-v4-flash",
+    "route_prompt": "你是 MAP Master 路由智能体。请根据用户问题、历史上下文和可用业务智能体，直接判断应调用哪些 sub-agent，输出候选 agent_code、confidence 与 reason。",
+    "route_strategy": "scene_first",
+    "scene_selector_model": "deepseek-v4-flash",
+    "stream_version": "v2",
+    "summarize_style": "结构化总结 + 关键结论优先",
+    "summary_model": "deepseek-v4-flash",
+    "summary_prompt": "请整合各业务智能体结果，优先给出结论、证据来源和下一步建议。",
+    "temperature": 0.2,
+    "timeout_s": 180
+  },
+  "mcp_servers": [],
+  "model_center": {
+    "asr_models": [],
+    "embedding_models": [],
+    "large_models": [
+      {
+        "api_type": "openai_compatible",
+        "is_default": true,
+        "model_name": "deepseek-v4-flash",
+        "model_type": "远程",
+        "model_url": "https://api.deepseek.com"
+      }
+    ],
+    "rerank_models": [],
+    "tts_models": []
+  },
+  "permission_rules": [],
+  "release_history": [],
+  "role_policies": [],
+  "scenario_packs": [],
+  "security_policies": [],
+  "session_policies": [],
+  "skill_policies": [],
+  "skills": [],
+  "updated_at": "2026-08-29T22:50:39.286017",
+  "user_accounts": []
+}

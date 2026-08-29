@@ -1,0 +1,27 @@
+"""Typed errors for the runtime snapshot module."""
+
+from __future__ import annotations
+
+
+class SnapshotError(Exception):
+    """Base class for runtime snapshot errors."""
+
+
+class SnapshotNotFoundError(SnapshotError):
+    """The requested snapshot id does not exist (or is not readable)."""
+
+
+class SnapshotStateConflictError(SnapshotError):
+    """The snapshot status does not allow the requested transition."""
+
+
+class SnapshotConcurrentModificationError(SnapshotError):
+    """The current pointer changed since the caller read it (CAS failure)."""
+
+
+class SnapshotDigestMismatchError(SnapshotError):
+    """The stored projection does not hash to the stored digest."""
+
+
+class SnapshotAuditWriteError(SnapshotError):
+    """Audit append failed; the product write may have succeeded already."""

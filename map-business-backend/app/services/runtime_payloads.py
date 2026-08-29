@@ -135,7 +135,22 @@ def skill_runtime_tool_name(skill_id: str) -> str:
     return f"skill__{slugify(skill_id, prefix='skill').replace('-', '_')}"
 
 
-def build_scene_selection_payload(state: AdminState) -> dict[str, Any]:
+def _llm_credential_fields(include_secrets: bool) -> dict[str, Any]:
+    """LLM credential fields for runtime payloads.
+
+    Secretless projections carry ``api_key_ref`` instead of ``api_key``
+    so the snapshot digest never contains the real ``MAP_LLM_API_KEY``.
+    The default (chat inline) path keeps ``include_secrets=True`` and the
+    existing behaviour unchanged.
+    """
+    if include_secrets:
+        return {"api_key": os.getenv("MAP_LLM_API_KEY", "")}
+    return {"api_key_ref": "env:MAP_LLM_API_KEY"}
+
+
+def build_scene_selection_payload(
+    state: AdminState, *, include_secrets: bool = True
+) -> dict[str, Any]:
     enabled_agent_codes: dict[str, dict[str, str]] = {}
     for agent in state.business_agents:
         agent_code = agent.agent_code.strip()
@@ -159,13 +174,12 @@ def build_scene_selection_payload(state: AdminState) -> dict[str, Any]:
             "agent_description": "通用知识问答与日常咨询。",
         }
 
-    default_api_key = os.getenv("MAP_LLM_API_KEY", "")
     route_model_row = resolve_large_model_row(state, state.master_agent.route_model)
     summary_model_row = resolve_large_model_row(state, state.master_agent.summary_model)
     route_llm_config = (
         {
             "base_url": route_model_row.model_url.strip(),
-            "api_key": default_api_key,
+            **_llm_credential_fields(include_secrets),
             "model": route_model_row.model_name.strip(),
             "temperature": state.master_agent.temperature,
             "max_tokens": state.master_agent.max_tokens,
@@ -176,7 +190,7 @@ def build_scene_selection_payload(state: AdminState) -> dict[str, Any]:
     summary_llm_config = (
         {
             "base_url": summary_model_row.model_url.strip(),
-            "api_key": default_api_key,
+            **_llm_credential_fields(include_secrets),
             "model": summary_model_row.model_name.strip(),
             "temperature": state.master_agent.temperature,
             "max_tokens": state.master_agent.max_tokens,
@@ -246,9 +260,10 @@ def build_runtime_resource_payload(state: AdminState) -> dict[str, Any]:
     }
 
 
-def build_dispatch_config_payload(state: AdminState) -> dict[str, Any]:
+def build_dispatch_config_payload(
+    state: AdminState, *, include_secrets: bool = True
+) -> dict[str, Any]:
     scene_agent_configs: dict[str, dict[str, Any]] = {}
-    default_api_key = os.getenv("MAP_LLM_API_KEY", "")
     for agent in state.business_agents:
         agent_code = agent.agent_code.strip()
         if not agent.enabled or agent_code not in SUPPORTED_SCENE_AGENT_CODES:
@@ -278,7 +293,7 @@ def build_dispatch_config_payload(state: AdminState) -> dict[str, Any]:
         if model_row is not None:
             llm_config = {
                 "base_url": model_row.model_url.strip(),
-                "api_key": default_api_key,
+                **_llm_credential_fields(include_secrets),
                 "model": model_row.model_name.strip(),
                 "temperature": agent.prompt_config.temperature if agent.prompt_config else 0.1,
                 "max_tokens": agent.prompt_config.max_tokens if agent.prompt_config else 4096,
@@ -326,7 +341,7 @@ def build_dispatch_config_payload(state: AdminState) -> dict[str, Any]:
                 {
                     "llm_config": {
                         "base_url": fallback_model.model_url.strip(),
-                        "api_key": default_api_key,
+                        **_llm_credential_fields(include_secrets),
                         "model": fallback_model.model_name.strip(),
                         "temperature": 0.1,
                         "max_tokens": 2048,
