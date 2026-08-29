@@ -211,8 +211,10 @@ class FakeLLM:
             for tool in req.tools:
                 if isinstance(tool, dict):
                     fn = tool.get("function") or {}
-                    if isinstance(fn, dict) and fn.get("name"):
-                        tool_names.append(str(fn["name"]))
+                else:
+                    fn = getattr(tool, "function", None)
+                if isinstance(fn, dict) and fn.get("name"):
+                    tool_names.append(str(fn["name"]))
             return "ask_tool", {"tool_names": tool_names}
         if req.structured is not None:
             return "asimple_chat", {"schema_name": req.structured.name}

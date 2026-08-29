@@ -9,14 +9,18 @@ directions.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from map_core import config as app_config
 from map_core.config.config_schema import LLMConfig
-from map_core.schema.agent_schema import Function, ToolCall
 from map_core.service.agent.base import AgentRequest
 from map_core.service.agent.tool_runtime import Tool
 from map_core.service.agent_runtime import AgentExecutionSpec, AgentRuntime
-from map_core.utils.llm_engine import ToolCallResponse
+from map_core.utils.model_invocation import (
+    ModelInvocationOutcome,
+    ModelInvocationRequest,
+    ModelUsage,
+)
 
 MEMORY_HISTORY = [
     {"role": "user", "content": "上一轮问题"},
@@ -50,6 +54,25 @@ class FakeMemoryStore:
         )
 
 
+def _messages_to_dicts(messages: Any) -> list[dict]:
+    converted: list[dict] = []
+    for message in messages:
+        if isinstance(message, dict):
+            converted.append(dict(message))
+        else:
+            model_dump = getattr(message, "model_dump", None)
+            if callable(model_dump):
+                converted.append(model_dump(exclude_none=True))
+            else:
+                converted.append(
+                    {
+                        "role": getattr(message, "role", None),
+                        "content": getattr(message, "content", None),
+                    }
+                )
+    return converted
+
+
 class ScriptedLLM:
     def __init__(self) -> None:
         self.config = LLMConfig(
@@ -59,18 +82,24 @@ class ScriptedLLM:
         )
         self.calls: list[list[dict]] = []
 
-    async def ask_tool(self, messages, tools=None, tool_choice=None, **kwargs):
-        self.calls.append(messages)
-        return ToolCallResponse(
+    async def invoke(
+        self, req: ModelInvocationRequest
+    ) -> ModelInvocationOutcome:
+        self.calls.append(_messages_to_dicts(req.messages))
+        return ModelInvocationOutcome(
+            status="succeeded",
             content="本轮答案",
             tool_calls=[
-                ToolCall(
-                    id="call_mem",
-                    function=Function(name="terminate", arguments="{}"),
-                )
+                {
+                    "id": "call_mem",
+                    "type": "function",
+                    "function": {"name": "terminate", "arguments": "{}"},
+                }
             ],
-            usage={"prompt_tokens": 1, "completion_tokens": 2},
+            usage=ModelUsage(prompt_tokens=1, completion_tokens=2),
             finish_reason="tool_calls",
+            attempts=1,
+            latency_ms=0.0,
         )
 
 

@@ -16,6 +16,11 @@ from map_core.service.agent.base import AgentRequest
 from map_core.service.agent.tool_runtime import Tool
 from map_core.service.agentscope2.agent import AgentScopeSceneAgent
 from map_core.utils.llm_engine import ToolCallResponse
+from map_core.utils.model_invocation import (
+    ModelInvocationOutcome,
+    ModelInvocationRequest,
+    ModelUsage,
+)
 
 
 class _FakeLLMConfig:
@@ -25,15 +30,60 @@ class _FakeLLMConfig:
     temperature = 0.0
 
 
+def _messages_to_dicts(messages: Any) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for message in messages:
+        if isinstance(message, dict):
+            converted.append(dict(message))
+        else:
+            model_dump = getattr(message, "model_dump", None)
+            if callable(model_dump):
+                converted.append(model_dump(exclude_none=True))
+            else:
+                converted.append(
+                    {
+                        "role": getattr(message, "role", None),
+                        "content": getattr(message, "content", None),
+                    }
+                )
+    return converted
+
+
+def _to_outcome(response: ToolCallResponse) -> ModelInvocationOutcome:
+    tool_calls = None
+    if response.tool_calls:
+        tool_calls = [call.model_dump() for call in response.tool_calls]
+    usage = None
+    if response.usage:
+        usage = ModelUsage(
+            prompt_tokens=response.usage.get("prompt_tokens", 0),
+            completion_tokens=response.usage.get("completion_tokens", 0),
+            total_tokens=response.usage.get("total_tokens", 0),
+        )
+    return ModelInvocationOutcome(
+        status="succeeded",
+        content=response.content,
+        tool_calls=tool_calls,
+        usage=usage,
+        finish_reason=response.finish_reason,
+        model=response.model,
+        request_id=response.request_id,
+        attempts=1,
+        latency_ms=response.response_time * 1000.0,
+    )
+
+
 class FakeLLM:
     def __init__(self, responses: list[ToolCallResponse]) -> None:
         self.config = _FakeLLMConfig()
         self._responses = list(responses)
         self.calls: list[list[dict[str, Any]]] = []
 
-    async def ask_tool(self, messages, tools=None, tool_choice=None, **kwargs):
-        self.calls.append(messages)
-        return self._responses.pop(0)
+    async def invoke(
+        self, req: ModelInvocationRequest
+    ) -> ModelInvocationOutcome:
+        self.calls.append(_messages_to_dicts(req.messages))
+        return _to_outcome(self._responses.pop(0))
 
 
 def _tool_call(call_id: str, name: str, arguments: str = "{}") -> ToolCall:

@@ -10,10 +10,50 @@ from agentscope.tool import ToolChoice
 from pydantic import SecretStr
 
 from ...observability import get_tracer
+from ...schema.agent_schema import Function, ToolCall
+from ...utils.model_invocation import (
+    ModelInvocationOutcome,
+    ModelInvocationRequest,
+    ProviderParams,
+)
 from ..agent.base import AgentExecutionCancelled
 from .message import agentscope_messages_to_openai
 
 _tracer = get_tracer(__name__)
+
+
+class _ToolCallResponseView:
+    """Private outcome view preserving the legacy ``ToolCallResponse`` shape."""
+
+    def __init__(self, outcome: ModelInvocationOutcome) -> None:
+        self.content: str | None = outcome.content or ""
+        self.tool_calls: list[ToolCall] | None = []
+        for call in outcome.tool_calls or []:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            if not isinstance(function, dict):
+                continue
+            self.tool_calls.append(
+                ToolCall(
+                    id=str(call.get("id") or ""),
+                    function=Function(
+                        name=str(function.get("name") or ""),
+                        arguments=str(function.get("arguments") or ""),
+                    ),
+                )
+            )
+        if not self.tool_calls:
+            self.tool_calls = None
+        self.model: str | None = outcome.model
+        self.usage: dict[str, int] | None = (
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        self.finish_reason: str | None = outcome.finish_reason
+        self.response_time: float = outcome.latency_ms / 1000.0
+        self.request_id: str | None = outcome.request_id
+        self.reasoning_content: str | None = outcome.reasoning_content
+        self.raw: dict[str, Any] | None = outcome.raw
 
 
 class MapChatModelAdapter(ChatModelBase):
@@ -113,16 +153,31 @@ class MapChatModelAdapter(ChatModelBase):
         if not is_structured_output_call:
             self.call_count += 1
         map_messages = agentscope_messages_to_openai(messages)
-        response = await self.llm.ask_tool(
-            map_messages,
-            tools=tools,
-            tool_choice=self._resolve_tool_choice(
-                tool_choice,
-                tools,
-                call_index,
-            ),
-            **kwargs,
+        provider_params = ProviderParams(
+            top_p=kwargs.get("top_p"),
+            frequency_penalty=kwargs.get("frequency_penalty"),
+            presence_penalty=kwargs.get("presence_penalty"),
+            logprobs=kwargs.get("logprobs"),
+            top_logprobs=kwargs.get("top_logprobs"),
+            stream_options=kwargs.get("stream_options"),
         )
+        outcome = await self.llm.invoke(
+            ModelInvocationRequest(
+                messages=map_messages,
+                tools=tools,
+                tool_choice=self._resolve_tool_choice(
+                    tool_choice,
+                    tools,
+                    call_index,
+                ),
+                temperature=kwargs.get("temperature"),
+                max_tokens=kwargs.get("max_tokens"),
+                timeout=kwargs.get("timeout"),
+                provider_params=provider_params,
+            )
+        )
+        outcome.raise_for_status()
+        response = _ToolCallResponseView(outcome)
         if not is_structured_output_call:
             self.last_response = response
             self.last_terminate_call = None

@@ -27,7 +27,7 @@ class FakeLLM:
     def __init__(self) -> None:
         self.config = _FakeLLMConfig()
 
-    async def ask_tool(self, messages, tools=None, tool_choice=None, **kwargs):
+    async def invoke(self, req: Any) -> Any:
         raise AssertionError("LLM should not be called in governance tests")
 
 

@@ -119,9 +119,12 @@ def test_dispatcher_propagates_dispatch_config_engine() -> None:
 
 def test_two_engines_same_request_same_contract() -> None:
     """Same request executed by both engines yields the same result contract."""
-    from map_core.schema.agent_schema import Function, ToolCall
     from map_core.service.agent.base import AgentRequest
-    from map_core.utils.llm_engine import ToolCallResponse
+    from map_core.utils.model_invocation import (
+        ModelInvocationOutcome,
+        ModelInvocationRequest,
+        ModelUsage,
+    )
 
     class ScriptedLLM:
         def __init__(self) -> None:
@@ -131,17 +134,23 @@ def test_two_engines_same_request_same_contract() -> None:
                 model="m",
             )
 
-        async def ask_tool(self, messages, tools=None, tool_choice=None, **kwargs):
-            return ToolCallResponse(
+        async def invoke(
+            self, req: ModelInvocationRequest
+        ) -> ModelInvocationOutcome:
+            return ModelInvocationOutcome(
+                status="succeeded",
                 content="最终答案",
                 tool_calls=[
-                    ToolCall(
-                        id="call_x",
-                        function=Function(name="terminate", arguments="{}"),
-                    )
+                    {
+                        "id": "call_x",
+                        "type": "function",
+                        "function": {"name": "terminate", "arguments": "{}"},
+                    }
                 ],
-                usage={"prompt_tokens": 1, "completion_tokens": 2},
+                usage=ModelUsage(prompt_tokens=1, completion_tokens=2),
                 finish_reason="tool_calls",
+                attempts=1,
+                latency_ms=0.0,
             )
 
     tool = Tool(

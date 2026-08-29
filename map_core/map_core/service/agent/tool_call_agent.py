@@ -6,9 +6,14 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 
+from ...schema.agent_schema import Function, ToolCall
 from ...utils.global_context import agent_log_context
 from ...utils.llm_engine import LLMEngine
 from ...utils.llm_trace_context import llm_trace_context
+from ...utils.model_invocation import (
+    ModelInvocationOutcome,
+    ModelInvocationRequest,
+)
 from ..prompt.tool_call_prompt import (
     NEXT_STEP_PROMPT,
     SCENE_POST_SUMMARY_SYSTEM_PROMPT,  # noqa: F401  # public re-export seam
@@ -28,6 +33,37 @@ from .tool_runtime import (  # noqa: F401  # public re-export seam
     ToolSet,
 )
 from .traceable_agent import TraceableAgent
+
+
+class _ToolCallResponseView:
+    """Private outcome view preserving the legacy ``ToolCallResponse`` shape."""
+
+    def __init__(self, outcome: ModelInvocationOutcome) -> None:
+        self.content: str = outcome.content or ""
+        self.tool_calls: list[ToolCall] = []
+        for call in outcome.tool_calls or []:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            if not isinstance(function, dict):
+                continue
+            self.tool_calls.append(
+                ToolCall(
+                    id=str(call.get("id") or ""),
+                    function=Function(
+                        name=str(function.get("name") or ""),
+                        arguments=str(function.get("arguments") or ""),
+                    ),
+                )
+            )
+        self.model: str | None = outcome.model
+        self.usage: dict[str, int] | None = (
+            outcome.usage.to_dict() if outcome.usage else None
+        )
+        self.finish_reason: str | None = outcome.finish_reason
+        self.response_time: float = outcome.latency_ms / 1000.0
+        self.request_id: str | None = outcome.request_id
+        self.raw: dict[str, Any] | None = outcome.raw
 
 
 class ToolCallAgent(TraceableAgent):
@@ -472,12 +508,19 @@ class ToolCallAgent(TraceableAgent):
                 step=step,
                 call_kind="tool_selection",
             ):
-                response = await self.llm.ask_tool(
-                    session.messages,
-                    system_msgs=[{"role": "system", "content": formatted_system_prompt}],
-                    tools=tools,
-                    tool_choice=self._llm_tool_choice(session.tool_called),
+                all_messages = [
+                    {"role": "system", "content": formatted_system_prompt},
+                    *session.messages,
+                ]
+                outcome = await self.llm.invoke(
+                    ModelInvocationRequest(
+                        messages=all_messages,
+                        tools=tools,
+                        tool_choice=self._llm_tool_choice(session.tool_called) or "auto",
+                    )
                 )
+                outcome.raise_for_status()
+                response = _ToolCallResponseView(outcome)
             self.check_cancelled()
             self._accumulate_usage(response.usage)
             logger.debug(
