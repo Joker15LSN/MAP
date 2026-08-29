@@ -13,8 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from ...config.common import REVIEWER_LLM_CONFIG
 from ...config.config_schema import LLMConfig
 from ...schema.global_domain_schema import GlobalDomainStreamEvent
-from ..llm_engine import LLMEngine
 from ..model_invocation import (
+    ModelInvocation,
     ModelInvocationRequest,
     ProviderParams,
 )
@@ -153,7 +153,7 @@ class StreamContentReviewer:
             else enabled_review_flag_codes
         )
         self.chat_template_kwargs = dict(chat_template_kwargs) if chat_template_kwargs else {}
-        self._llm: LLMEngine | None = None
+        self._llm: ModelInvocation | None = None
         self._suppress_nested_review_logs = 0
         self.block_prob_threshold = CONTENT_REVIEW_BLOCK_PROB_THRESHOLD
 
@@ -538,11 +538,11 @@ class StreamContentReviewer:
             )
         return prompt
 
-    def _get_or_create_llm(self) -> LLMEngine:
+    def _get_or_create_llm(self) -> ModelInvocation:
         llm = self._llm
         if llm is None:
-            llm = LLMEngine(
-                config=LLMConfig(
+            llm = ModelInvocation.from_config(
+                LLMConfig(
                     base_url=self.base_url,
                     api_key=self.api_key,
                     model=self.model,

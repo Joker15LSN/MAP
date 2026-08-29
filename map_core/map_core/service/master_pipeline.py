@@ -15,7 +15,7 @@ from ..schema.master_pipeline_schema import (
     MasterPipelineStreamEvent,
 )
 from ..schema.tool_extra_result_schema import ToolExtraResultSchema
-from ..utils.llm_engine import LLMEngine
+from ..utils.model_invocation import ModelInvocation
 from .agent.base import AgentActionEvent, AgentRequest, AgentResult
 from .agent.tool_call_agent import Tool
 from .agent.tool_registry import build_tool_registry
@@ -38,7 +38,7 @@ class MasterPipeline:
 
     def __init__(
         self,
-        llm: LLMEngine | None = None,
+        llm: ModelInvocation | None = None,
         request: MasterAgentChatSchema | None = None,
         http_request: Request | None = None,
         staff_code: str | None = None,
@@ -87,7 +87,7 @@ class MasterPipeline:
             if http_request
             else "missing"
         )
-        self.llm = llm or LLMEngine(config=DEEPSEEKV3_LOCAL_CONFIG)
+        self.llm = llm or ModelInvocation.from_config(DEEPSEEKV3_LOCAL_CONFIG)
         self.tool_registry = tool_registry or cast(
             dict[str, Tool], build_tool_registry(self.llm)
         )

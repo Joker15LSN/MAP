@@ -36,8 +36,8 @@ from ..service.agent.summarize_agent import SummarizeAgent
 from ..service.agent.tool_call_agent import Tool
 from ..service.agent.tool_registry import build_tool_registry, get_registered_agent_tool
 from ..service.scene_selector import SceneSelector
-from ..utils.llm_engine import LLMEngine
 from ..utils.llm_trace_context import llm_trace_context
+from ..utils.model_invocation import ModelInvocation
 from ..utils.query_rewriter import QueryRewriter
 from ..utils.term_replacer import replace_request_query_for_global_domain
 from .agent.agent_mapping import SceneAgentConfig
@@ -133,7 +133,7 @@ class GlobalDomain:
 
     def __init__(
         self,
-        llm: LLMEngine | None = None,
+        llm: ModelInvocation | None = None,
         scene_selector: SceneSelector | None = None,
         request: GlobalDomainRequest | None = None,
         http_request: Request | None = None,
@@ -182,25 +182,27 @@ class GlobalDomain:
             if http_request
             else "missing"
         )
-        self.llm = llm or LLMEngine(config=DS_V4_FLASH_LLM_CONFIG)
+        self.llm = llm or ModelInvocation.from_config(DS_V4_FLASH_LLM_CONFIG)
         self.scene_selector = scene_selector or SceneSelector(
-            llm=LLMEngine(config=SCENE_SELECTION_LLM_CONFIG)
-            # llm=LLMEngine(config=QWEN3_NEXT_80B_CONFIG)
+            llm=ModelInvocation.from_config(SCENE_SELECTION_LLM_CONFIG)
+            # llm=ModelInvocation.from_config(QWEN3_NEXT_80B_CONFIG)
         )
         self.summarize_agent = SummarizeAgent(
-            llm=LLMEngine(config=SUMMARIZATION_LLM_CONFIG)
+            llm=ModelInvocation.from_config(SUMMARIZATION_LLM_CONFIG)
         )
         self.scene_agent_config_provider = SceneAgentConfigProvider()
         self.agent_dispatcher = AgentDispatcher(
-            llm=LLMEngine(config=DS_V4_FLASH_AGENT_CONFIG),
+            llm=ModelInvocation.from_config(DS_V4_FLASH_AGENT_CONFIG),
             tool_registry=cast(
                 dict[str, Tool],
-                build_tool_registry(llm=LLMEngine(config=DS_V4_FLASH_AGENT_CONFIG)),
+                build_tool_registry(
+                    llm=ModelInvocation.from_config(DS_V4_FLASH_AGENT_CONFIG)
+                ),
             ),
             scene_agent_config_fetcher=self.scene_agent_config_provider.fetch_by_refs,
         )  # must to be request isolated instance!
         self.query_rewriter = QueryRewriter(
-            llm=LLMEngine(config=DS_V4_FLASH_AGENT_CONFIG),
+            llm=ModelInvocation.from_config(DS_V4_FLASH_AGENT_CONFIG),
             logger_=logger,
         )
         self.attachment_collector = AttachmentCollector()

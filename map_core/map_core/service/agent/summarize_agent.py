@@ -11,8 +11,10 @@ from ...config.common import DEEPSEEKV3_LOCAL_CONFIG
 from ...config.config_schema import LLMConfig
 from ...schema.agent_schema import Message
 from ...utils.global_context import agent_log_context
-from ...utils.llm_engine import LLMEngine
-from ...utils.model_invocation import ModelInvocationRequest
+from ...utils.model_invocation import (
+    ModelInvocation,
+    ModelInvocationRequest,
+)
 from .base import AgentRequest, AgentResult, BaseAgent
 
 
@@ -40,8 +42,10 @@ class SummarizeAgent(BaseAgent):
     )
     PROMPT_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
-    def __init__(self, llm: LLMEngine | None = None) -> None:
-        super().__init__(llm or LLMEngine(config=DEEPSEEKV3_LOCAL_CONFIG))
+    def __init__(self, llm: ModelInvocation | None = None) -> None:
+        super().__init__(
+            llm or ModelInvocation.from_config(DEEPSEEKV3_LOCAL_CONFIG)
+        )
 
     @classmethod
     def _filter_dispatch_result_for_summary(cls, item: Any) -> dict[str, Any] | None:
@@ -348,11 +352,11 @@ class SummarizeAgent(BaseAgent):
             return llm_config
         return LLMConfig.model_validate(llm_config)
 
-    def _resolve_llm(self, request: AgentRequest) -> LLMEngine:
+    def _resolve_llm(self, request: AgentRequest) -> ModelInvocation:
         llm_config = self._resolve_request_llm_config(request)
         if llm_config is None:
             return self.llm
-        return LLMEngine(config=llm_config)
+        return ModelInvocation.from_config(llm_config)
 
     @overload
     async def run(
@@ -368,58 +372,63 @@ class SummarizeAgent(BaseAgent):
         self, request: AgentRequest, *, parid: str = "-", stream: bool = False
     ) -> AgentResult | AsyncGenerator[str | dict[str, Any], None]:
         if stream:
+            return self._run_stream(request, parid=parid)
+        return await self._run_non_stream(request, parid=parid)
 
-            async def _stream() -> AsyncGenerator[str | dict[str, Any], None]:
-                with agent_log_context(self.agent_id, parent_id=parid):
-                    system_prompt, user_content = self._build_messages(
-                        request, stream=True
-                    )
-                    llm = self._resolve_llm(request)
-                    messages = [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_content},
-                    ]
+    async def _run_stream(
+        self, request: AgentRequest, *, parid: str = "-"
+    ) -> AsyncGenerator[str | dict[str, Any], None]:
+        with agent_log_context(self.agent_id, parent_id=parid):
+            system_prompt, user_content = self._build_messages(
+                request, stream=True
+            )
+            llm = self._resolve_llm(request)
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
 
-                    try:
-                        stream_obj = await llm.invoke(
-                            ModelInvocationRequest(messages=messages, stream=True)
-                        )
-                        async for event in stream_obj:
-                            if event.type in ("content", "reasoning", "usage"):
-                                chunk = event.data
-                                if chunk is None:
-                                    continue
-                            elif event.type == "terminal":
-                                if event.status != "succeeded":
-                                    raise RuntimeError(
-                                        f"LLM stream {event.status} (code="
-                                        f"{event.error.code if event.error else 'unknown'})"
-                                    )
-                                continue
-                            else:
-                                continue
+            try:
+                stream_obj = await llm.invoke(
+                    ModelInvocationRequest(messages=messages, stream=True)
+                )
+                async for event in stream_obj:
+                    if event.type in ("content", "reasoning", "usage"):
+                        chunk = event.data
+                        if chunk is None:
+                            continue
+                    elif event.type == "terminal":
+                        if event.status != "succeeded":
+                            raise RuntimeError(
+                                f"LLM stream {event.status} (code="
+                                f"{event.error.code if event.error else 'unknown'})"
+                            )
+                        continue
+                    else:
+                        continue
 
-                            if isinstance(chunk, dict):
-                                chunk_type = chunk.get("type")
-                                if chunk_type == "usage":
-                                    usage_data = chunk.get("data")
-                                    if isinstance(usage_data, dict):
-                                        typed_usage = cast(dict[str, int], usage_data)
-                                        self._accumulate_usage(typed_usage)
-                                    continue
-                                if chunk_type != "content":
-                                    continue
-                                if "data" not in chunk:
-                                    continue
-                                yield chunk
-                            else:
-                                yield str(chunk)
-                    except Exception:
-                        logger.exception("SummarizeAgent stream failed")
-                        raise
+                    if isinstance(chunk, dict):
+                        chunk_type = chunk.get("type")
+                        if chunk_type == "usage":
+                            usage_data = chunk.get("data")
+                            if isinstance(usage_data, dict):
+                                typed_usage = cast(dict[str, int], usage_data)
+                                self._accumulate_usage(typed_usage)
+                            continue
+                        if chunk_type != "content":
+                            continue
+                        if "data" not in chunk:
+                            continue
+                        yield chunk
+                    else:
+                        yield str(chunk)
+            except Exception:
+                logger.exception("SummarizeAgent stream failed")
+                raise
 
-            return _stream()
-
+    async def _run_non_stream(
+        self, request: AgentRequest, *, parid: str = "-"
+    ) -> AgentResult:
         with agent_log_context(self.agent_id, parent_id=parid):
             debug_payload = self.build_summarize_debug_payload(request)
             payload = debug_payload["effective_dispatch_results"]

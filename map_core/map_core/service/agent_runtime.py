@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from .. import config as app_config
 from ..config.config_schema import LLMConfig
 from ..schema.scene_agent_config_schema import ScenePostSummaryConfig
-from ..utils.llm_engine import LLMEngine
+from ..utils.model_invocation import ModelInvocation
 from .agent.base import (
     AgentActionEvent,
     AgentExecutionCancelled,
@@ -105,7 +105,7 @@ class AgentRuntime:
     def __init__(
         self,
         *,
-        llm: LLMEngine,
+        llm: ModelInvocation,
         tool_registry: dict[str, Tool] | None = None,
         agent_memory_store: Any | None = None,
         logger_: Any | None = None,
@@ -213,12 +213,12 @@ class AgentRuntime:
             scene_post_summary=self._build_scene_post_summary(spec),
         )
 
-    def _build_agent_llm(self, spec: AgentExecutionSpec) -> LLMEngine:
+    def _build_agent_llm(self, spec: AgentExecutionSpec) -> ModelInvocation:
         if spec.llm_config is None:
             return self.llm
 
         try:
-            return LLMEngine(config=spec.llm_config)
+            return ModelInvocation.from_config(spec.llm_config)
         except Exception as exc:
             self._logger.warning(
                 "Failed to build custom LLMEngine for agent '{}' from llm_config: {}. Falling back to runtime llm.",
@@ -264,9 +264,9 @@ class AgentRuntime:
         self,
         spec: AgentExecutionSpec,
         config: ScenePostSummaryConfig,
-    ) -> LLMEngine:
+    ) -> ModelInvocation:
         if config.llm_config is not None:
-            return LLMEngine(config=config.llm_config)
+            return ModelInvocation.from_config(config.llm_config)
         if spec.llm_config is not None:
             return self._build_agent_llm(spec)
         return self.llm

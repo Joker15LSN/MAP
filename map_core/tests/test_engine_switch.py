@@ -15,12 +15,12 @@ from map_core.service.agent_runtime import (
     resolve_agent_engine,
 )
 from map_core.service.agentscope2.agent import AgentScopeSceneAgent
-from map_core.utils.llm_engine import LLMEngine
+from map_core.utils.model_invocation import ModelInvocation
 
 
 def _runtime() -> AgentRuntime:
-    llm = LLMEngine(
-        config=LLMConfig(
+    llm = ModelInvocation.from_config(
+        LLMConfig(
             base_url="http://localhost:9/v1",
             api_key="k",
             model="m",
@@ -83,8 +83,8 @@ def test_build_agent_env_switch(monkeypatch) -> None:
 
 
 def test_dispatcher_propagates_dispatch_config_engine() -> None:
-    llm = LLMEngine(
-        config=LLMConfig(
+    llm = ModelInvocation.from_config(
+        LLMConfig(
             base_url="http://localhost:9/v1",
             api_key="k",
             model="m",

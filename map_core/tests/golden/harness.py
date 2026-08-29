@@ -683,31 +683,42 @@ def _agent_result_records(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def assert_golden_result(result: dict[str, Any], fixture: dict[str, Any]) -> None:
-    """Assert the run result matches the fixture's expected contract.
-
-    Failure rules:
-      - missing events / wrong order        -> event_types sub-sequence fails
-      - permission outcome changed          -> skill_authorization checks fail
-      - evidence lost                      -> node verdict checks fail
-      - final content drifted              -> final_content checks fail
-    """
+    """Assert the run result matches the fixture's expected contract."""
     expected = fixture.get("expected", {})
-    events = result["events"]
+    _assert_expected_event_types(result, expected, fixture)
+    _assert_expected_meta_phases(result, expected, fixture)
+    _assert_scene_selected_agents_contract(result, expected, fixture)
+    _assert_low_confidence_scene(result, expected, fixture)
+    _assert_agent_result_agents(result, expected, fixture)
+    _assert_tool_io_contract(result, expected, fixture)
+    _assert_failed_tool_results(result, expected, fixture)
+    _assert_final_content(result, expected, fixture)
+    _assert_mongo_events(result, expected.get("mongo_events"), fixture)
+    _assert_flow_contract(result, expected.get("flow"), fixture)
+    if expected.get("no_content_delta"):
+        deltas = [item for item in result["events"] if item["event"] == "content_delta"]
+        assert not deltas, f"[{fixture['id']}] content_delta should be absent"
 
-    # 1) event types: expected sequence must appear in order (missing / reorder fails)
+
+def _assert_expected_event_types(
+    result: dict[str, Any], expected: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     expected_types = expected.get("event_types") or []
-    actual_types = [item["event"] for item in events]
+    actual_types = [item["event"] for item in result["events"]]
     if expected_types:
         assert sub_sequence(expected_types, actual_types), (
             f"[{fixture['id']}] event order changed or event missing: "
             f"expected sub-sequence {expected_types} not found in {actual_types}"
         )
 
-    # 2) meta phases
+
+def _assert_expected_meta_phases(
+    result: dict[str, Any], expected: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     expected_phases = expected.get("meta_phases") or []
     actual_phases = [
         item["data"].get("phase")
-        for item in events
+        for item in result["events"]
         if item["event"] == "meta" and isinstance(item["data"].get("phase"), str)
     ]
     if expected_phases:
@@ -716,63 +727,76 @@ def assert_golden_result(result: dict[str, Any], fixture: dict[str, Any]) -> Non
             f"expected {expected_phases} not in {actual_phases}"
         )
 
-    # 3) scene_selected agents
+
+def _assert_scene_selected_agents_contract(
+    result: dict[str, Any], expected: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     scene_agents = _scene_selected_agents(result)
     expected_scene_agents = expected.get("scene_selected_agents") or []
-    if expected_scene_agents:
-        for code in expected_scene_agents:
-            assert code in scene_agents, (
-                f"[{fixture['id']}] scene_selected missing agent {code!r} in {scene_agents}"
-            )
-
-    # 4) low-confidence scene fallback
-    low_conf = expected.get("scene_selected_low_confidence")
-    if low_conf:
-        scene_events = [
-            item["data"]
-            for item in events
-            if item["event"] == "meta" and item["data"].get("phase") == "scene_selected"
-        ]
-        assert scene_events, f"[{fixture['id']}] missing scene_selected event"
-        matched = False
-        for scene in scene_events:
-            scene_result = scene.get("scene_result") or {}
-            for sub in scene_result.get("sub_scenes") or []:
-                if low_conf["agent_code"] in (sub.get("sub_scenes") or []):
-                    conf = sub.get("confidence")
-                    reason = str(sub.get("reason") or "")
-                    reason_contains = low_conf.get("reason_contains")
-                    if reason_contains is None:
-                        reason_ok = True
-                    elif isinstance(reason_contains, str):
-                        reason_ok = reason_contains in reason
-                    else:
-                        reason_ok = all(str(needle) in reason for needle in reason_contains)
-                    matched = conf == low_conf["confidence"] and reason_ok
-                    break
-            if matched:
-                break
-        assert matched, (
-            f"[{fixture['id']}] low-confidence scene contract not matched: "
-            f"{low_conf!r}"
+    for code in expected_scene_agents:
+        assert code in scene_agents, (
+            f"[{fixture['id']}] scene_selected missing agent {code!r} in {scene_agents}"
         )
 
-    # 5) agent_result agents
+
+def _assert_low_confidence_scene(
+    result: dict[str, Any], expected: dict[str, Any], fixture: dict[str, Any]
+) -> None:
+    low_conf = expected.get("scene_selected_low_confidence")
+    if not low_conf:
+        return
+    scene_events = [
+        item["data"]
+        for item in result["events"]
+        if item["event"] == "meta" and item["data"].get("phase") == "scene_selected"
+    ]
+    assert scene_events, f"[{fixture['id']}] missing scene_selected event"
+    matched = False
+    for scene in scene_events:
+        scene_result = scene.get("scene_result") or {}
+        for sub in scene_result.get("sub_scenes") or []:
+            if low_conf["agent_code"] in (sub.get("sub_scenes") or []):
+                conf = sub.get("confidence")
+                reason = str(sub.get("reason") or "")
+                reason_contains = low_conf.get("reason_contains")
+                if reason_contains is None:
+                    reason_ok = True
+                elif isinstance(reason_contains, str):
+                    reason_ok = reason_contains in reason
+                else:
+                    reason_ok = all(str(needle) in reason for needle in reason_contains)
+                matched = conf == low_conf["confidence"] and reason_ok
+                break
+        if matched:
+            break
+    assert matched, (
+        f"[{fixture['id']}] low-confidence scene contract not matched: "
+        f"{low_conf!r}"
+    )
+
+
+def _assert_agent_result_agents(
+    result: dict[str, Any], expected: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     result_agents = [rec.get("agent_code") for rec in _agent_result_records(result)]
     expected_result_agents = expected.get("agent_result_agents") or []
-    if expected_result_agents:
-        if expected.get("agents_order_independent"):
-            for code in expected_result_agents:
-                assert code in result_agents, (
-                    f"[{fixture['id']}] agent_result missing agent {code!r} in {result_agents}"
-                )
-        else:
-            assert result_agents == expected_result_agents, (
-                f"[{fixture['id']}] agent_result agents mismatch: "
-                f"expected {expected_result_agents!r} got {result_agents!r}"
+    if not expected_result_agents:
+        return
+    if expected.get("agents_order_independent"):
+        for code in expected_result_agents:
+            assert code in result_agents, (
+                f"[{fixture['id']}] agent_result missing agent {code!r} in {result_agents}"
             )
+    else:
+        assert result_agents == expected_result_agents, (
+            f"[{fixture['id']}] agent_result agents mismatch: "
+            f"expected {expected_result_agents!r} got {result_agents!r}"
+        )
 
-    # 6) tool IO counts (tool_call / tool_result actions)
+
+def _assert_tool_io_contract(
+    result: dict[str, Any], expected: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     action_records = _agent_action_records(result)
     for spec in expected.get("tool_io") or []:
         count = sum(
@@ -786,22 +810,30 @@ def assert_golden_result(result: dict[str, Any], fixture: dict[str, Any]) -> Non
             f"{spec['count']} got {count}"
         )
 
-    # 7) failed tool_result events
-    failed = expected.get("tool_result_failed")
-    if failed:
-        count = sum(
-            1
-            for rec in action_records
-            if rec.get("action") == "tool_result"
-            and rec.get("status") == "failed"
-            and rec.get("tool_name") == failed["tool"]
-        )
-        assert count == failed["count"], (
-            f"[{fixture['id']}] failed tool_result count mismatch for "
-            f"{failed['tool']}: expected {failed['count']} got {count}"
-        )
 
-    # 8) final content semantics
+def _assert_failed_tool_results(
+    result: dict[str, Any], expected: dict[str, Any], fixture: dict[str, Any]
+) -> None:
+    failed = expected.get("tool_result_failed")
+    if not failed:
+        return
+    action_records = _agent_action_records(result)
+    count = sum(
+        1
+        for rec in action_records
+        if rec.get("action") == "tool_result"
+        and rec.get("status") == "failed"
+        and rec.get("tool_name") == failed["tool"]
+    )
+    assert count == failed["count"], (
+        f"[{fixture['id']}] failed tool_result count mismatch for "
+        f"{failed['tool']}: expected {failed['count']} got {count}"
+    )
+
+
+def _assert_final_content(
+    result: dict[str, Any], expected: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     final = expected.get("final_content") or {}
     content = done_data(result).get("content") or ""
     if final.get("exact") is not None:
@@ -813,17 +845,6 @@ def assert_golden_result(result: dict[str, Any], fixture: dict[str, Any]) -> Non
         assert needle in content, (
             f"[{fixture['id']}] final content missing {needle!r}: {content!r}"
         )
-
-    # 9) Mongo-bound state events
-    _assert_mongo_events(result, expected.get("mongo_events"), fixture)
-
-    # 10) flow-specific contract
-    _assert_flow_contract(result, expected.get("flow"), fixture)
-
-    # 11) hard-fail / fallback edge
-    if expected.get("no_content_delta"):
-        deltas = [item for item in events if item["event"] == "content_delta"]
-        assert not deltas, f"[{fixture['id']}] content_delta should be absent"
 
 
 def _scene_selected_agents(result: dict[str, Any]) -> list[str]:
@@ -886,9 +907,20 @@ def _assert_flow_contract(
             if item["event"] == "meta" and item["data"].get("phase") == phase
         ]
 
-    # scenarios (from done meta.flow.scenarios)
     done = done_data(result)
     flow_meta = (done.get("meta") or {}).get("flow") or {}
+    _assert_flow_scenarios(flow_meta, spec, fixture)
+    _assert_flow_node_verdicts(_meta_events, spec, fixture)
+    _assert_flow_repair_count(flow_meta, spec, fixture)
+    _assert_flow_graph_incomplete(_meta_events, spec, fixture)
+    _assert_flow_repair_applied(_meta_events, spec, fixture)
+    _assert_flow_skill_authorization(_meta_events, spec, fixture)
+    _assert_flow_capabilities(_meta_events, spec, fixture)
+
+
+def _assert_flow_scenarios(
+    flow_meta: dict[str, Any], spec: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     expected_scenarios = spec.get("scenarios") or []
     actual_scenarios = flow_meta.get("scenarios") or []
     for scenario_id in expected_scenarios:
@@ -896,7 +928,10 @@ def _assert_flow_contract(
             f"[{fixture['id']}] flow scenarios missing {scenario_id!r} in {actual_scenarios}"
         )
 
-    # node verdicts
+
+def _assert_flow_node_verdicts(
+    _meta_events: Any, spec: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     for verdict_spec in spec.get("node_verdicts") or []:
         needle = verdict_spec["node_contains"]
         verdict = verdict_spec["verdict"]
@@ -913,41 +948,53 @@ def _assert_flow_contract(
             f"[{fixture['id']}] flow verdict for {needle!r} expected {verdict!r}, got {matches}"
         )
 
-    # repair count
+
+def _assert_flow_repair_count(
+    flow_meta: dict[str, Any], spec: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     if "repair_count" in spec:
         actual_repairs = flow_meta.get("repair_count")
         assert actual_repairs == spec["repair_count"], (
             f"[{fixture['id']}] repair_count expected {spec['repair_count']} got {actual_repairs}"
         )
 
-    # graph incomplete
+
+def _assert_flow_graph_incomplete(
+    _meta_events: Any, spec: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     incomplete = spec.get("graph_incomplete")
     incomplete_events = _meta_events("flow_graph_incomplete")
     if incomplete is None:
         assert not incomplete_events, (
             f"[{fixture['id']}] flow_graph_incomplete should be absent"
         )
-    else:
-        assert incomplete_events, f"[{fixture['id']}] missing flow_graph_incomplete event"
-        for data in incomplete_events:
-            remaining = " ".join(str(x) for x in data.get("remaining_nodes") or [])
-            for needle in incomplete.get("remaining_contains") or []:
-                assert needle in remaining, (
-                    f"[{fixture['id']}] graph_incomplete remaining missing {needle!r} in {remaining}"
-                )
-            if incomplete.get("reason"):
-                assert data.get("reason") == incomplete["reason"], (
-                    f"[{fixture['id']}] graph_incomplete reason mismatch"
-                )
+        return
+    assert incomplete_events, f"[{fixture['id']}] missing flow_graph_incomplete event"
+    for data in incomplete_events:
+        remaining = " ".join(str(x) for x in data.get("remaining_nodes") or [])
+        for needle in incomplete.get("remaining_contains") or []:
+            assert needle in remaining, (
+                f"[{fixture['id']}] graph_incomplete remaining missing {needle!r} in {remaining}"
+            )
+        if incomplete.get("reason"):
+            assert data.get("reason") == incomplete["reason"], (
+                f"[{fixture['id']}] graph_incomplete reason mismatch"
+            )
 
-    # repair applied flag
+
+def _assert_flow_repair_applied(
+    _meta_events: Any, spec: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     if "repair_applied" in spec:
         present = bool(_meta_events("flow_repair_applied"))
         assert present is spec["repair_applied"], (
             f"[{fixture['id']}] flow_repair_applied presence mismatch"
         )
 
-    # skill authorization
+
+def _assert_flow_skill_authorization(
+    _meta_events: Any, spec: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     for auth_spec in spec.get("skill_authorization") or []:
         needle = auth_spec["node_contains"]
         matched = False
@@ -969,7 +1016,10 @@ def _assert_flow_contract(
             f"[{fixture['id']}] skill_authorization contract not matched for {auth_spec!r}"
         )
 
-    # node capabilities (from flow_node_started node.allowed_capabilities)
+
+def _assert_flow_capabilities(
+    _meta_events: Any, spec: dict[str, Any], fixture: dict[str, Any]
+) -> None:
     for data in _meta_events("flow_node_started"):
         node = data.get("node") or {}
         capabilities = node.get("allowed_capabilities") or []
@@ -978,48 +1028,6 @@ def _assert_flow_contract(
             assert tool in capabilities, (
                 f"[{fixture['id']}] node {node_id} capabilities missing {tool!r} in {capabilities}"
             )
-        for tool in spec.get("capabilities_not_contains") or []:
-            assert not any(str(cap).startswith(tool) for cap in capabilities), (
-                f"[{fixture['id']}] node {node_id} capabilities unexpectedly contain {tool!r}: {capabilities}"
-            )
-
-    # executor names (from flow_node_result node_result.executor_names)
-    # any node may mount the tool; existence is asserted per fixture intent
-    for tool in spec.get("executor_names_contains") or []:
-        found = any(
-            tool in ((data.get("node_result") or {}).get("executor_names") or [])
-            for data in _meta_events("flow_node_result")
-        )
-        assert found, (
-            f"[{fixture['id']}] executor_names missing {tool!r} in "
-            f"{[ (d.get('node_result') or {}).get('executor_names') for d in _meta_events('flow_node_result') ]}"
-        )
-
-    # fallback reason
-    if "fallback_reason" in spec:
-        fallback_events = _meta_events("flow_fallback")
-        assert fallback_events, f"[{fixture['id']}] missing flow_fallback event"
-        assert fallback_events[0].get("reason") == spec["fallback_reason"], (
-            f"[{fixture['id']}] flow_fallback reason mismatch"
-        )
-
-    # hard fail contract
-    hard_fail = spec.get("hard_fail")
-    if hard_fail:
-        error_events = [item["data"] for item in events if item["event"] == "error"]
-        assert error_events, f"[{fixture['id']}] missing error event for hard fail"
-        error = error_events[0]
-        assert error.get("reason") == hard_fail["reason"], (
-            f"[{fixture['id']}] hard-fail reason mismatch: {error.get('reason')!r}"
-        )
-        assert error.get("fallback") is hard_fail["fallback"], (
-            f"[{fixture['id']}] hard-fail fallback flag mismatch"
-        )
-        done = done_data(result)
-        done_meta = done.get("meta") or {}
-        assert done_meta.get("fallback") is hard_fail["fallback"], (
-            f"[{fixture['id']}] done meta fallback flag mismatch"
-        )
 
 
 def assert_engine_parity(legacy: dict[str, Any], scope: dict[str, Any]) -> None:

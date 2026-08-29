@@ -36,9 +36,9 @@ from ..service.prompt.scene_classification_prompt import (
     SUB_SCENE_CLASSIFICATION_PROMPT,
     SUB_SCENE_SYSTEM_PROMPT,
 )
-from ..utils.llm_engine import LLMEngine
 from ..utils.llm_trace_context import llm_trace_context
 from ..utils.model_invocation import (
+    ModelInvocation,
     ModelInvocationOutcome,
     ModelInvocationRequest,
     StructuredOutput,
@@ -103,7 +103,7 @@ class SceneSelector:
 
     def __init__(
         self,
-        llm: LLMEngine,
+        llm: ModelInvocation,
         big_scene_system_prompt_template: str | None = None,
         sub_scene_user_prompt_template: str | None = None,
         history_turn_limit: int = 1,
@@ -816,7 +816,7 @@ class SceneSelector:
         route_llm_config = getattr(scene_selection, "route_llm_config", None)
         if route_llm_config is not None:
             try:
-                route_llm = LLMEngine(config=route_llm_config)
+                route_llm = ModelInvocation.from_config(route_llm_config)
             except Exception as exc:
                 logger.warning(f"Invalid route_llm_config, using default LLM: {exc}")
         user_prompt = (
