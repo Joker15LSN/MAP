@@ -22,8 +22,8 @@ from .message import agentscope_messages_to_openai
 _tracer = get_tracer(__name__)
 
 
-class _ToolCallResponseView:
-    """Private outcome view preserving the legacy ``ToolCallResponse`` shape."""
+class _OutcomeView:
+    """Private view over ``ModelInvocationOutcome`` for the adapter contract."""
 
     def __init__(self, outcome: ModelInvocationOutcome) -> None:
         self.content: str | None = outcome.content or ""
@@ -57,7 +57,7 @@ class _ToolCallResponseView:
 
 
 class MapChatModelAdapter(ChatModelBase):
-    """Expose the existing MAP LLMEngine through AgentScope's model contract."""
+    """Expose the existing MAP ``ModelInvocation`` through AgentScope's model contract."""
 
     class Parameters(ChatModelBase.Parameters):
         pass
@@ -177,7 +177,7 @@ class MapChatModelAdapter(ChatModelBase):
             )
         )
         outcome.raise_for_status()
-        response = _ToolCallResponseView(outcome)
+        response = _OutcomeView(outcome)
         if not is_structured_output_call:
             self.last_response = response
             self.last_terminate_call = None

@@ -24,12 +24,11 @@ from map_core.service.agent_execution import (
     AgentResult,
     AgentRuntime,
 )
-from map_core.utils.llm_engine import ToolCallResponse
 from map_core.utils.model_invocation import (
     ModelInvocationOutcome,
     ModelInvocationRequest,
-    ModelUsage,
 )
+from tests.model_invocation.scripted_provider import tool_outcome
 
 
 def _messages_to_dicts(messages: Any) -> list[dict[str, Any]]:
@@ -51,34 +50,10 @@ def _messages_to_dicts(messages: Any) -> list[dict[str, Any]]:
     return converted
 
 
-def _to_outcome(response: ToolCallResponse) -> ModelInvocationOutcome:
-    tool_calls = None
-    if response.tool_calls:
-        tool_calls = [call.model_dump() for call in response.tool_calls]
-    usage = None
-    if response.usage:
-        usage = ModelUsage(
-            prompt_tokens=response.usage.get("prompt_tokens", 0),
-            completion_tokens=response.usage.get("completion_tokens", 0),
-            total_tokens=response.usage.get("total_tokens", 0),
-        )
-    return ModelInvocationOutcome(
-        status="succeeded",
-        content=response.content,
-        tool_calls=tool_calls,
-        usage=usage,
-        finish_reason=response.finish_reason,
-        model=response.model,
-        request_id=response.request_id,
-        attempts=1,
-        latency_ms=response.response_time * 1000.0,
-    )
-
-
 class ScriptedLLM:
     """Deterministic ``invoke`` fake implementing the ModelInvocation surface."""
 
-    def __init__(self, responses: list[ToolCallResponse]) -> None:
+    def __init__(self, responses: list[ModelInvocationOutcome]) -> None:
         self.config = LLMConfig(
             base_url="http://localhost:9/v1",
             api_key="k",
@@ -93,7 +68,7 @@ class ScriptedLLM:
         self.calls.append(_messages_to_dicts(req.messages))
         if not self._responses:
             raise AssertionError("ScriptedLLM script exhausted")
-        return _to_outcome(self._responses.pop(0))
+        return self._responses.pop(0)
 
 
 def _tool_call(call_id: str, name: str, arguments: str = "{}") -> ToolCall:
@@ -136,13 +111,13 @@ def test_public_spec_has_no_engine_field() -> None:
 def test_execute_emits_ordered_actions_and_normalized_result() -> None:
     llm = ScriptedLLM(
         [
-            ToolCallResponse(
+            tool_outcome(
                 content="",
                 tool_calls=[_tool_call("c1", "search", '{"query": "42"}')],
                 usage={"prompt_tokens": 11, "completion_tokens": 4},
                 finish_reason="tool_calls",
             ),
-            ToolCallResponse(
+            tool_outcome(
                 content="答案是 42",
                 tool_calls=[_tool_call("c2", "terminate", '{"status": "success"}')],
                 usage={"prompt_tokens": 20, "completion_tokens": 8},
@@ -204,7 +179,7 @@ def test_execute_emits_ordered_actions_and_normalized_result() -> None:
 def test_stream_yields_actions_and_result() -> None:
     llm = ScriptedLLM(
         [
-            ToolCallResponse(
+            tool_outcome(
                 content="直接回答",
                 tool_calls=None,
                 usage={"prompt_tokens": 5, "completion_tokens": 3},
@@ -271,7 +246,7 @@ def test_memory_injection_and_writeback_via_public_module(monkeypatch) -> None:
 
     llm = ScriptedLLM(
         [
-            ToolCallResponse(
+            tool_outcome(
                 content="本轮答案",
                 tool_calls=[_tool_call("c1", "terminate", "{}")],
                 usage={"prompt_tokens": 1, "completion_tokens": 2},
@@ -315,7 +290,7 @@ def test_memory_injection_and_writeback_via_public_module(monkeypatch) -> None:
 def test_hooks_keep_existing_lifecycle_contract() -> None:
     llm = ScriptedLLM(
         [
-            ToolCallResponse(
+            tool_outcome(
                 content="done",
                 tool_calls=None,
                 usage={"prompt_tokens": 1, "completion_tokens": 1},
@@ -357,13 +332,13 @@ def test_hooks_keep_existing_lifecycle_contract() -> None:
 def test_tool_policy_denial_via_public_module() -> None:
     llm = ScriptedLLM(
         [
-            ToolCallResponse(
+            tool_outcome(
                 content="",
                 tool_calls=[_tool_call("c1", "search", "{}")],
                 usage={"prompt_tokens": 1, "completion_tokens": 1},
                 finish_reason="tool_calls",
             ),
-            ToolCallResponse(
+            tool_outcome(
                 content="policy handled",
                 tool_calls=[_tool_call("c2", "terminate", "{}")],
                 usage={"prompt_tokens": 1, "completion_tokens": 1},
@@ -434,7 +409,7 @@ def test_cancel_preset_returns_cancelled_without_llm_call() -> None:
 def test_cancel_after_step_start_stops_before_model_call() -> None:
     llm = ScriptedLLM(
         [
-            ToolCallResponse(
+            tool_outcome(
                 content="",
                 tool_calls=[_tool_call("c1", "search", "{}")],
                 usage={"prompt_tokens": 1, "completion_tokens": 1},
@@ -478,13 +453,13 @@ def test_cancel_after_step_start_stops_before_model_call() -> None:
 def test_max_steps_exit_contract_via_public_module() -> None:
     llm = ScriptedLLM(
         [
-            ToolCallResponse(
+            tool_outcome(
                 content="",
                 tool_calls=[_tool_call("c1", "search", "{}")],
                 usage={"prompt_tokens": 1, "completion_tokens": 1},
                 finish_reason="tool_calls",
             ),
-            ToolCallResponse(
+            tool_outcome(
                 content="",
                 tool_calls=[_tool_call("c2", "search", "{}")],
                 usage={"prompt_tokens": 1, "completion_tokens": 1},

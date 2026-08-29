@@ -15,12 +15,11 @@ from map_core.schema.agent_schema import Function, ToolCall
 from map_core.service.agent.base import AgentRequest
 from map_core.service.agent.tool_runtime import Tool
 from map_core.service.agentscope2.agent import AgentScopeSceneAgent
-from map_core.utils.llm_engine import ToolCallResponse
 from map_core.utils.model_invocation import (
     ModelInvocationOutcome,
     ModelInvocationRequest,
-    ModelUsage,
 )
+from tests.model_invocation.scripted_provider import tool_outcome
 
 
 class _FakeLLMConfig:
@@ -49,32 +48,8 @@ def _messages_to_dicts(messages: Any) -> list[dict[str, Any]]:
     return converted
 
 
-def _to_outcome(response: ToolCallResponse) -> ModelInvocationOutcome:
-    tool_calls = None
-    if response.tool_calls:
-        tool_calls = [call.model_dump() for call in response.tool_calls]
-    usage = None
-    if response.usage:
-        usage = ModelUsage(
-            prompt_tokens=response.usage.get("prompt_tokens", 0),
-            completion_tokens=response.usage.get("completion_tokens", 0),
-            total_tokens=response.usage.get("total_tokens", 0),
-        )
-    return ModelInvocationOutcome(
-        status="succeeded",
-        content=response.content,
-        tool_calls=tool_calls,
-        usage=usage,
-        finish_reason=response.finish_reason,
-        model=response.model,
-        request_id=response.request_id,
-        attempts=1,
-        latency_ms=response.response_time * 1000.0,
-    )
-
-
 class FakeLLM:
-    def __init__(self, responses: list[ToolCallResponse]) -> None:
+    def __init__(self, responses: list[ModelInvocationOutcome]) -> None:
         self.config = _FakeLLMConfig()
         self._responses = list(responses)
         self.calls: list[list[dict[str, Any]]] = []
@@ -83,7 +58,7 @@ class FakeLLM:
         self, req: ModelInvocationRequest
     ) -> ModelInvocationOutcome:
         self.calls.append(_messages_to_dicts(req.messages))
-        return _to_outcome(self._responses.pop(0))
+        return self._responses.pop(0)
 
 
 def _tool_call(call_id: str, name: str, arguments: str = "{}") -> ToolCall:
@@ -124,13 +99,13 @@ def _build_agent(llm: FakeLLM, action_events: list[Any]):
 def test_run_tool_call_then_terminate_matches_sse_contract() -> None:
     llm = FakeLLM(
         [
-            ToolCallResponse(
+            tool_outcome(
                 content="",
                 tool_calls=[_tool_call("call_1", "search", '{"query": "meaning"}')],
                 usage={"prompt_tokens": 10, "completion_tokens": 4},
                 finish_reason="tool_calls",
             ),
-            ToolCallResponse(
+            tool_outcome(
                 content="答案是 42",
                 tool_calls=[_tool_call("call_2", "terminate", '{"status": "success"}')],
                 usage={"prompt_tokens": 20, "completion_tokens": 8},
@@ -182,7 +157,7 @@ def test_run_tool_call_then_terminate_matches_sse_contract() -> None:
 def test_run_direct_final_answer_exit() -> None:
     llm = FakeLLM(
         [
-            ToolCallResponse(
+            tool_outcome(
                 content="直接回答，无需工具",
                 tool_calls=None,
                 usage={"prompt_tokens": 5, "completion_tokens": 3},
@@ -207,7 +182,7 @@ def test_run_direct_final_answer_exit() -> None:
 def test_run_max_steps_exit_marks_failure_without_tool_success() -> None:
     llm = FakeLLM(
         [
-            ToolCallResponse(
+            tool_outcome(
                 content="",
                 tool_calls=[_tool_call("call_1", "terminate", "{}")],
             )

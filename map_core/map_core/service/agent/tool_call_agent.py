@@ -35,8 +35,8 @@ from .tool_runtime import (  # noqa: F401  # public re-export seam
 from .traceable_agent import TraceableAgent
 
 
-class _ToolCallResponseView:
-    """Private outcome view preserving the legacy ``ToolCallResponse`` shape."""
+class _OutcomeView:
+    """Private view over ``ModelInvocationOutcome`` for the legacy agent loop."""
 
     def __init__(self, outcome: ModelInvocationOutcome) -> None:
         self.content: str = outcome.content or ""
@@ -520,7 +520,7 @@ class ToolCallAgent(TraceableAgent):
                     )
                 )
                 outcome.raise_for_status()
-                response = _ToolCallResponseView(outcome)
+                response = _OutcomeView(outcome)
             self.check_cancelled()
             self._accumulate_usage(response.usage)
             logger.debug(

@@ -20,11 +20,47 @@ def run_async(func: Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., T]:
     return wrapper
 
 from map_core.utils.model_invocation import (
+    ModelInvocationOutcome,
+    ModelUsage,
     PreparedRequest,
     ProviderError,
     ProviderResponse,
     ProviderStream,
 )
+
+
+def tool_outcome(
+    *,
+    content: str | None = None,
+    tool_calls: list[Any] | None = None,
+    model: str | None = None,
+    usage: dict[str, int] | None = None,
+    finish_reason: str | None = None,
+    response_time: float = 0.0,
+    request_id: str | None = None,
+) -> ModelInvocationOutcome:
+    """Build a succeeded ``ModelInvocationOutcome`` from legacy response kwargs."""
+    mapped_tool_calls: list[dict[str, Any]] | None = None
+    if tool_calls:
+        mapped_tool_calls = [call.model_dump() for call in tool_calls]
+    mapped_usage: ModelUsage | None = None
+    if usage:
+        mapped_usage = ModelUsage(
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+        )
+    return ModelInvocationOutcome(
+        status="succeeded",
+        content=content,
+        tool_calls=mapped_tool_calls,
+        usage=mapped_usage,
+        finish_reason=finish_reason,
+        model=model,
+        request_id=request_id,
+        attempts=1,
+        latency_ms=response_time * 1000.0,
+    )
 
 
 class ScriptedProvider:

@@ -30,12 +30,11 @@ from map_core.service.agentscope2.message import (
     message_text,
 )
 from map_core.service.agentscope2.model import MapChatModelAdapter
-from map_core.utils.llm_engine import ToolCallResponse
 from map_core.utils.model_invocation import (
     ModelInvocationOutcome,
     ModelInvocationRequest,
-    ModelUsage,
 )
+from tests.model_invocation.scripted_provider import tool_outcome
 
 
 class _FakeLLMConfig:
@@ -63,34 +62,10 @@ def _messages_to_dicts(messages: Any) -> list[dict[str, Any]]:
     return converted
 
 
-def _to_outcome(response: ToolCallResponse) -> ModelInvocationOutcome:
-    tool_calls = None
-    if response.tool_calls:
-        tool_calls = [call.model_dump() for call in response.tool_calls]
-    usage = None
-    if response.usage:
-        usage = ModelUsage(
-            prompt_tokens=response.usage.get("prompt_tokens", 0),
-            completion_tokens=response.usage.get("completion_tokens", 0),
-            total_tokens=response.usage.get("total_tokens", 0),
-        )
-    return ModelInvocationOutcome(
-        status="succeeded",
-        content=response.content,
-        tool_calls=tool_calls,
-        usage=usage,
-        finish_reason=response.finish_reason,
-        model=response.model,
-        request_id=response.request_id,
-        attempts=1,
-        latency_ms=response.response_time * 1000.0,
-    )
-
-
 class FakeLLM:
     """Minimal stand-in for ModelInvocation exposing the typed invoke contract."""
 
-    def __init__(self, responses: list[ToolCallResponse]) -> None:
+    def __init__(self, responses: list[ModelInvocationOutcome]) -> None:
         self.config = _FakeLLMConfig()
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
@@ -105,7 +80,7 @@ class FakeLLM:
                 "tool_choice": req.tool_choice,
             }
         )
-        return _to_outcome(self._responses.pop(0))
+        return self._responses.pop(0)
 
 
 def _tool_call(call_id: str, name: str, arguments: str = "{}") -> ToolCall:
@@ -221,7 +196,7 @@ def test_map_history_reasoning_content_becomes_thinking_block() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_adapter(responses: list[ToolCallResponse], **kwargs):
+def _make_adapter(responses: list[ModelInvocationOutcome], **kwargs):
     llm = FakeLLM(responses)
     adapter = MapChatModelAdapter(llm, **kwargs)
     return adapter, llm
@@ -229,8 +204,8 @@ def _make_adapter(responses: list[ToolCallResponse], **kwargs):
 
 def test_force_tool_call_first_round_required_then_auto() -> None:
     responses = [
-        ToolCallResponse(content="", tool_calls=[_tool_call("c1", "search")]),
-        ToolCallResponse(content="final", tool_calls=None),
+        tool_outcome(content="", tool_calls=[_tool_call("c1", "search")]),
+        tool_outcome(content="final", tool_calls=None),
     ]
     adapter, llm = _make_adapter(responses, force_tool_call=True)
     tools = [{"type": "function", "function": {"name": "search"}}]
@@ -249,7 +224,7 @@ def test_force_tool_call_first_round_required_then_auto() -> None:
 def test_explicit_tool_choice_wins_over_force_tool_call() -> None:
     from agentscope.tool import ToolChoice
 
-    responses = [ToolCallResponse(content="", tool_calls=None)]
+    responses = [tool_outcome(content="", tool_calls=None)]
     adapter, llm = _make_adapter(responses, force_tool_call=True)
 
     async def run() -> None:
@@ -266,7 +241,7 @@ def test_explicit_tool_choice_wins_over_force_tool_call() -> None:
 
 def test_terminate_call_intercepted_and_stripped() -> None:
     responses = [
-        ToolCallResponse(
+        tool_outcome(
             content="任务已完成",
             tool_calls=[
                 _tool_call("c1", "terminate", '{"status": "success"}'),
@@ -302,7 +277,7 @@ def test_terminate_call_intercepted_and_stripped() -> None:
 
 def test_usage_mapping_prompt_completion_tokens() -> None:
     responses = [
-        ToolCallResponse(
+        tool_outcome(
             content="answer",
             usage={"prompt_tokens": 11, "completion_tokens": 7},
             response_time=1.5,

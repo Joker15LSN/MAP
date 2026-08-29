@@ -373,7 +373,7 @@ async def split_question(
     Args:
         query: User's natural language question
         milvus_client: Shared milvus client.
-        llm: Shared LLMEngine.
+        llm: Shared ModelInvocation.
 
     Returns:
         List of dictionaries containing following fields:

@@ -221,7 +221,7 @@ class AgentRuntime:
             return ModelInvocation.from_config(spec.llm_config)
         except Exception as exc:
             self._logger.warning(
-                "Failed to build custom LLMEngine for agent '{}' from llm_config: {}. Falling back to runtime llm.",
+                "Failed to build custom ModelInvocation for agent '{}' from llm_config: {}. Falling back to runtime llm.",
                 spec.name,
                 exc,
             )

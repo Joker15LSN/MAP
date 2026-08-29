@@ -19,7 +19,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import StatusCode
 
 from map_core.config.config_schema import LLMConfig
-from map_core.utils.llm_engine import LLMEngine
 from map_core.utils.model_invocation import (
     ModelInvocation,
     ModelInvocationRequest,
@@ -171,23 +170,3 @@ def test_async_stream_cancellation_still_ends_span(monkeypatch) -> None:
 
     spans = _finished_spans(exporter)
     assert "stream test-model" in spans, "cancelled stream leaked an open span"
-
-
-def test_shell_sync_stream_creates_llm_span(monkeypatch) -> None:
-    exporter = _install_tracer(monkeypatch)
-    captured = _install_fake_openai(
-        monkeypatch,
-        [
-            content_chunk("a", model="test-model"),
-            content_chunk("b", model="test-model"),
-            usage_chunk(),
-        ],
-    )
-
-    engine = LLMEngine(_config())
-    assert list(engine.stream([{"role": "user", "content": "q"}])) == ["a", "b"]
-
-    headers = captured.get("extra_headers") or {}
-    assert "traceparent" in headers
-    spans = _finished_spans(exporter)
-    assert "stream test-model" in spans
