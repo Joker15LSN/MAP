@@ -144,9 +144,11 @@ Checkpoint/ArtifactRef 表在获得第一个 production writer 的步骤按需�
 
 ### 4.2 AgentRuntime seam（过渡中）
 
-`service/agent_runtime.py` 是 legacy 与 AgentScope 的选择 seam；`service/agent/` 和
-`service/agentscope2/` 是两套实现。双引擎使事件翻译、工具治理、消息适配和测试矩阵成倍
-增长。
+PR-H1 新增 `service/agent_execution/`：caller 只学
+`AgentExecutionSpec` 与 `AgentRuntime.execute/stream`，framework 类型关在模块内部；
+dispatcher/master/flow 默认走该模块，legacy 引擎仅作为组合根内部回滚开关保留。
+`service/agent_runtime.py`（旧 seam）、`service/agent/` 与 `service/agentscope2/`
+仍保留到 PR-H2（canary/排空证据后删除）。
 
 目标是保留单一 AgentScope runtime interface，并把 legacy 仅有行为通过 golden trace
 迁移后删除。迁移必须满足：
