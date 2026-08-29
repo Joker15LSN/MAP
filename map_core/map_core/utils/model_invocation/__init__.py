@@ -12,6 +12,7 @@ from .provider import (
 from .types import (
     ModelInvocationError,
     ModelInvocationEvent,
+    ModelInvocationFailedError,
     ModelInvocationOutcome,
     ModelInvocationRequest,
     ModelMessage,
@@ -27,6 +28,7 @@ __all__ = [
     "ModelInvocationStream",
     "ModelInvocationError",
     "ModelInvocationEvent",
+    "ModelInvocationFailedError",
     "ModelInvocationOutcome",
     "ModelInvocationRequest",
     "ModelMessage",

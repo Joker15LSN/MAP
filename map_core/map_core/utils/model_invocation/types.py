@@ -98,6 +98,27 @@ class ModelInvocationError(BaseModel):
     body: dict[str, Any] | None = None
 
 
+class ModelInvocationFailedError(RuntimeError):
+    """Raised by ``ModelInvocationOutcome.raise_for_status``.
+
+    Callers that need the legacy fail-fast propagation call this explicitly;
+    the gateway itself returns typed outcomes and never raises for a failed
+    invocation.
+    """
+
+    def __init__(self, outcome: Any) -> None:
+        self.outcome = outcome
+        error = getattr(outcome, "error", None)
+        code = getattr(error, "code", None) or getattr(outcome, "status", "failed")
+        message = getattr(error, "message", None) or getattr(
+            outcome, "status", "failed"
+        )
+        super().__init__(
+            f"LLM invocation {getattr(outcome, 'status', 'failed')} "
+            f"(code={code}): {message}"
+        )
+
+
 class ModelInvocationOutcome(BaseModel):
     status: Literal["succeeded", "failed", "cancelled", "unknown"]
     content: str | None = None
@@ -112,6 +133,10 @@ class ModelInvocationOutcome(BaseModel):
     latency_ms: float
     raw: dict[str, Any] | None = None  # _dump_compat 后的中性 dict
     error: ModelInvocationError | None = None
+
+    def raise_for_status(self) -> None:
+        if self.status != "succeeded":
+            raise ModelInvocationFailedError(self)
 
 
 class ModelInvocationEvent(BaseModel):

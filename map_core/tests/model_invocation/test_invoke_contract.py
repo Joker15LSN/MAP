@@ -7,6 +7,7 @@ import asyncio
 from map_core.config.config_schema import LLMConfig
 from map_core.utils.model_invocation import (
     ModelInvocation,
+    ModelInvocationFailedError,
     ModelInvocationRequest,
     ProviderError,
     ProviderResponse,
@@ -129,6 +130,23 @@ async def test_4xx_provider_error_no_retry() -> None:
     assert outcome.error.retryable is False
     assert outcome.attempts == 1
     assert len(provider.calls) == 1
+
+
+@run_async
+async def test_outcome_raise_for_status_is_explicit_fail_fast() -> None:
+    provider = ScriptedProvider(
+        [ProviderError("provider_error", "bad request", False, status=400)]
+    )
+    invocation = ModelInvocation(_config(), provider=provider)
+    outcome = await invocation.invoke(_request())
+
+    try:
+        outcome.raise_for_status()
+    except ModelInvocationFailedError as exc:
+        assert exc.outcome is outcome
+        assert "bad request" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected ModelInvocationFailedError")
 
 
 @run_async
