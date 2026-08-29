@@ -2,8 +2,9 @@
 trusted actor into the hash-chained ``config_audit_events``.
 
 Actor comes from the RequestPrincipal, never from the request body; every
-successful admin write produces exactly one applied audit event; rejected
-attempts produce a rejected event; the legacy ``audit_logs`` table receives
+successful admin write produces one applied admin audit event plus one
+applied runtime_snapshot audit event (Step 7 PR-J3); rejected attempts
+produce a rejected admin event; the legacy ``audit_logs`` table receives
 no new product writes (the /api/admin/audit-logs facade maps the new
 events instead).
 """
@@ -56,14 +57,16 @@ async def _events(session) -> list:
         await session.execute(
             text(
                 "SELECT actor_user_id, action, resource_type, resource_id, status, "
-                "request_id FROM map_control.config_audit_events ORDER BY created_at, id"
+                "request_id FROM map_control.config_audit_events ORDER BY ordinal"
             )
         )
     ).all()
     return list(rows)
 
 
-async def test_admin_write_produces_exactly_one_audit_event(app_and_session) -> None:
+async def test_admin_write_produces_exactly_one_admin_and_one_snapshot_event(
+    app_and_session,
+) -> None:
     app, session = app_and_session
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -75,14 +78,19 @@ async def test_admin_write_produces_exactly_one_audit_event(app_and_session) -> 
         assert response.status_code == 200
 
     rows = await _events(session)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.actor_user_id == "local-admin"  # from principal, dev mode
-    assert row.action == "update"
-    assert row.resource_type == "admin_config"
-    assert row.resource_id == "model_center"
-    assert row.status == "applied"
-    assert row.request_id == "audit-req-1"
+    assert len(rows) == 2
+    admin_row, snapshot_row = rows
+    assert admin_row.actor_user_id == "local-admin"  # from principal, dev mode
+    assert admin_row.action == "update"
+    assert admin_row.resource_type == "admin_config"
+    assert admin_row.resource_id == "model_center"
+    assert admin_row.status == "applied"
+    assert admin_row.request_id == "audit-req-1"
+    assert snapshot_row.actor_user_id == "local-admin"
+    assert snapshot_row.action == "activate"
+    assert snapshot_row.resource_type == "runtime_snapshot"
+    assert snapshot_row.status == "applied"
+    assert snapshot_row.request_id == "audit-req-1"
 
 
 async def test_client_operator_field_cannot_change_actor(app_and_session) -> None:
@@ -98,14 +106,16 @@ async def test_client_operator_field_cannot_change_actor(app_and_session) -> Non
         assert response.status_code == 200
 
     rows = await _events(session)
-    assert len(rows) == 1
-    assert rows[0].actor_user_id == "local-admin"
-    assert rows[0].actor_user_id != "attacker"
+    assert len(rows) == 2  # 1 admin audit + 1 runtime_snapshot audit
+    for row in rows:
+        assert row.actor_user_id == "local-admin"
+        assert row.actor_user_id != "attacker"
 
 
 async def test_every_successful_write_audited_once(app_and_session) -> None:
     """Even an identical (content-wise no-op) write is an attempted write:
-    exactly one applied event per successful call, never zero, never two."""
+    one admin applied event + one snapshot applied event per successful
+    call, never zero, never three."""
     app, session = app_and_session
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -115,15 +125,18 @@ async def test_every_successful_write_audited_once(app_and_session) -> None:
         assert second.status_code == 200
 
     rows = await _events(session)
-    assert len(rows) == 2
+    assert len(rows) == 4
     assert {row.status for row in rows} == {"applied"}
+    assert sum(1 for row in rows if row.resource_type == "runtime_snapshot") == 2
+    assert sum(1 for row in rows if row.resource_type != "runtime_snapshot") == 2
 
 
 async def test_rejected_write_audited_and_legacy_table_gets_no_new_writes(
     app_and_session,
 ) -> None:
-    """A business rejection (409 duplicate agent) leaves exactly one
-    rejected event; the legacy audit_logs table stays empty."""
+    """A business rejection (409 duplicate agent) leaves one rejected admin
+    event; the successful create left one admin + one snapshot event. The
+    legacy audit_logs table stays empty."""
     app, session = app_and_session
     transport = ASGITransport(app=app)
     agent = {
@@ -139,11 +152,12 @@ async def test_rejected_write_audited_and_legacy_table_gets_no_new_writes(
         assert duplicate.status_code == 409
 
     rows = await _events(session)
-    assert len(rows) == 2
+    assert len(rows) == 3
     statuses = [row.status for row in rows]
-    assert statuses == ["applied", "rejected"]
-    assert rows[1].resource_type == "business_agent"
-    assert rows[1].resource_id == "audit-agent"
+    assert statuses == ["applied", "applied", "rejected"]
+    assert rows[1].resource_type == "runtime_snapshot"
+    assert rows[2].resource_type == "business_agent"
+    assert rows[2].resource_id == "audit-agent"
 
     # R2-P1-02: no new product write may land in the legacy table.
     legacy = (await session.execute(select(AuditLog))).scalars().all()
@@ -159,18 +173,20 @@ async def test_audit_logs_facade_maps_new_events(app_and_session) -> None:
 
         all_rows = await client.get("/api/admin/audit-logs")
         assert all_rows.status_code == 200
-        assert all_rows.json()["total"] == 2
+        # 2 PUTs -> 2 admin audit events + 2 runtime_snapshot audit events.
+        assert all_rows.json()["total"] == 4
         for item in all_rows.json()["items"]:
             assert item["status"] == "applied"
-            assert item["resource_type"] == "admin_config"
 
         filtered = await client.get(
             "/api/admin/audit-logs", params={"resource_type": "admin_config"}
         )
         assert filtered.json()["total"] == 2
+        for item in filtered.json()["items"]:
+            assert item["resource_type"] == "admin_config"
 
         by_actor = await client.get("/api/admin/audit-logs", params={"actor": "local-admin"})
-        assert by_actor.json()["total"] == 2
+        assert by_actor.json()["total"] == 4
 
 
 async def test_non_admin_write_is_403_and_not_audited(app_and_session) -> None:

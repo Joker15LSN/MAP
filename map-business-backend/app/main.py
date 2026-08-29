@@ -107,8 +107,17 @@ def create_app(
         try:
             from .db.session import get_session_factory
             from .services.config_mutation import reconcile_config_mutations
+            from .services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
+            from .services.runtime_snapshot.service import (
+                reconcile_runtime_snapshot_mutations,
+            )
 
             await reconcile_config_mutations(get_session_factory(), store)
+            await reconcile_runtime_snapshot_mutations(
+                get_session_factory(),
+                store,
+                lambda session: PgRuntimeSnapshotRepository(session),
+            )
         except Exception:
             logger.exception("config mutation reconciler failed at startup")
         yield

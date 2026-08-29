@@ -255,7 +255,11 @@ class RuntimeSnapshotService:
             )
             if inserted.status == "draft":
                 await self._snapshots.transition_status(snapshot_id, "draft", "published")
-            if inserted.status in ("draft", "published", "active"):
+            if inserted.status in ("draft", "published", "active", "rolled_back"):
+                # ``rolled_back`` is a valid restart: an admin write that
+                # reproduces an earlier projection reactivates that
+                # snapshot and rolls the current active one back, keeping
+                # the pointer consistent with the admin state file.
                 await self._snapshots.activate(snapshot_id, expected_current_digest)
             else:
                 raise SnapshotStateConflictError(

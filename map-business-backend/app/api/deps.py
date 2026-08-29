@@ -22,6 +22,7 @@ from ..core.identity import (
 from ..core.permissions import PermissionDenied, PermissionService
 from ..core.service_identity import constant_time_equal
 from ..core_client import MapCoreClient
+from ..db.session import DbSession
 from ..repositories.config import ConfigRepository
 from ..settings import Settings
 
@@ -36,6 +37,18 @@ def get_store(request: Request) -> ConfigRepository:
 
 def get_core_client(request: Request) -> MapCoreClient:
     return request.app.state.core_client
+
+
+def get_runtime_snapshots(request: Request, session: DbSession):
+    """Admin write-path service: store + PG snapshot repository.
+
+    The repository is bound to the request's database session, so every
+    snapshot state change joins the caller's transaction.
+    """
+    from ..services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
+    from ..services.runtime_snapshot.service import RuntimeSnapshotService
+
+    return RuntimeSnapshotService(request.app.state.store, PgRuntimeSnapshotRepository(session))
 
 
 def get_permissions(request: Request) -> PermissionService:

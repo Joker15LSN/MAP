@@ -31,14 +31,14 @@ from ..schemas import (
     UploadedSkill,
 )
 from ..services.audit import admin_write_guard
-from ..services.config_mutation import ConfigMutationService
 from ..services.runtime_payloads import (
     build_dispatch_config_payload,
     build_scene_selection_payload,
     skill_runtime_tool_name,
     slugify,
 )
-from .deps import get_core_client, get_principal, get_store
+from ..services.runtime_snapshot.schemas import MutationContext
+from .deps import get_core_client, get_principal, get_runtime_snapshots, get_store
 
 router = APIRouter()
 
@@ -51,18 +51,17 @@ async def _audited_update(
     action: str,
     updater,
 ):
-    """Route all AdminState writes through the ConfigMutationService
-    (R2-P1-02: no router-level store.update may bypass the audit chain)."""
-    store = request.app.state.store
-    service = ConfigMutationService(store)
-    return await service.apply_mutation(
-        session=session,
-        request=request,
+    """Route all AdminState writes through RuntimeSnapshotService
+    (no router-level store.update may bypass the audit chain)."""
+    context = MutationContext(
         principal=get_principal(request),
+        request=request,
         resource_type=resource_type,
         resource_id=resource_id,
         action=action,
-        updater=updater,
+    )
+    return await get_runtime_snapshots(request, session).apply_change(
+        session, context, updater
     )
 
 

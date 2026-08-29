@@ -1,7 +1,9 @@
 """FIX-P1-AUDIT-01 acceptance: non-repudiation config write audit.
 
-- every admin write funnels through ConfigMutationService (no router-level
-  store.update); applied/failed/rejected all leave hash-chained events
+- every admin write funnels through RuntimeSnapshotService (no router-level
+  store.update); applied/failed/rejected all leave hash-chained events;
+  each mutating admin write emits one admin audit + one runtime_snapshot
+  audit (Step 7 PR-J3)
 - client-supplied operator/body fields never change the actor
 - store write failures: API fails, failed audit event, original file intact
 - concurrent writes with the same expected hash: one wins, one 409
@@ -80,9 +82,33 @@ async def _audit_count(session, status=None) -> int:
     return (await session.execute(text(sql), params)).scalar_one()
 
 
+async def _audit_count_by_resource(session, resource_type: str) -> int:
+    """Count audit rows by bucket.
+
+    ``"admin"`` counts every non-runtime-snapshot resource (the
+    admin-state audit); ``"runtime_snapshot"`` counts the snapshot audit.
+    """
+    if resource_type == "runtime_snapshot":
+        sql = (
+            "SELECT count(*) FROM map_control.config_audit_events "
+            "WHERE resource_type = 'runtime_snapshot'"
+        )
+    else:
+        sql = (
+            "SELECT count(*) FROM map_control.config_audit_events "
+            "WHERE resource_type <> 'runtime_snapshot'"
+        )
+    return (await session.execute(text(sql))).scalar_one()
+
+
 async def test_every_admin_write_is_audited_and_actor_trusted(app_and_session) -> None:
     """Enumerate admin write paths from OpenAPI; each write audits with the
-    trusted actor (client body fields can never change it)."""
+    trusted actor (client body fields can never change it).
+
+    New contract (Step 7 PR-J3): every mutating admin write emits one
+    admin-state audit (resource_type != 'runtime_snapshot') plus one
+    runtime_snapshot audit; both carry the trusted principal.
+    """
     app, session, _ = app_and_session
     openapi = app.openapi()
     write_paths = sorted(
@@ -114,26 +140,96 @@ async def test_every_admin_write_is_audited_and_actor_trusted(app_and_session) -
         )
         assert response.status_code == 200, response.text
 
-    # Every write produced an applied audit event with the trusted actor.
+    # Every write produced one admin audit + one snapshot audit, both with
+    # the trusted actor.
     rows = (
         await session.execute(
             text(
                 "SELECT resource_type, resource_id, action, actor_user_id, status, "
                 "entry_hash, prev_entry_hash, json_patch "
-                "FROM map_control.config_audit_events ORDER BY created_at"
+                "FROM map_control.config_audit_events ORDER BY ordinal"
             )
         )
     ).all()
-    assert len(rows) >= len(writes)
+    admin_rows = [row for row in rows if row.resource_type != "runtime_snapshot"]
+    snapshot_rows = [row for row in rows if row.resource_type == "runtime_snapshot"]
+    expected_mutations = len(writes) + 1  # 3 PUTs + 1 release-history POST
+    assert len(admin_rows) == expected_mutations
+    assert len(snapshot_rows) == expected_mutations
     for row in rows:
         assert row.actor_user_id == "local-admin"
         assert "evil-client" not in row.actor_user_id
         assert row.status == "applied"
         assert (row.entry_hash and row.prev_entry_hash is not None) or row.prev_entry_hash is None
-        assert row.json_patch is not None  # diff present
+    for row in admin_rows:
+        assert row.json_patch is not None  # admin diff present
+    for row in snapshot_rows:
+        assert row.json_patch is None  # snapshot audit carries no admin diff
     # Hash chain: no forks (each entry references its predecessor).
     hashes = [row.entry_hash for row in rows]
     assert len(set(hashes)) == len(hashes)
+
+
+async def test_flow_policy_put_advances_runtime_snapshot_pointer(
+    app_and_session,
+) -> None:
+    """Step 7 PR-J3: an admin write creates an active runtime snapshot,
+    points ``runtime_snapshot_current`` at it, rolls the previous active
+    snapshot back, and emits one admin audit + one snapshot audit."""
+    app, session, _ = app_and_session
+
+    async with await _client(app) as client:
+        base = (await client.get("/api/admin/flow-policy")).json()
+        first_payload = {**base, "max_node_budget": 11}
+        response = await client.put("/api/admin/flow-policy", json=first_payload)
+        assert response.status_code == 200, response.text
+        assert await _audit_count_by_resource(session, "admin") == 1
+        assert await _audit_count_by_resource(session, "runtime_snapshot") == 1
+
+        second_payload = {**base, "max_node_budget": 22}
+        response = await client.put("/api/admin/flow-policy", json=second_payload)
+        assert response.status_code == 200, response.text
+        assert await _audit_count_by_resource(session, "admin") == 2
+        assert await _audit_count_by_resource(session, "runtime_snapshot") == 2
+
+    snapshots = (
+        await session.execute(
+            text(
+                "SELECT id, digest, status FROM map_control.runtime_snapshots "
+                "ORDER BY created_at, id"
+            )
+        )
+    ).all()
+    assert len(snapshots) == 2
+    first, second = snapshots
+    assert first.status == "rolled_back"
+    assert second.status == "active"
+
+    pointer = (
+        await session.execute(
+            text(
+                "SELECT current_snapshot_id, current_digest "
+                "FROM map_control.runtime_snapshot_current WHERE id = 1"
+            )
+        )
+    ).one()
+    assert pointer.current_snapshot_id == second.id
+    assert pointer.current_digest == second.digest
+
+    audit_rows = (
+        await session.execute(
+            text(
+                "SELECT resource_type, action, status FROM map_control.config_audit_events "
+                "ORDER BY ordinal"
+            )
+        )
+    ).all()
+    assert audit_rows == [
+        ("admin_config", "update", "applied"),
+        ("runtime_snapshot", "activate", "applied"),
+        ("admin_config", "update", "applied"),
+        ("runtime_snapshot", "activate", "applied"),
+    ]
 
 
 async def test_concurrent_writes_one_wins_one_409(app_and_session) -> None:
@@ -346,7 +442,8 @@ async def test_secret_never_in_audit(app_and_session) -> None:
         await session.execute(
             text(
                 "SELECT json_patch, actor_roles FROM map_control.config_audit_events "
-                "ORDER BY created_at DESC LIMIT 1"
+                "WHERE resource_type <> 'runtime_snapshot' "
+                "ORDER BY ordinal DESC LIMIT 1"
             )
         )
     ).one()
@@ -519,7 +616,11 @@ async def test_migrator_round_trip_on_fresh_database_and_app_ddl_denied(
 # The fixture set below is asserted to be EXACTLY the set of admin write
 # operations enumerated from OpenAPI; adding a route without a fixture (or
 # leaving a stale one) fails CI. Every fixture is really executed and must
-# produce exactly one new audit event (zero for non-mutating operations).
+# produce the expected audit deltas:
+#   - mutating admin write: 1 admin audit (resource_type !=
+#     'runtime_snapshot') + 1 runtime_snapshot audit
+#   - runtime snapshot lifecycle op: 1 snapshot audit only
+#   - test-chat: neither (read-only debug path)
 
 _ENUM_AGENT_CODE = "enum-audit-agent"
 _ENUM_MCP_SERVER_ID = "enum-audit-mcp"
@@ -550,28 +651,28 @@ _PUT_SECTION_PATHS = [
 
 
 def _put_section(path: str):
-    async def _run(client):
+    async def _run(client, session=None):
         payload = (await client.get(path)).json()
         return await client.put(path, json=payload)
 
     return _run
 
 
-async def _run_release_history(client):
+async def _run_release_history(client, session=None):
     return await client.post(
         "/api/admin/release-history",
         params={"note": "enum-audit", "operator": "attacker"},
     )
 
 
-async def _run_master_publish(client):
+async def _run_master_publish(client, session=None):
     return await client.post(
         "/api/admin/master-agent/publish",
         json={"operator": "attacker", "note": "enum publish"},
     )
 
 
-async def _run_master_rollback(client):
+async def _run_master_rollback(client, session=None):
     master = (await client.get("/api/admin/master-agent")).json()
     return await client.post(
         "/api/admin/master-agent/rollback",
@@ -579,7 +680,7 @@ async def _run_master_rollback(client):
     )
 
 
-async def _run_agent_create(client):
+async def _run_agent_create(client, session=None):
     return await client.post(
         "/api/admin/business-agents",
         json={
@@ -591,14 +692,14 @@ async def _run_agent_create(client):
     )
 
 
-async def _run_agent_update(client):
+async def _run_agent_update(client, session=None):
     agents = (await client.get("/api/admin/business-agents")).json()
     agent = next(item for item in agents if item["agent_code"] == _ENUM_AGENT_CODE)
     agent["display_name"] = "枚举代理-更新"
     return await client.put(f"/api/admin/business-agents/{_ENUM_AGENT_CODE}", json=agent)
 
 
-async def _run_agent_test_chat(client):
+async def _run_agent_test_chat(client, session=None):
     # test-chat materializes only supported scene agents; pick a seeded one.
     from app.services.runtime_payloads import SUPPORTED_SCENE_AGENT_CODES
 
@@ -614,7 +715,7 @@ async def _run_agent_test_chat(client):
     )
 
 
-async def _run_mcp_create(client):
+async def _run_mcp_create(client, session=None):
     return await client.post(
         "/api/admin/mcp-servers",
         json={
@@ -625,11 +726,11 @@ async def _run_mcp_create(client):
     )
 
 
-async def _run_mcp_refresh(client):
+async def _run_mcp_refresh(client, session=None):
     return await client.post(f"/api/admin/mcp-servers/{_ENUM_MCP_SERVER_ID}/refresh-tools")
 
 
-async def _run_skill_upload(client):
+async def _run_skill_upload(client, session=None):
     return await client.post(
         "/api/admin/skills/upload",
         json={
@@ -643,28 +744,59 @@ async def _run_skill_upload(client):
 
 ADMIN_WRITE_FIXTURES: dict[str, dict] = {}
 for _path in _PUT_SECTION_PATHS:
-    ADMIN_WRITE_FIXTURES[f"PUT {_path}"] = {"run": _put_section(_path), "mutating": True}
+    ADMIN_WRITE_FIXTURES[f"PUT {_path}"] = {
+        "run": _put_section(_path),
+        "admin_audit_delta": 1,
+        "snapshot_audit_delta": 1,
+    }
 ADMIN_WRITE_FIXTURES.update(
     {
-        "POST /api/admin/release-history": {"run": _run_release_history, "mutating": True},
-        "POST /api/admin/master-agent/publish": {"run": _run_master_publish, "mutating": True},
-        "POST /api/admin/master-agent/rollback": {"run": _run_master_rollback, "mutating": True},
-        "POST /api/admin/business-agents": {"run": _run_agent_create, "mutating": True},
+        "POST /api/admin/release-history": {
+            "run": _run_release_history,
+            "admin_audit_delta": 1,
+            "snapshot_audit_delta": 1,
+        },
+        "POST /api/admin/master-agent/publish": {
+            "run": _run_master_publish,
+            "admin_audit_delta": 1,
+            "snapshot_audit_delta": 1,
+        },
+        "POST /api/admin/master-agent/rollback": {
+            "run": _run_master_rollback,
+            "admin_audit_delta": 1,
+            "snapshot_audit_delta": 1,
+        },
+        "POST /api/admin/business-agents": {
+            "run": _run_agent_create,
+            "admin_audit_delta": 1,
+            "snapshot_audit_delta": 1,
+        },
         "PUT /api/admin/business-agents/{agent_code}": {
             "run": _run_agent_update,
-            "mutating": True,
+            "admin_audit_delta": 1,
+            "snapshot_audit_delta": 1,
         },
         # Debug chat performs no AdminState write: no audit event expected.
         "POST /api/admin/business-agents/{agent_code}/test-chat": {
             "run": _run_agent_test_chat,
-            "mutating": False,
+            "admin_audit_delta": 0,
+            "snapshot_audit_delta": 0,
         },
-        "POST /api/admin/mcp-servers": {"run": _run_mcp_create, "mutating": True},
+        "POST /api/admin/mcp-servers": {
+            "run": _run_mcp_create,
+            "admin_audit_delta": 1,
+            "snapshot_audit_delta": 1,
+        },
         "POST /api/admin/mcp-servers/{server_id}/refresh-tools": {
             "run": _run_mcp_refresh,
-            "mutating": True,
+            "admin_audit_delta": 1,
+            "snapshot_audit_delta": 1,
         },
-        "POST /api/admin/skills/upload": {"run": _run_skill_upload, "mutating": True},
+        "POST /api/admin/skills/upload": {
+            "run": _run_skill_upload,
+            "admin_audit_delta": 1,
+            "snapshot_audit_delta": 1,
+        },
     }
 )
 
@@ -686,8 +818,8 @@ async def test_every_admin_write_operation_has_fixture_and_is_audited(
     app_and_session,
 ) -> None:
     """R2-P1-02: OpenAPI admin write operations == fixture set (exact),
-    each fixture really executes, and each mutating write produces exactly
-    one applied audit event with the trusted actor."""
+    each fixture really executes, and audit deltas match the Step 7 PR-J3
+    contract per resource_type bucket."""
     app, session, _ = app_and_session
     openapi = app.openapi()
     enumerated = {
@@ -707,23 +839,44 @@ async def test_every_admin_write_operation_has_fixture_and_is_audited(
     async with await _client(app) as client:
         for op in _ORDERED_OPS:
             fixture = ADMIN_WRITE_FIXTURES[op]
-            before = await _audit_count(session)
-            response = await fixture["run"](client)
+            before_admin = await _audit_count_by_resource(session, "admin")
+            before_snapshot = await _audit_count_by_resource(
+                session, "runtime_snapshot"
+            )
+            response = await fixture["run"](client, session)
             assert response.status_code == 200, (op, response.text)
-            delta = (await _audit_count(session)) - before
-            expected = 1 if fixture["mutating"] else 0
-            assert delta == expected, (op, delta, expected)
+            admin_delta = (
+                await _audit_count_by_resource(session, "admin")
+            ) - before_admin
+            snapshot_delta = (
+                await _audit_count_by_resource(session, "runtime_snapshot")
+            ) - before_snapshot
+            assert admin_delta == fixture["admin_audit_delta"], (
+                op,
+                admin_delta,
+                fixture["admin_audit_delta"],
+            )
+            assert snapshot_delta == fixture["snapshot_audit_delta"], (
+                op,
+                snapshot_delta,
+                fixture["snapshot_audit_delta"],
+            )
 
     # All events from this run carry the trusted actor, never the
     # client-claimed operator.
     rows = (
         await session.execute(
             text(
-                "SELECT actor_user_id, status FROM map_control.config_audit_events"
+                "SELECT actor_user_id, status FROM map_control.config_audit_events "
+                "ORDER BY ordinal"
             )
         )
     ).all()
-    assert len(rows) == sum(1 for op in _ORDERED_OPS if ADMIN_WRITE_FIXTURES[op]["mutating"])
+    expected_total = sum(
+        fixture["admin_audit_delta"] + fixture["snapshot_audit_delta"]
+        for fixture in ADMIN_WRITE_FIXTURES.values()
+    )
+    assert len(rows) == expected_total
     assert {row.actor_user_id for row in rows} == {"local-admin"}
     assert {row.status for row in rows} == {"applied"}
 
