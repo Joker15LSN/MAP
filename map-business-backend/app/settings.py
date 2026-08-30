@@ -69,6 +69,12 @@ class Settings:
     cors_allow_credentials: bool = field(
         default_factory=lambda: parse_bool(_env_or("MAP_CORS_ALLOW_CREDENTIALS", "true"))
     )
+    # Step 8 PR-K6: Bearer token the Run worker presents to Core's typed
+    # NDJSON run stream (POST /internal/v1/runs/.../events).  Empty by
+    # default; the worker fails fast at startup when it is not injected.
+    run_execution_token: str = field(
+        default_factory=lambda: _env_or("MAP_RUN_EXECUTION_TOKEN", "")
+    )
 
 
 def load_settings() -> Settings:
@@ -91,4 +97,5 @@ def load_settings() -> Settings:
         cors_allow_credentials=parse_bool(
             _env_or("MAP_CORS_ALLOW_CREDENTIALS", "true")
         ),
+        run_execution_token=_env_or("MAP_RUN_EXECUTION_TOKEN", ""),
     )

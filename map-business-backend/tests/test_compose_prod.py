@@ -46,6 +46,12 @@ _STRIP_KEYS = (
     "MAP_SANDBOX_SERVICE_CREDENTIALS",
     "MAP_SANDBOX_SERVICE_AUDIENCE",
     "MAP_SANDBOX_CORE_TOKEN",
+    # Step 8 PR-K5/K6: the typed run stream registry/token are base-compose
+    # pass-throughs with empty defaults; strip them so a developer shell can
+    # never leak into the hermetic compose assertions.
+    "MAP_RUN_SERVICE_CREDENTIALS",
+    "MAP_RUN_SERVICE_AUDIENCE",
+    "MAP_RUN_EXECUTION_TOKEN",
 )
 
 # S6-03 / S7-04: prod compose tests must inject a (fake) credential
@@ -174,6 +180,7 @@ _STARTUP_CLEAN_KEYS = (
     "MAP_SERVICE_AUDIENCE",
     "MAP_CORS_ORIGINS",
     "MAP_CORS_ALLOW_CREDENTIALS",
+    "MAP_RUN_EXECUTION_TOKEN",
 )
 
 

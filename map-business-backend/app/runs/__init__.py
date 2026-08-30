@@ -38,6 +38,7 @@ from .sandbox_remote import (
     SandboxRemote,
 )
 from .store import RunStore
+from .typed_core_stream import TypedCoreRunStream
 
 __all__ = [
     "CoreRunStream",
@@ -57,6 +58,7 @@ __all__ = [
     "SandboxIdentity",
     "SandboxReference",
     "SandboxRemote",
+    "TypedCoreRunStream",
     "build_create_key",
     "build_execute_key",
     "effect_executing",

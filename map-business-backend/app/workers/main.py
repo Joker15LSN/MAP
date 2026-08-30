@@ -34,12 +34,22 @@ def build_run_worker() -> tuple[str, RunWorker]:
     registered handler types); this loop owns Run lease/progress/settlement.
     """
     from ..core_client import MapCoreClient
-    from ..runs import HttpCoreRunStream, HttpSandboxRemote, PgRunStore, RunWorker
+    from ..runs import HttpSandboxRemote, PgRunStore, RunWorker, TypedCoreRunStream
 
     worker_id = os.getenv("MAP_WORKER_ID", "").strip() or f"run-worker-{os.getpid()}"
     core_origin = os.getenv("MAP_CORE_API_ORIGIN", "http://127.0.0.1:10000")
+    # Step 8 PR-K6: the worker defaults to Core's typed NDJSON run stream.
+    # The token is deployment-injected only; missing it is a startup
+    # fail-fast, never a fallback to the legacy SSE adapter.
+    run_execution_token = os.getenv("MAP_RUN_EXECUTION_TOKEN", "").strip()
+    if not run_execution_token:
+        raise RuntimeError(
+            "MAP_RUN_EXECUTION_TOKEN is not set: the Run worker requires a "
+            "service credential token for Core's typed run stream "
+            "(POST /internal/v1/runs/{run_id}/attempts/{attempt}/events)"
+        )
     core_client = MapCoreClient(core_origin)
-    core = HttpCoreRunStream(core_client)
+    core = TypedCoreRunStream(core_origin=core_origin, token=run_execution_token)
     sandbox_remote = HttpSandboxRemote(
         core_client,
         core_token=os.getenv("MAP_SANDBOX_CORE_TOKEN", "").strip(),

@@ -127,6 +127,14 @@ services:
       # defaults.
       MAP_SANDBOX_SERVICE_CREDENTIALS: ${MAP_SANDBOX_SERVICE_CREDENTIALS:-}
       MAP_SANDBOX_SERVICE_AUDIENCE: ${MAP_SANDBOX_SERVICE_AUDIENCE:-map-core}
+      # Step 8 PR-K5: internal service credentials for the typed NDJSON run
+      # stream (POST /internal/v1/runs/.../events). The worker presents a
+      # Bearer token that MUST match this registry (explicit audience
+      # map-core + runs.execute scope + unexpired expires_at). Empty
+      # registry = endpoint rejects every caller (fail-closed). No
+      # repository defaults.
+      MAP_RUN_SERVICE_CREDENTIALS: ${MAP_RUN_SERVICE_CREDENTIALS:-}
+      MAP_RUN_SERVICE_AUDIENCE: ${MAP_RUN_SERVICE_AUDIENCE:-map-core}
       MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
       MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
       # Highest-priority kill switch, always passed through: OTEL_SDK_DISABLED
@@ -245,6 +253,12 @@ services:
       # MAP_SANDBOX_SERVICE_CREDENTIALS with the sandbox:execute scope, an
       # explicit audience and an unexpired expires_at).
       MAP_SANDBOX_CORE_TOKEN: ${MAP_SANDBOX_CORE_TOKEN:-}
+      # Step 8 PR-K6: the Bearer credential the worker presents to Core's
+      # typed NDJSON run stream (POST /internal/v1/runs/.../events). Must be
+      # registered in algorithm-service's MAP_RUN_SERVICE_CREDENTIALS with
+      # the runs.execute scope, explicit audience and unexpired expires_at.
+      # Empty by default: the worker fails fast at startup until injected.
+      MAP_RUN_EXECUTION_TOKEN: ${MAP_RUN_EXECUTION_TOKEN:-}
       MAP_OTEL_ENABLED: ${MAP_OTEL_ENABLED:-false}
       MAP_OTEL_SAMPLING_RATIO: ${MAP_OTEL_SAMPLING_RATIO:-1.0}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
