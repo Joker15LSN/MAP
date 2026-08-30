@@ -15,8 +15,9 @@ Conversation -> Run -> Step/Attempt -> Invocation/Approval/Artifact
 - **Run worker**：持有 lease 的唯一执行写者；写 Step/Attempt/Event/
   Checkpoint/Invocation；执行期外任何 writer 提交被 fencing 拒绝。
 - **core**：只读 BFF 下发的 config snapshot（固定 id/digest，见
-  [`runtime-snapshot.md`](runtime-snapshot.md)），返回 typed events/results，
-  不直连 PG、不 current fetch、不 fallback。
+  [`runtime-snapshot.md`](runtime-snapshot.md)），产出 typed execution events
+  （[`core-execution-event.md`](core-execution-event.md)），返回 typed
+  events/results，不直连 PG、不 current fetch、不 fallback、不写 Mongo telemetry。
 - 事件按 `(run_id, seq)` 严格递增唯一（DB unique 约束）；SSE 至少一次投递，
   客户端按 `(run_id, seq)` 幂等去重，终态恰好一次渲染。
 

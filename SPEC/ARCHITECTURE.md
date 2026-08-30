@@ -40,7 +40,8 @@ Run 细节以 [`contracts/run.md`](contracts/run.md) 为准，身份以
 - PostgreSQL：Workspace、Conversation、Message、Feedback、Job、Effect、Outbox、配置
   AdminState、Runtime Snapshot、审计与 Run/Event/Checkpoint/Invocation 事实。
 - 文件快照：`admin_state.json` 已退役；旧文件仅作为一次性导入工具的输入。
-- MongoDB：当前 Core 运行记录和观测查询；目标作为 Canonical Event 的观测投影。
+- MongoDB：历史运行记录只读集合 + agent memory 业务数据；core 已停止 telemetry 写入
+  （Step 8 PR-K8），drop 受 retention runbook 约束。
 - OTel 后端：trace/span；通过稳定运行标识与业务事实关联，不取代业务状态。
 
 物理数据库可访问不等于模块拥有写权限。所有权矩阵见

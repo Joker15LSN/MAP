@@ -121,14 +121,16 @@ PostgreSQL 和 MongoDB 是基础设施而非业务模块。两个前端通过
 - 宿主 Python、shell、本地文件和 stdio MCP 执行能力已被删除或 fail-closed。
 - OpenSandbox 客户端、身份校验、ledger 与崩溃恢复已有实现和测试；真实服务部署与完整集成
   仍需环境验收。
-- Core 当前仍直接保存部分 Mongo 运行记录，并为沙箱 ledger 使用 PostgreSQL；目标边界要求
+- Core 已不再写 Mongo telemetry（Step 8 PR-K8）；沙箱 ledger 使用 PostgreSQL，目标边界要求
   Core 不直接写 Canonical Run/Event 事实。
 
 安全决策见 [`ADR-0001`](../SPEC/adr/ADR-0001-disable-host-execution-capabilities.md)。
 
 ### 5.5 观测（已实现基础，过渡中）
 
-- Core 把请求、智能体、工具和模型运行记录保存到 MongoDB，观测后端负责聚合查询。
+- Core 自 Step 8 PR-K8 起不再写 Mongo telemetry：执行事实经 typed execution event
+  NDJSON 流传给 BFF 写 Canonical RunEvent，诊断经 OTel 投影；历史 Mongo collection
+  只读保留至 retention/drop 双签。
 - BFF 与 Core 可通过 `otel` overlay 上报 trace 到 Collector/Jaeger。
 - 运行身份与 trace 身份已有传播测试，但 Canonical Event 与 OTel/Mongo 的统一投影仍属目标。
 
@@ -139,7 +141,7 @@ PostgreSQL 和 MongoDB 是基础设施而非业务模块。两个前端通过
 | Workspace、Conversation、Message、Feedback | PostgreSQL `map_control` | BFF | 保持 |
 | Job、Outbox、Effect、配置 Mutation、审计链 | PostgreSQL `map_control` | BFF / Worker | 由明确单写者和 fencing 约束 |
 | 管理配置当前值 | `map_control.admin_state` 单行 + audit 事实 | BFF | 保持 PG 单行 + Runtime Snapshot |
-| 请求、Agent、Tool、LLM 运行记录 | MongoDB | Core | 作为投影；不承担 Canonical Run 真相 |
+| 请求、Agent、Tool、LLM 运行记录 | Canonical RunEvent（PG）；历史 Mongo collection 只读待 retention | Core 产生 typed event；BFF Worker 单写 RunEvent | 作为投影；不承担 Canonical Run 真相 |
 | 沙箱调用事实 | run_events 中 effect.* 事件（PR-E）；旧 `sandbox_invocations`/`effect_ledger` 停写待排空 | RunWorker（单写者）；core 无状态 | 收敛到 Canonical Invocation/Effect 所有权 |
 | Trace / Span | OTel 后端 | BFF / Core | 与 Run/Event 标识稳定关联 |
 

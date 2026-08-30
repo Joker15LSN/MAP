@@ -97,8 +97,11 @@ BLOCKED_REASON_BY_TASK = {
                        "migration and legacy shell deletion are implemented "
                        "(PR-I B0-B6); durable ModelInvocation reconciliation "
                        "and CI attestation still pending",
-    "P1-CLEAN-STATE-01": "Mongo state/telemetry abstraction retirement not "
-                         "implemented in this change set",
+    "P1-CLEAN-STATE-01": "core typed execution events, NDJSON service-identity "
+                          "stream and Mongo telemetry write-stop are "
+                          "implemented (PR-K1-K8); retention export/restore/"
+                          "drop dual-signoff and P1-OBS-01 read switch still "
+                          "pending",
     "P1-CONFIG-01": "PG AdminState + immutable runtime snapshots, lifecycle "
                     "CAS, Run pinning and core transport are implemented "
                     "(PR-J1-J7); asset owner/version/eval/canary/delete-guard "

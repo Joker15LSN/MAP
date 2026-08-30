@@ -11,6 +11,7 @@ ADR 记录影响多个模块、难以轻易逆转或改变信任/数据所有权
 | [`ADR-0002`](ADR-0002-canonical-run-event-artifact-contract.md) | Accepted | Canonical Run/Event/Artifact、单写者与 BFF→Worker→Core 边界 |
 | [`ADR-0003`](ADR-0003-message-delta-run-projection.md) | Accepted | Canonical Event 扩展 `message.delta`：Run 投影的增量内容事实 |
 | [`ADR-0004`](ADR-0004-runtime-snapshot-pinning.md) | Accepted | PG 单行 AdminState + 不可变 Runtime Snapshot + Run 固定 id/digest + core fixed-id 读取 |
+| [`ADR-0005`](ADR-0005-core-typed-execution-events.md) | Accepted | core typed execution events + service-identity NDJSON 流 + Mongo telemetry 停写/retention |
 
 ## 何时新增 ADR
 
