@@ -13,12 +13,11 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import httpx
 import pytest
-from fastapi import Request
-from starlette.datastructures import Headers
+from fastapi import FastAPI
 
 from map_core.routers import flow_domain_router
-from map_core.routers.runtime_transport import apply_runtime_headers
 from map_core.schema.flow_domain_schema import FlowChatRequest
 from map_core.service.execution_event import set_run_context
 from map_core.service.flow_domain import FlowDomain
@@ -54,6 +53,63 @@ async def _collect_events(stream: AsyncGenerator[Any, None]) -> list[Any]:
         async for item in stream:
             items.append(item)
     return items
+
+
+class _CapturingFlowDomain:
+    """Route-driven fake that captures the router-injected request state."""
+
+    last_instance: "_CapturingFlowDomain | None" = None
+
+    def __init__(self, request=None, http_request=None) -> None:
+        state = http_request.state
+        self.captured = {
+            "runtime_snapshot_id": state.runtime_snapshot_id,
+            "runtime_snapshot_digest": state.runtime_snapshot_digest,
+        }
+        _CapturingFlowDomain.last_instance = self
+
+    async def consume_event_stream(self, request):
+        return {"content": "", "meta": {}}
+
+
+class _ProviderProbeFlowDomain:
+    """Route-driven fake that runs the REAL FlowDomain fail-closed path."""
+
+    last_instance: "_ProviderProbeFlowDomain | None" = None
+
+    def __init__(self, request=None, http_request=None) -> None:
+        self.provider = _RaisingProvider(RuntimeSnapshotAuthError("auth rejected"))
+        self._flow_domain = FlowDomain(
+            request=request,
+            http_request=http_request,
+            flow_config_provider=self.provider,  # type: ignore[arg-type]
+        )
+        self._flow_domain.global_domain._prepare_runtime_request = (
+            lambda incoming: incoming
+        )
+        self.events: list[Any] = []
+        _ProviderProbeFlowDomain.last_instance = self
+
+    async def consume_event_stream(self, request):
+        async for event in self._flow_domain.pipeline_stream(request):
+            self.events.append(event)
+        return {"content": "", "meta": {}}
+
+
+def _flow_chat_app() -> FastAPI:
+    app = FastAPI()
+    app.include_router(flow_domain_router.flow_domain_router)
+    return app
+
+
+async def _post_flow_chat_v1(headers: dict[str, str]) -> httpx.Response:
+    transport = httpx.ASGITransport(app=_flow_chat_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.post(
+            "/flow_domain/chat/v1",
+            json={"query": "订单确认收入"},
+            headers=headers,
+        )
 
 
 @pytest.mark.parametrize(
@@ -109,54 +165,24 @@ def test_pipeline_stream_fails_closed_without_global_fallback(exc, code) -> None
     assert fallback_called is False
 
 
-def test_router_injected_runtime_headers_reach_provider() -> None:
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "scheme": "http",
-        "path": "/flow_domain/chat/v1",
-        "raw_path": b"/flow_domain/chat/v1",
-        "query_string": b"",
-        "root_path": "",
-        "headers": Headers(
+def test_router_injected_runtime_headers_reach_provider(monkeypatch) -> None:
+    monkeypatch.setattr(flow_domain_router, "FlowDomain", _ProviderProbeFlowDomain)
+    response = asyncio.run(
+        _post_flow_chat_v1(
             {
                 "X-Runtime-Snapshot-ID": SNAPSHOT_ID,
                 "X-Runtime-Snapshot-Digest": DIGEST,
             }
-        ).raw,
-        "client": ("127.0.0.1", 12345),
-        "server": ("test", 8000),
-        "state": {},
-        "app": None,
-    }
-    http_request = Request(scope)
-    apply_runtime_headers(http_request, request_token=None)
-    http_request.state.runtime_snapshot_id = flow_domain_router._runtime_snapshot_id_value(
-        http_request.headers.get("X-Runtime-Snapshot-ID")
+        )
     )
-    http_request.state.runtime_snapshot_digest = flow_domain_router._runtime_snapshot_digest_value(
-        http_request.headers.get("X-Runtime-Snapshot-Digest")
-    )
-
-    provider = _RaisingProvider(RuntimeSnapshotAuthError("auth rejected"))
-    flow_domain = FlowDomain(
-        request=FlowChatRequest(query="订单确认收入"),
-        http_request=http_request,
-        flow_config_provider=provider,  # type: ignore[arg-type]
-    )
-    flow_domain.global_domain._prepare_runtime_request = lambda incoming: incoming
-
-    events = asyncio.run(
-        _collect_events(flow_domain.pipeline_stream(FlowChatRequest(query="订单确认收入")))
-    )
-
-    assert provider.called_with == {
+    assert response.status_code == 200
+    probe = _ProviderProbeFlowDomain.last_instance
+    assert probe is not None
+    assert probe.provider.called_with == {
         "snapshot_id": SNAPSHOT_ID,
         "expected_digest": DIGEST,
     }
-    assert [event.event for event in events] == ["start", "error"]
+    assert [event.event for event in probe.events] == ["start", "error"]
 
 
 @pytest.mark.parametrize(
@@ -169,37 +195,23 @@ def test_router_injected_runtime_headers_reach_provider() -> None:
         ("", "", None, None),
     ],
 )
-def test_apply_runtime_headers_validation(snapshot_id, digest, expected_id, expected_digest) -> None:
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "scheme": "http",
-        "path": "/flow_domain/chat/v1",
-        "raw_path": b"/flow_domain/chat/v1",
-        "query_string": b"",
-        "root_path": "",
-        "headers": Headers(
+def test_flow_runtime_snapshot_header_validation(
+    snapshot_id, digest, expected_id, expected_digest, monkeypatch
+) -> None:
+    _CapturingFlowDomain.last_instance = None
+    monkeypatch.setattr(flow_domain_router, "FlowDomain", _CapturingFlowDomain)
+    response = asyncio.run(
+        _post_flow_chat_v1(
             {
                 "X-Runtime-Snapshot-ID": snapshot_id,
                 "X-Runtime-Snapshot-Digest": digest,
             }
-        ).raw,
-        "client": ("127.0.0.1", 12345),
-        "server": ("test", 8000),
-        "state": {},
-        "app": None,
+        )
+    )
+    assert response.status_code == 200
+    captured = _CapturingFlowDomain.last_instance
+    assert captured is not None
+    assert captured.captured == {
+        "runtime_snapshot_id": expected_id,
+        "runtime_snapshot_digest": expected_digest,
     }
-    http_request = Request(scope)
-
-    apply_runtime_headers(http_request, request_token=None)
-    http_request.state.runtime_snapshot_id = flow_domain_router._runtime_snapshot_id_value(
-        http_request.headers.get("X-Runtime-Snapshot-ID")
-    )
-    http_request.state.runtime_snapshot_digest = flow_domain_router._runtime_snapshot_digest_value(
-        http_request.headers.get("X-Runtime-Snapshot-Digest")
-    )
-
-    assert http_request.state.runtime_snapshot_id == expected_id
-    assert http_request.state.runtime_snapshot_digest == expected_digest

@@ -5,7 +5,7 @@ must preserve:
 
 - F-04 id validation through the REAL global-domain route (headers are
   applied by the router under test, captured through the request state);
-- legacy SSE frame bytes exactly as ``_format_sse_event`` renders them today;
+- legacy SSE frame bytes exactly as the legacy SSE formatter renders them today;
 - the two error JSON envelopes: FastAPI/Starlette ``{detail}`` and the
   execution router's ``{detail, error_code}``.
 
