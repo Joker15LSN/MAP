@@ -15,6 +15,7 @@ os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_conv_test_state.json")
 
 import pytest
 import pytest_asyncio
+from conftest import seed_pg_admin_state
 from httpx import ASGITransport, AsyncClient
 
 from app.core.identity import AuthMode
@@ -72,6 +73,7 @@ async def app_and_core(_engine, session):
         yield session
 
     app.dependency_overrides[get_db_session] = _override
+    await seed_pg_admin_state(session)
     return app, core
 
 

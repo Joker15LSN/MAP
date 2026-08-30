@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .admin_state import AdminStateRow
 from .audit import AuditLog, ConfigAuditChainHead, ConfigAuditEvent, ConfigMutation
 from .conversation import Conversation, Message, MessageEvidence
 from .effect import (
@@ -33,6 +34,7 @@ __all__ = [
     "EFFECT_UNCERTAIN",
     "MUTATION_STATUSES",
     "SNAPSHOT_STATUSES",
+    "AdminStateRow",
     "AuditLog",
     "ConfigAuditChainHead",
     "ConfigAuditEvent",

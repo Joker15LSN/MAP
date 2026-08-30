@@ -7,8 +7,15 @@ activation and crash recovery.
 
 from __future__ import annotations
 
-from .digest import canonical_json_hash, projection_digest, snapshot_id_for_digest
+from .digest import (
+    canonical_json_hash,
+    projection_digest,
+    snapshot_id_for_digest,
+    state_hash,
+)
 from .errors import (
+    AdminStateUnavailableError,
+    BadAdminStateError,
     RuntimeSnapshotUnavailableError,
     SnapshotAuditWriteError,
     SnapshotConcurrentModificationError,
@@ -26,13 +33,13 @@ from .schemas import (
     build_runtime_projection,
 )
 from .service import (
-    AdminStateMutationStore,
     RuntimeSnapshotService,
     reconcile_runtime_snapshot_mutations,
 )
 
 __all__ = [
-    "AdminStateMutationStore",
+    "AdminStateUnavailableError",
+    "BadAdminStateError",
     "MutationContext",
     "RuntimeProjection",
     "RuntimeSnapshotRead",
@@ -51,4 +58,5 @@ __all__ = [
     "projection_digest",
     "reconcile_runtime_snapshot_mutations",
     "snapshot_id_for_digest",
+    "state_hash",
 ]

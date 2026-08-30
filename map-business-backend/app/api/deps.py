@@ -31,8 +31,21 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-def get_store(request: Request) -> ConfigRepository:
-    return request.app.state.store
+def get_store(request: Request, session: DbSession) -> ConfigRepository:
+    """Return the admin config repository for the current request.
+
+    Tests may inject a non-PG override through ``create_app(store=...)``
+    (stored on ``app.state.store``); production falls back to the PG
+    single-row repository bound to the request's database session.
+    """
+    override = getattr(request.app.state, "store", None)
+    if override is not None:
+        return override
+    from ..services.runtime_snapshot.adapters.admin_state_pg import (
+        PgAdminStateRepository,
+    )
+
+    return PgAdminStateRepository(session)
 
 
 def get_core_client(request: Request) -> MapCoreClient:
@@ -40,15 +53,21 @@ def get_core_client(request: Request) -> MapCoreClient:
 
 
 def get_runtime_snapshots(request: Request, session: DbSession):
-    """Admin write-path service: store + PG snapshot repository.
+    """Admin write-path service: PG admin state + PG snapshot repository.
 
-    The repository is bound to the request's database session, so every
-    snapshot state change joins the caller's transaction.
+    Both repositories are bound to the request's database session, so
+    apply_change runs as one atomic PG transaction.
     """
+    from ..services.runtime_snapshot.adapters.admin_state_pg import (
+        PgAdminStateRepository,
+    )
     from ..services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
     from ..services.runtime_snapshot.service import RuntimeSnapshotService
 
-    return RuntimeSnapshotService(request.app.state.store, PgRuntimeSnapshotRepository(session))
+    return RuntimeSnapshotService(
+        PgAdminStateRepository(session),
+        PgRuntimeSnapshotRepository(session),
+    )
 
 
 def get_permissions(request: Request) -> PermissionService:

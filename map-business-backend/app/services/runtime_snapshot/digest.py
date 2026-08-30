@@ -16,6 +16,7 @@ import hashlib
 import json
 import uuid
 
+from ...schemas import AdminState
 from .schemas import RuntimeProjection
 
 # Fixed namespace for deterministic snapshot ids (uuid5).
@@ -26,6 +27,16 @@ def canonical_json_hash(obj: object) -> str:
     """SHA-256 over canonical JSON (sorted keys, compact separators)."""
     canonical = json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def state_hash(state: AdminState) -> str:
+    """Canonical hash of the AdminState (sorted keys, stable across runs).
+
+    Kept literally identical to the original ``app.store.state_hash`` so
+    file-store digests and PG-store digests are interchangeable; a unit
+    test locks the equivalence.
+    """
+    return canonical_json_hash(state.model_dump())
 
 
 def projection_digest(projection: RuntimeProjection | dict) -> str:

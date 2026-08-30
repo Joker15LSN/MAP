@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -23,6 +24,7 @@ from fastapi.testclient import TestClient
 from app.core.identity import AuthMode
 from app.core.service_identity import ServiceCredential, parse_service_credentials
 from app.main import create_app
+from app.schemas import AdminState
 from app.settings import Settings
 
 SECRET = "fake-s3cret-value-42"
@@ -33,7 +35,24 @@ def _app(settings: Settings):
     from dataclasses import replace
 
     settings = replace(settings, state_file="/tmp/map_bff_auth_test_state.json")
-    return create_app(settings=settings, store=None, core_client=None)
+    app = create_app(settings=settings, store=None, core_client=None)
+    _seed_pg_admin_state_sync()
+    return app
+
+
+def _seed_pg_admin_state_sync() -> None:
+    """Seed the PG admin state once for TestClient apps (no lifespan)."""
+    from app.db.session import get_session_factory
+    from app.services.runtime_snapshot.adapters.admin_state_pg import (
+        PgAdminStateRepository,
+    )
+
+    async def _seed() -> None:
+        async with get_session_factory()() as session:
+            await PgAdminStateRepository(session).seed_if_empty(AdminState.default())
+            await session.commit()
+
+    asyncio.run(_seed())
 
 
 def _trusted(secret: str = SECRET, roles: str = "member") -> Settings:

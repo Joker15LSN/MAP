@@ -97,7 +97,7 @@ def _forward_headers(
 async def get_business_agents(
     store: ConfigRepository = Depends(get_store),
 ) -> list[BusinessAgentConfig]:
-    state = store.load()
+    state = await store.load()
     return state.business_agents
 
 
@@ -163,7 +163,7 @@ async def test_business_agent(
     core_client: MapCoreClient = Depends(get_core_client),
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> dict[str, Any]:
-    state = store.load()
+    state = await store.load()
     agent = payload.agent
     if agent is None:
         agent = next(
@@ -211,7 +211,7 @@ async def test_business_agent(
 
 @router.get("/api/admin/mcp-servers")
 async def get_mcp_servers(store: ConfigRepository = Depends(get_store)) -> list[McpServerConfig]:
-    return store.load().mcp_servers
+    return (await store.load()).mcp_servers
 
 
 @router.put("/api/admin/mcp-servers")
@@ -322,7 +322,7 @@ async def refresh_mcp_server_tools(
     store: ConfigRepository = Depends(get_store),
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> McpServerConfig:
-    state = store.load()
+    state = await store.load()
     server = next((item for item in state.mcp_servers if item.server_id == server_id), None)
     if server is None:
         raise HTTPException(status_code=404, detail=f"MCP server {server_id} not found")
@@ -350,7 +350,7 @@ async def refresh_mcp_server_tools(
 
 @router.get("/api/admin/skills")
 async def get_uploaded_skills(store: ConfigRepository = Depends(get_store)) -> list[UploadedSkill]:
-    return store.load().skills
+    return (await store.load()).skills
 
 
 @router.put("/api/admin/skills")

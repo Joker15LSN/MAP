@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,10 +38,8 @@ from .core.identity import AuthMode, parse_optional_id, parse_request_id
 from .core.permissions import PermissionService
 from .core_client import MapCoreClient
 from .cors_policy import is_production, normalize_env, parse_origins
-from .repositories.config import ConfigRepository
 from .services.stream_registry import StreamRegistry
 from .settings import Settings, load_settings
-from .store import AdminStateStore
 from .telemetry import configure_bff_telemetry, shutdown_bff_telemetry
 
 logger = logging.getLogger(__name__)
@@ -84,43 +84,91 @@ def validate_settings(settings: Settings) -> None:
 def create_app(
     *,
     settings: Settings | None = None,
-    store: ConfigRepository | None = None,
+    store: Any = None,
     core_client: MapCoreClient | None = None,
 ) -> FastAPI:
     """Build the FastAPI application.
 
     Args:
         settings: process settings; defaults to the environment.
-        store: config repository; defaults to the file-backed
-            :class:`AdminStateStore` pointed at ``settings.state_file``.
+        store: optional read-path override for tests; stored on
+            ``app.state.store``. Production leaves this ``None`` and
+            ``app.api.deps.get_store`` builds a session-bound
+            ``PgAdminStateRepository``.
         core_client: map_core HTTP client; defaults to the client pointed
             at ``settings.map_core_api_origin``.
     """
     settings = settings or load_settings()
     validate_settings(settings)
-    store = store or AdminStateStore(settings.state_file)
     core_client = core_client or MapCoreClient(settings.map_core_api_origin)
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
-        # Crash recovery: finish pending config mutations and append
-        # recovered audit events (best effort; never blocks startup).
+        # Best-effort boot reconciliation (never blocks startup):
+        # 1. drain legacy pending mutation rows when an old file store still
+        #    exists (J7a only; J7b removes this path);
+        # 2. seed the PG admin state singleton + an active runtime snapshot
+        #    when the database is empty. Existing data is never overwritten.
         try:
             from .db.session import get_session_factory
-            from .services.config_mutation import reconcile_config_mutations
-            from .services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
-            from .services.runtime_snapshot.service import (
-                reconcile_runtime_snapshot_mutations,
+
+            factory = get_session_factory()
+            state_file = Path(settings.state_file)
+            if state_file.exists():
+                from .services.config_mutation import (
+                    reconcile_config_mutations,
+                )
+                from .services.runtime_snapshot.adapters.pg import (
+                    PgRuntimeSnapshotRepository,
+                )
+                from .services.runtime_snapshot.service import (
+                    reconcile_runtime_snapshot_mutations,
+                )
+                from .store import AdminStateStore
+
+                legacy_store = AdminStateStore(settings.state_file)
+                await reconcile_config_mutations(factory, legacy_store)
+                await reconcile_runtime_snapshot_mutations(
+                    factory,
+                    legacy_store,
+                    lambda session: PgRuntimeSnapshotRepository(session),
+                )
+
+            from .schemas import AdminState
+            from .services.runtime_snapshot.adapters.admin_state_pg import (
+                PgAdminStateRepository,
+            )
+            from .services.runtime_snapshot.adapters.pg import (
+                PgRuntimeSnapshotRepository,
+            )
+            from .services.runtime_snapshot.digest import (
+                projection_digest,
+                snapshot_id_for_digest,
+            )
+            from .services.runtime_snapshot.schemas import (
+                build_runtime_projection,
             )
 
-            await reconcile_config_mutations(get_session_factory(), store)
-            await reconcile_runtime_snapshot_mutations(
-                get_session_factory(),
-                store,
-                lambda session: PgRuntimeSnapshotRepository(session),
-            )
+            async with factory() as session:
+                admin_repo = PgAdminStateRepository(session)
+                await admin_repo.seed_if_empty(AdminState.default())
+                snapshot_repo = PgRuntimeSnapshotRepository(session)
+                if await snapshot_repo.get_current() is None:
+                    state = await admin_repo.load()
+                    projection = build_runtime_projection(state)
+                    digest = projection_digest(projection)
+                    snapshot_id = snapshot_id_for_digest(digest)
+                    inserted = await snapshot_repo.insert(
+                        snapshot_id, projection, digest, None, "draft"
+                    )
+                    if inserted.status == "draft":
+                        await snapshot_repo.transition_status(
+                            snapshot_id, "draft", "published"
+                        )
+                    await snapshot_repo.activate(snapshot_id, None)
+                await session.commit()
         except Exception:
-            logger.exception("config mutation reconciler failed at startup")
+            logger.exception("runtime snapshot boot reconciliation failed")
         yield
         shutdown_bff_telemetry()
 

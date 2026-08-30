@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from conftest import seed_pg_admin_state
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -69,6 +70,8 @@ async def http_client(_engine, session, tmp_path):
             yield s
 
     app.dependency_overrides[get_db_session] = _override_db
+    async with factory() as _seed_session:
+        await seed_pg_admin_state(_seed_session)
     app.dependency_overrides[get_run_application] = lambda: RunApplication(
         PgRunStore(factory)
     )

@@ -73,6 +73,25 @@ ADMIN_DSN = os.getenv(
 os.environ.setdefault("MAP_CONTROL_DB_DSN", APP_DSN)
 
 
+async def seed_pg_admin_state(session, state=None) -> bool:
+    """Seed the PG single-row admin state once (idempotent helper).
+
+    Tests that build an app with ``get_db_session`` overridden to a
+    session must call this BEFORE exercising routes that read admin state;
+    production seeds it in the lifespan, but ``ASGITransport`` does not
+    run lifespan handlers.
+    """
+    from app.schemas import AdminState
+    from app.services.runtime_snapshot.adapters.admin_state_pg import (
+        PgAdminStateRepository,
+    )
+
+    repo = PgAdminStateRepository(session)
+    inserted = await repo.seed_if_empty(state or AdminState.default())
+    await session.commit()
+    return inserted
+
+
 async def run_alembic_upgrade() -> None:
     """Upgrade to head in a worker thread (alembic runs its own loop)."""
     from alembic import command

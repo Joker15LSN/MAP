@@ -18,6 +18,7 @@ os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_audit_test_state.json"
 
 import pytest
 import pytest_asyncio
+from conftest import seed_pg_admin_state
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 
@@ -49,6 +50,7 @@ async def app_and_session(_engine, session):
         yield session
 
     app.dependency_overrides[get_db_session] = _override
+    await seed_pg_admin_state(session)
     return app, session
 
 

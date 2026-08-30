@@ -81,7 +81,7 @@ async def chat(
     core_client: MapCoreClient = Depends(get_core_client),
 ) -> dict[str, Any]:
     headers = _forward_headers(request_token, request)
-    request_payload = build_runtime_chat_payload(store, payload)
+    request_payload = await build_runtime_chat_payload(store, payload)
     try:
         return await core_client.chat(
             request_payload,
@@ -108,7 +108,7 @@ async def chat_stream_v2(
     core_client: MapCoreClient = Depends(get_core_client),
 ) -> StreamingResponse:
     headers = _forward_headers(request_token, request)
-    request_payload = build_runtime_chat_payload(store, payload)
+    request_payload = await build_runtime_chat_payload(store, payload)
 
     async def stream() -> Any:
         try:
@@ -160,7 +160,7 @@ async def chat_flow_v1(
         )
     headers = _forward_headers(request_token, request)
     _apply_runtime_snapshot_headers(headers, current)
-    request_payload = build_runtime_chat_payload(store, payload)
+    request_payload = await build_runtime_chat_payload(store, payload)
     try:
         return await core_client.chat_by_path(
             "/flow_domain/chat/v1",
@@ -198,7 +198,7 @@ async def chat_stream_flow_v1(
         )
     headers = _forward_headers(request_token, request)
     _apply_runtime_snapshot_headers(headers, current)
-    request_payload = build_runtime_chat_payload(store, payload)
+    request_payload = await build_runtime_chat_payload(store, payload)
 
     async def stream() -> Any:
         try:

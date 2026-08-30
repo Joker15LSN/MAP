@@ -51,7 +51,11 @@ from app.store import AdminStateStore, state_hash
 
 pytestmark = pytest.mark.asyncio
 
-from conftest import ADMIN_DSN, MIGRATION_DSN  # noqa: E402  (needs pytest path setup above)
+from conftest import (  # noqa: E402  (needs pytest path setup above)
+    ADMIN_DSN,
+    MIGRATION_DSN,
+    seed_pg_admin_state,
+)
 
 TEST_DSN = os.getenv(
     "MAP_CONTROL_TEST_DSN",
@@ -708,6 +712,9 @@ async def test_concurrent_http_admin_writes_keep_single_chain(chain_factory, tmp
             yield session
 
     app.dependency_overrides[get_db_session] = _override
+    async with factory() as _seed_session:
+        await seed_pg_admin_state(_seed_session)
+
     transport = ASGITransport(app=app)
 
     async def _write(client, index: int) -> int:

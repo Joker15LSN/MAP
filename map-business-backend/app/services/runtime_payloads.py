@@ -359,9 +359,11 @@ def build_dispatch_config_payload(
     return payload
 
 
-def build_runtime_chat_payload(store: ConfigRepository, payload: ChatRequest) -> dict[str, Any]:
+async def build_runtime_chat_payload(
+    store: ConfigRepository, payload: ChatRequest
+) -> dict[str, Any]:
     request_payload = payload.model_dump(exclude_none=True)
-    state = store.load()
+    state = await store.load()
     request_payload.setdefault(
         "scene_selection",
         build_scene_selection_payload(state),

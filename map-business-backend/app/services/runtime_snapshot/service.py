@@ -1,13 +1,16 @@
-"""Runtime snapshot lifecycle service (Step 7 PR-J2).
+"""Runtime snapshot lifecycle service (Step 7 PR-J2 / J7a).
 
-``apply_change`` mirrors the crash semantics of
-``ConfigMutationService.apply_mutation`` (config_mutation.py): load the
-AdminState fail-closed -> prepare the target state/hash purely -> commit a
-pending ``runtime_snapshot_mutations`` row -> CAS + file rename -> insert
-draft snapshot -> publish -> activate -> audit + outbox -> finish pending.
-An audit write failure is never swallowed: the request fails and the
-pending row stays for the reconciler, which closes it only on exact hash
-and pointer matches.
+``apply_change`` runs the whole admin write as ONE PostgreSQL transaction:
+lock the PG admin state row -> validate fail-closed -> pure
+``build_draft`` computation -> project/digest -> insert draft snapshot ->
+publish -> activate (CAS on the current pointer) -> save admin state ->
+admin audit + snapshot audit + outbox -> commit. A snapshot CAS failure
+rolls the whole transaction back (the admin state is NOT persisted) and
+records a failed snapshot audit; an audit append failure rolls the whole
+transaction back and returns 500 AUDIT_WRITE_FAILED. No pending mutation
+row is needed anymore because PG atomicity replaces the file-rename
+window; the legacy reconcilers remain only to drain rows written by older
+versions.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Protocol, TypeVar
+from typing import Any, TypeVar
 
 from fastapi import HTTPException
 from sqlalchemy import select, update
@@ -25,18 +28,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ...core.identity import RequestPrincipal
 from ...core.redaction import redact_payload
 from ...db.models import OutboxEvent, RuntimeSnapshotMutation
-from ...store import (
-    AdminStateStore,
-    BadStateFileError,
-    ConcurrentModificationError,
-    PreparedUpdate,
-    StoreWriteError,
-    state_hash,
-)
+from ...store import AdminStateStore, BadStateFileError
 from ..config_mutation import AuditWriteError, append_audit_event
 from ..json_diff import json_patch_diff
-from .digest import projection_digest, snapshot_id_for_digest
-from .errors import SnapshotConcurrentModificationError, SnapshotStateConflictError
+from .adapters.admin_state_pg import PgAdminStateRepository
+from .digest import projection_digest, snapshot_id_for_digest, state_hash
+from .errors import (
+    AdminStateUnavailableError,
+    BadAdminStateError,
+    SnapshotConcurrentModificationError,
+    SnapshotStateConflictError,
+)
 from .repository import RuntimeSnapshotRepository
 from .schemas import (
     MutationContext,
@@ -48,29 +50,6 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-
-class AdminStateMutationStore(Protocol):
-    """Narrow store protocol used by the snapshot service.
-
-    The existing :class:`AdminStateStore` is an adapter; callers never see
-    ``update(updater)`` and therefore cannot bypass the prepare/apply
-    crash-recovery sequence.
-    """
-
-    def load(self) -> Any:
-        """Return the current validated admin state."""
-        ...
-
-    def prepare_update(
-        self, expected_hash: str, updater: Callable[[Any], T]
-    ) -> PreparedUpdate[T]:
-        """Pure computation phase (no write)."""
-        ...
-
-    def apply_prepared(self, prepared: PreparedUpdate[T]) -> None:
-        """Apply phase: CAS + atomic file write."""
-        ...
 
 
 def _workspace_uuid(principal: RequestPrincipal) -> Any:
@@ -90,7 +69,7 @@ def _request_id(request: Any) -> str | None:
 class RuntimeSnapshotService:
     def __init__(
         self,
-        admin_store: AdminStateMutationStore,
+        admin_store: PgAdminStateRepository,
         snapshots: RuntimeSnapshotRepository,
     ) -> None:
         self._admin_store = admin_store
@@ -102,26 +81,16 @@ class RuntimeSnapshotService:
         context: MutationContext,
         build_draft: Callable[[Any], T],
     ) -> tuple[Any, T]:
-        """Audited snapshot write from an AdminState change.
-
-        Crash recovery point: a pending ``runtime_snapshot_mutations`` row
-        (with both admin hashes, the target snapshot id/digest/projection
-        and the original request context) is committed BEFORE the file
-        rename; the snapshot side and audit events are committed AFTER.
-        """
-        workspace_id = _workspace_uuid(context.principal)
-        request_id = _request_id(context.request)
-
-        # 1. Load current admin state (fail closed; never overwrite a
-        #    corrupt file).
+        """Audited snapshot write from an AdminState change (one PG tx)."""
+        # 1. Lock the singleton admin state row and validate it fail-closed.
         try:
-            current = self._admin_store.load()
-        except BadStateFileError as exc:
+            current = await self._admin_store.load()
+        except AdminStateUnavailableError as exc:
             await self._append_admin_audit(
                 session,
                 context,
                 status="failed",
-                failure_code="BAD_STATE_FILE",
+                failure_code="ADMIN_STATE_UNAVAILABLE",
                 before_hash=None,
                 after_hash=None,
                 json_patch=None,
@@ -130,14 +99,32 @@ class RuntimeSnapshotService:
             await session.commit()
             raise HTTPException(
                 status_code=500,
-                detail=f"admin state file is corrupt and kept untouched: {exc}",
-                headers={"X-MAP-Error-Code": "BAD_STATE_FILE"},
+                detail=f"admin state unavailable: {exc}",
+                headers={"X-MAP-Error-Code": "ADMIN_STATE_UNAVAILABLE"},
+            ) from exc
+        except BadAdminStateError as exc:
+            await self._append_admin_audit(
+                session,
+                context,
+                status="failed",
+                failure_code="BAD_ADMIN_STATE",
+                before_hash=None,
+                after_hash=None,
+                json_patch=None,
+                error_message=str(exc),
+            )
+            await session.commit()
+            raise HTTPException(
+                status_code=500,
+                detail=f"admin state is corrupt and kept untouched: {exc}",
+                headers={"X-MAP-Error-Code": "BAD_ADMIN_STATE"},
             ) from exc
         before_admin_hash = state_hash(current)
+        before_state = current.model_copy(deep=True)
 
-        # 2. Prepare: pure computation (no file write, no pending row).
+        # 2. Pure computation: the updater mutates the in-memory draft only.
         try:
-            prepared = self._admin_store.prepare_update(before_admin_hash, build_draft)
+            result = build_draft(current)
         except HTTPException as exc:
             failure_code = "BUSINESS_REJECTED"
             if getattr(exc, "headers", None) and exc.headers.get("X-MAP-Error-Code"):
@@ -153,102 +140,21 @@ class RuntimeSnapshotService:
             )
             await session.commit()
             raise
-        except ConcurrentModificationError as exc:
-            await self._append_admin_audit(
-                session,
-                context,
-                status="rejected",
-                failure_code="CONCURRENT_MODIFICATION",
-                before_hash=before_admin_hash,
-                after_hash=None,
-                json_patch=None,
-            )
-            await session.commit()
-            raise HTTPException(
-                status_code=409,
-                detail="admin state changed concurrently; retry with the new state",
-                headers={"X-MAP-Error-Code": "CONCURRENT_MODIFICATION"},
-            ) from exc
 
-        target_admin_hash = prepared.target_hash
-        projection = build_runtime_projection(prepared.state)
+        current.updated_at = datetime.now().isoformat()
+        target_admin_hash = state_hash(current)
+        projection = build_runtime_projection(current)
         target_digest = projection_digest(projection)
         snapshot_id = snapshot_id_for_digest(target_digest)
-        before_sanitized = redact_payload(current.model_dump())
-        after_sanitized = redact_payload(prepared.state.model_dump())
+        before_sanitized = redact_payload(before_state.model_dump())
+        after_sanitized = redact_payload(current.model_dump())
         patch = json_patch_diff(before_sanitized, after_sanitized)
 
         current_snapshot = await self._snapshots.get_current()
         expected_current_digest = current_snapshot.digest if current_snapshot else None
         parent_id = current_snapshot.id if current_snapshot else None
 
-        # 3. Crash recovery point: persist expected/target hashes + full
-        #    request context BEFORE any file rename.
-        mutation = RuntimeSnapshotMutation(
-            resource=f"{context.resource_type}:{context.resource_id}",
-            snapshot_id=snapshot_id,
-            expected_admin_hash=before_admin_hash,
-            target_admin_hash=target_admin_hash,
-            expected_current_digest=expected_current_digest,
-            target_current_digest=target_digest,
-            target_projection=projection.model_dump(mode="json"),
-            status="pending",
-            workspace_id=workspace_id,
-            action=context.action,
-            actor_user_id=context.principal.user_id,
-            actor_subject=context.principal.subject,
-            actor_roles=list(context.principal.roles),
-            request_id=request_id,
-        )
-        session.add(mutation)
-        await session.commit()
-        mutation_id = mutation.id
-
-        # 4. Apply: CAS + atomic file rename.
-        try:
-            self._admin_store.apply_prepared(prepared)
-        except ConcurrentModificationError as exc:
-            await self._fail_mutation(
-                session, mutation_id, error="concurrent modification between prepare and apply"
-            )
-            await self._append_admin_audit(
-                session,
-                context,
-                status="rejected",
-                failure_code="CONCURRENT_MODIFICATION",
-                before_hash=before_admin_hash,
-                after_hash=None,
-                json_patch=None,
-            )
-            await session.commit()
-            raise HTTPException(
-                status_code=409,
-                detail="admin state changed concurrently; retry with the new state",
-                headers={"X-MAP-Error-Code": "CONCURRENT_MODIFICATION"},
-            ) from exc
-        except StoreWriteError as exc:
-            await self._fail_mutation(
-                session, mutation_id, error="store write failed"
-            )
-            await self._append_admin_audit(
-                session,
-                context,
-                status="failed",
-                failure_code="STORE_WRITE_FAILED",
-                before_hash=before_admin_hash,
-                after_hash=None,
-                json_patch=None,
-            )
-            await session.commit()
-            raise HTTPException(
-                status_code=500,
-                detail="admin state write failed; previous file kept intact",
-                headers={"X-MAP-Error-Code": "STORE_WRITE_FAILED"},
-            ) from exc
-
-        # 5. Snapshot side + audit + outbox + finish pending (one
-        #    transaction). Audit failure rolls this transaction back; the
-        #    pending row committed in step 3 stays for the reconciler.
+        # 3. Snapshot side + admin state + audits + outbox in ONE transaction.
         try:
             inserted = await self._snapshots.insert(
                 snapshot_id, projection, target_digest, parent_id, "draft"
@@ -257,14 +163,15 @@ class RuntimeSnapshotService:
                 await self._snapshots.transition_status(snapshot_id, "draft", "published")
             if inserted.status in ("draft", "published", "active", "rolled_back"):
                 # ``rolled_back`` is a valid restart: an admin write that
-                # reproduces an earlier projection reactivates that
-                # snapshot and rolls the current active one back, keeping
-                # the pointer consistent with the admin state file.
+                # reproduces an earlier projection reactivates that snapshot
+                # and rolls the current active one back.
                 await self._snapshots.activate(snapshot_id, expected_current_digest)
             else:
                 raise SnapshotStateConflictError(
                     f"snapshot {snapshot_id} is not in a status that can be activated"
                 )
+
+            await self._admin_store.save(current)
 
             await self._append_admin_audit(
                 session,
@@ -297,7 +204,6 @@ class RuntimeSnapshotService:
                     },
                 )
             )
-            await self._finish_mutation(session, mutation_id, status="applied")
             await session.commit()
         except AuditWriteError as exc:
             await session.rollback()
@@ -306,7 +212,7 @@ class RuntimeSnapshotService:
             )
             raise HTTPException(
                 status_code=500,
-                detail="configuration saved but audit failed; reconciled on next startup",
+                detail="configuration change rolled back because the audit append failed",
                 headers={"X-MAP-Error-Code": "AUDIT_WRITE_FAILED"},
             ) from exc
         except (SnapshotStateConflictError, SnapshotConcurrentModificationError) as exc:
@@ -316,7 +222,6 @@ class RuntimeSnapshotService:
                 if isinstance(exc, SnapshotConcurrentModificationError)
                 else "SNAPSHOT_STATE_CONFLICT"
             )
-            await self._fail_mutation(session, mutation_id, error=str(exc))
             await self._append_snapshot_audit(
                 session,
                 context,
@@ -335,7 +240,7 @@ class RuntimeSnapshotService:
                 headers={"X-MAP-Error-Code": failure_code},
             ) from exc
 
-        return prepared.state, prepared.result
+        return current, result
 
     async def publish(
         self,

@@ -33,7 +33,7 @@ from app.settings import Settings
 
 pytestmark = pytest.mark.asyncio
 
-from conftest import ADMIN_DSN  # noqa: E402  (needs pytest path setup above)
+from conftest import ADMIN_DSN, seed_pg_admin_state  # noqa: E402  (needs pytest path setup above)
 
 TEST_DSN = os.getenv(
     "MAP_CONTROL_TEST_DSN",
@@ -122,6 +122,8 @@ async def filter_client(_engine, tmp_path):
             yield session
 
     app.dependency_overrides[get_db_session] = _override
+    async with factory() as _seed_session:
+        await seed_pg_admin_state(_seed_session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client
     await engine.dispose()

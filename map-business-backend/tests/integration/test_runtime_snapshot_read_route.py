@@ -6,6 +6,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
+from conftest import seed_pg_admin_state
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -62,6 +63,8 @@ async def app_and_factory(_engine, tmp_path):
 
     app.dependency_overrides[get_db_session] = _override
     app.state.test_factory = factory
+    async with factory() as _seed_session:
+        await seed_pg_admin_state(_seed_session)
     return app, factory
 
 

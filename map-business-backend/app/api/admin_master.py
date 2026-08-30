@@ -118,7 +118,7 @@ def _unified_diff(from_label: str, from_text: str, to_label: str, to_text: str) 
 
 @router.get("/api/admin/master-agent")
 async def get_master_agent(store: ConfigRepository = Depends(get_store)) -> MasterAgentConfig:
-    state = store.load()
+    state = await store.load()
     return state.master_agent
 
 
@@ -205,7 +205,7 @@ async def publish_master_agent(
 async def list_master_versions(
     store: ConfigRepository = Depends(get_store),
 ) -> list[MasterPromptVersion]:
-    return store.load().master_agent.prompt_versions
+    return (await store.load()).master_agent.prompt_versions
 
 
 @router.get("/api/admin/master-agent/versions/{version}")
@@ -214,7 +214,7 @@ async def get_master_version(
     store: ConfigRepository = Depends(get_store),
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> MasterPromptVersion:
-    for item in store.load().master_agent.prompt_versions:
+    for item in (await store.load()).master_agent.prompt_versions:
         if item.version == version:
             return item
     raise HTTPException(status_code=404, detail=f"version {version} not found")
@@ -229,7 +229,7 @@ async def diff_master_versions(
     store: ConfigRepository = Depends(get_store),
     _: RequestPrincipal = Depends(admin_write_guard),
 ) -> dict[str, Any]:
-    state = store.load()
+    state = await store.load()
     master = state.master_agent
     from_key = (from_version or from_ or "").strip()
     to_key = (to_version or to or "current").strip()

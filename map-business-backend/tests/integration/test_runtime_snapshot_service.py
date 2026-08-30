@@ -13,12 +13,17 @@ from starlette.requests import Request
 
 from app.core.identity import AuthMode, RequestPrincipal
 from app.db.models import RuntimeSnapshotMutation
+from app.schemas import AdminState
 from app.services.config_mutation import AuditWriteError
 from app.services.runtime_snapshot import RuntimeSnapshotService
+from app.services.runtime_snapshot.adapters.admin_state_pg import (
+    PgAdminStateRepository,
+)
 from app.services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
 from app.services.runtime_snapshot.digest import (
     projection_digest,
     snapshot_id_for_digest,
+    state_hash,
 )
 from app.services.runtime_snapshot.schemas import (
     MutationContext,
@@ -28,7 +33,7 @@ from app.services.runtime_snapshot.schemas import (
 from app.services.runtime_snapshot.service import (
     reconcile_runtime_snapshot_mutations,
 )
-from app.store import AdminStateStore, state_hash
+from app.store import AdminStateStore
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,11 +82,13 @@ def _context() -> MutationContext:
 
 
 @pytest_asyncio.fixture
-async def service_env(session, tmp_path):
-    store = AdminStateStore(str(tmp_path / "admin_state.json"))
+async def service_env(session):
+    admin_repo = PgAdminStateRepository(session)
+    await admin_repo.seed_if_empty(AdminState.default())
+    await session.commit()
     repo = PgRuntimeSnapshotRepository(session)
-    service = RuntimeSnapshotService(store, repo)
-    return service, store, repo, session
+    service = RuntimeSnapshotService(admin_repo, repo)
+    return service, admin_repo, repo, session
 
 
 async def _audit_rows(session) -> list[tuple[str, str, str]]:
@@ -96,7 +103,7 @@ async def _audit_rows(session) -> list[tuple[str, str, str]]:
     return [(r.resource_type, r.action, r.status) for r in rows]
 
 
-async def test_apply_change_commits_snapshot_audit_outbox_and_finishes_pending(
+async def test_apply_change_commits_snapshot_audit_outbox_and_no_pending(
     service_env,
 ) -> None:
     service, store, _repo, session = service_env
@@ -107,17 +114,14 @@ async def test_apply_change_commits_snapshot_audit_outbox_and_finishes_pending(
 
     new_state, result = await service.apply_change(session, _context(), updater)
     assert result == "changed"
-    assert state_hash(store.load()) == state_hash(new_state)
+    assert state_hash(await store.load()) == state_hash(new_state)
 
     current = await service.get_current()
     assert current is not None and current.status == "active"
 
-    mutation = (
-        (await session.execute(select(RuntimeSnapshotMutation))).scalars().one()
-    )
-    assert mutation.status == "applied"
-    assert mutation.target_current_digest == current.digest
-    assert mutation.expected_admin_hash != mutation.target_admin_hash
+    # J7a: no runtime_snapshot_mutations row is written anymore.
+    mutations = (await session.execute(select(RuntimeSnapshotMutation))).scalars().all()
+    assert mutations == []
 
     assert await _audit_rows(session) == [
         ("flow_policy", "update", "applied"),
@@ -238,11 +242,11 @@ async def test_activate_cas_conflict_is_409_and_audited(service_env) -> None:
     )
 
 
-async def test_apply_change_audit_failure_keeps_pending_and_rolls_back_snapshot(
+async def test_apply_change_audit_failure_rolls_back_whole_transaction(
     service_env, monkeypatch
 ) -> None:
     service, store, _repo, session = service_env
-    expected_digest = projection_digest(build_runtime_projection(store.load()))
+    before_hash = state_hash(await store.load())
 
     async def fake_append_audit_event(session, **kwargs):
         raise AuditWriteError("boom")
@@ -261,20 +265,15 @@ async def test_apply_change_audit_failure_keeps_pending_and_rolls_back_snapshot(
     assert exc_info.value.status_code == 500
     assert exc_info.value.headers["X-MAP-Error-Code"] == "AUDIT_WRITE_FAILED"
 
-    # The pending row committed before the file rename must survive.
-    mutation = (
-        (await session.execute(select(RuntimeSnapshotMutation))).scalars().one()
-    )
-    assert mutation.status == "pending"
-    # The snapshot side was rolled back (PG adapter participates in the
-    # session transaction).
+    # J7a: PG atomicity rolls the admin state back together with the
+    # snapshot side; no pending mutation row is needed for recovery.
+    assert state_hash(await store.load()) == before_hash
+    mutations = (await session.execute(select(RuntimeSnapshotMutation))).scalars().all()
+    assert mutations == []
     snapshot_count = (
         await session.execute(text("SELECT count(*) FROM map_control.runtime_snapshots"))
     ).scalar_one()
     assert snapshot_count == 0
-    # The file write already happened: reconciler can recover exactly.
-    assert state_hash(store.load()) == mutation.target_admin_hash
-    assert expected_digest != mutation.target_current_digest
 
 
 async def test_reconciler_recovers_pending_mutations_exact_match(

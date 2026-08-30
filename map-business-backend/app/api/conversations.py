@@ -34,7 +34,7 @@ from ..services.idempotency import IdempotencyConflictError, IdempotencyService,
 from ..services.runtime_snapshot.errors import RuntimeSnapshotUnavailableError
 from ..turns import TurnApplication, TurnError, TurnNotFoundError
 from .chat import _forward_headers
-from .deps import get_core_client, get_principal, get_turn_application
+from .deps import get_core_client, get_principal, get_store, get_turn_application
 
 router = APIRouter(prefix="/api/v1")
 
@@ -201,7 +201,7 @@ async def stream_message(
         request_id = request.state.request_id
 
     headers = _forward_headers(request_token, request)
-    store = request.app.state.store
+    store = get_store(request, session)
     registry = request.app.state.stream_registry
 
     async def sse_stream():

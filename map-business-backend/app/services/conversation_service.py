@@ -157,7 +157,7 @@ async def stream_conversation_message(
     from ..schemas import ChatRequest
 
     payload = {"query": query, "history": []}
-    runtime_payload = build_runtime_chat_payload(store, ChatRequest(**payload))
+    runtime_payload = await build_runtime_chat_payload(store, ChatRequest(**payload))
 
     # R2-P1-01: the registry entry spans the WHOLE pipeline — upstream
     # creation, pump, chunk consumption, parser close and finalize — and is

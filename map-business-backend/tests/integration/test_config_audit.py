@@ -21,13 +21,12 @@ import json
 import os
 import urllib.parse
 import uuid
-from pathlib import Path
 
 os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_audit_fix_state.json")
 
 import pytest
 import pytest_asyncio
-from conftest import ADMIN_DSN, APP_DSN, MIGRATION_DSN
+from conftest import ADMIN_DSN, APP_DSN, MIGRATION_DSN, seed_pg_admin_state
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -67,6 +66,8 @@ async def app_and_session(_engine, session, tmp_path):
 
     app.dependency_overrides[get_db_session] = _override
     app.state.test_factory = factory
+    async with factory() as _seed_session:
+        await seed_pg_admin_state(_seed_session)
     return app, session, state_file
 
 
@@ -233,78 +234,42 @@ async def test_flow_policy_put_advances_runtime_snapshot_pointer(
     ]
 
 
-async def test_concurrent_writes_one_wins_one_409(app_and_session) -> None:
+async def test_concurrent_snapshot_cas_failure_rolls_back_admin_state(
+    app_and_session, monkeypatch
+) -> None:
+    """J7a: a snapshot pointer CAS failure rolls the whole PG transaction
+    back (admin state NOT persisted) and returns 409."""
     app, session, _state_file = app_and_session
-    store = app.state.store
-    first_hash = store_load_hash(store)
+    before_hash = await pg_admin_hash(session)
+
+    from app.services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
+    from app.services.runtime_snapshot.errors import (
+        SnapshotConcurrentModificationError,
+    )
+
+    async def _cas_boom(self, *args, **kwargs):
+        raise SnapshotConcurrentModificationError(
+            "runtime snapshot current digest changed since the request was read"
+        )
+
+    monkeypatch.setattr(PgRuntimeSnapshotRepository, "activate", _cas_boom)
 
     async with await _client(app) as client:
         payload = (await client.get("/api/admin/model-center")).json()
         payload["large_models"] = []
-        ok = await client.put("/api/admin/model-center", json=payload)
-        assert ok.status_code == 200
-
-    # Second write started from the same stale hash -> rejected 409.
-    from app.services.config_mutation import ConfigMutationService
-
-    service = ConfigMutationService(store)
-    assert service is not None
-    # Simulate a stale expected hash directly through the store.
-    from app.store import ConcurrentModificationError
-
-    def _updater(draft):
-        return draft
-
-    try:
-        store.update_with_hash(first_hash, _updater)
-        pytest.fail("expected ConcurrentModificationError")
-    except ConcurrentModificationError:
-        pass
-
-    async with await _client(app) as client:
-        # A genuine 409 through the API: grab the current hash first.
-        current_hash = store_load_hash(store)
-        # Patch the prepare phase to force a stale-hash path via a
-        # concurrent actor (R3-P1-01: mutations now prepare + apply).
-        original = store.prepare_update
-
-        def _stale(expected, updater):
-            return original(current_hash + "stale", updater)
-
-        store.prepare_update = _stale  # type: ignore[method-assign]
-        try:
-            payload2 = (await client.get("/api/admin/model-center")).json()
-            response = await client.put("/api/admin/model-center", json=payload2)
-            assert response.status_code == 409
-            assert "concurrently" in response.json()["detail"]
-        finally:
-            store.prepare_update = original  # type: ignore[method-assign]
-
-    rejected = await _audit_count(session, status="rejected")
-    assert rejected >= 1
-
-
-async def test_store_write_failure_keeps_file_and_audits_failed(
-    app_and_session, monkeypatch
-) -> None:
-    app, session, state_file = app_and_session
-    before = Path(state_file).read_bytes()
-
-    from app.store import StoreWriteError
-
-    def _boom(*args, **kwargs):
-        raise StoreWriteError("disk full")
-
-    monkeypatch.setattr(app.state.store, "_write_atomic", _boom)
-    async with await _client(app) as client:
-        payload = (await client.get("/api/admin/model-center")).json()
         response = await client.put("/api/admin/model-center", json=payload)
-        assert response.status_code == 500
-        assert "write failed" in response.json()["detail"]
+        assert response.status_code == 409
+        assert response.headers["X-MAP-Error-Code"] == "SNAPSHOT_CONCURRENT_MODIFICATION"
 
-    assert Path(state_file).read_bytes() == before  # original file intact
-    assert await _audit_count(session, status="failed") >= 1
-    failed = (
+    # Admin state was NOT saved.
+    assert await pg_admin_hash(session) == before_hash
+    snapshot_count = (
+        await session.execute(text("SELECT count(*) FROM map_control.runtime_snapshots"))
+    ).scalar_one()
+    assert snapshot_count == 0
+    failed = await _audit_count(session, status="failed")
+    assert failed >= 1
+    code = (
         await session.execute(
             text(
                 "SELECT failure_code FROM map_control.config_audit_events "
@@ -312,26 +277,83 @@ async def test_store_write_failure_keeps_file_and_audits_failed(
             )
         )
     ).scalar_one()
-    assert failed == "STORE_WRITE_FAILED"
+    assert code == "SNAPSHOT_CONCURRENT_MODIFICATION"
 
 
-async def test_bad_state_file_never_overwritten_by_defaults(app_and_session) -> None:
-    app, session, state_file = app_and_session
-    Path(state_file).write_text("{not-json", encoding="utf-8")
+async def test_admin_state_save_failure_rolls_back_whole_transaction(
+    app_and_session, monkeypatch
+) -> None:
+    """J7a: if the admin state UPDATE fails, nothing is committed."""
+    app, session, _state_file = app_and_session
+    before_hash = await pg_admin_hash(session)
+
+    from app.services.runtime_snapshot.adapters.admin_state_pg import (
+        PgAdminStateRepository,
+    )
+
+    async def _boom(self, state):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(PgAdminStateRepository, "save", _boom)
+
+    async with await _client(app) as client:
+        payload = (await client.get("/api/admin/model-center")).json()
+        # ASGITransport re-raises unhandled app exceptions; uvicorn's
+        # ServerErrorMiddleware would convert this to a 500 in production.
+        with pytest.raises(RuntimeError, match="disk full"):
+            await client.put("/api/admin/model-center", json=payload)
+
+    # The PG transaction was rolled back: admin state + snapshot unchanged.
+    assert await pg_admin_hash(session) == before_hash
+    snapshot_count = (
+        await session.execute(text("SELECT count(*) FROM map_control.runtime_snapshots"))
+    ).scalar_one()
+    assert snapshot_count == 0
+
+
+async def test_bad_admin_state_row_is_never_overwritten_by_defaults(
+    app_and_session,
+) -> None:
+    app, session, _state_file = app_and_session
+    # Tamper with the stored hash so load() fails closed.
+    await session.execute(
+        text("UPDATE map_control.admin_state SET state_hash = :bad WHERE id = 1"),
+        {"bad": "0" * 64},
+    )
+    await session.commit()
+
     async with await _client(app) as client:
         response = await client.put("/api/admin/model-center", json={})
         assert response.status_code == 500
         assert "corrupt" in response.json()["detail"]
-    # The corrupt file is preserved byte-for-byte.
-    assert Path(state_file).read_text(encoding="utf-8") == "{not-json"
-    assert await _audit_count(session, status="failed") >= 1
+
+    # The corrupt row is preserved: no default state overwrote it.
+    stored_hash = (
+        await session.execute(
+            text("SELECT state_hash FROM map_control.admin_state WHERE id = 1")
+        )
+    ).scalar_one()
+    assert stored_hash == "0" * 64
+    failed = await _audit_count(session, status="failed")
+    assert failed >= 1
+    code = (
+        await session.execute(
+            text(
+                "SELECT failure_code FROM map_control.config_audit_events "
+                "WHERE status = 'failed' ORDER BY created_at DESC LIMIT 1"
+            )
+        )
+    ).scalar_one()
+    assert code == "BAD_ADMIN_STATE"
 
 
 async def test_reconciler_recovers_pending_and_unknown_state_crashes(
     app_and_session,
 ) -> None:
-    app, session, _state_file = app_and_session
-    store = app.state.store
+    app, session, state_file = app_and_session
+    from app.store import AdminStateStore
+
+    store = AdminStateStore(state_file)
 
     # Crash point 1: pending mutation, no file write (current == expected).
 
@@ -967,3 +989,21 @@ def store_load_hash(store: AdminStateStore) -> str:
     from app.store import state_hash
 
     return state_hash(store.load())
+
+
+async def pg_admin_hash(session) -> str:
+    """Hash of the PG admin state row (for the new J7a repository).
+
+    Rolls the test session back after reading so the row-level lock from
+    ``load()`` is released before an app request tries to lock it.
+    """
+    from app.services.runtime_snapshot.adapters.admin_state_pg import (
+        PgAdminStateRepository,
+    )
+    from app.services.runtime_snapshot.digest import state_hash
+
+    repo = PgAdminStateRepository(session)
+    try:
+        return state_hash(await repo.load())
+    finally:
+        await session.rollback()

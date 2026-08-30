@@ -66,12 +66,12 @@ async def _audited_update(
 
 @router.get("/api/admin/full-config")
 async def full_config(store: ConfigRepository = Depends(get_store)) -> dict[str, Any]:
-    return store.load().model_dump()
+    return (await store.load()).model_dump()
 
 
 @router.get("/api/admin/flow-runtime-snapshot")
 async def flow_runtime_snapshot(store: ConfigRepository = Depends(get_store)) -> dict[str, Any]:
-    state = store.load()
+    state = await store.load()
     return {
         "updated_at": state.updated_at,
         "flow_policy": state.flow_policy.model_dump(),
@@ -101,7 +101,7 @@ async def flow_runtime_snapshot(store: ConfigRepository = Depends(get_store)) ->
 
 @router.get("/api/admin/summary")
 async def admin_summary(store: ConfigRepository = Depends(get_store)) -> dict[str, Any]:
-    state = store.load()
+    state = await store.load()
     enabled_business_agents = [agent for agent in state.business_agents if agent.enabled]
     enabled_skills = [item for item in state.skill_policies if item.enabled]
     enabled_users = [item for item in state.user_accounts if item.status == "enabled"]
@@ -131,7 +131,7 @@ async def admin_summary(store: ConfigRepository = Depends(get_store)) -> dict[st
 
 @router.get("/api/admin/model-center")
 async def get_model_center(store: ConfigRepository = Depends(get_store)) -> ModelCenterConfig:
-    return store.load().model_center
+    return (await store.load()).model_center
 
 
 @router.put("/api/admin/model-center")
@@ -156,7 +156,7 @@ async def put_model_center(
 async def get_basic_settings(
     store: ConfigRepository = Depends(get_store),
 ) -> list[BasicSettingItem]:
-    return store.load().basic_settings
+    return (await store.load()).basic_settings
 
 
 @router.put("/api/admin/basic-settings")
@@ -181,7 +181,7 @@ async def put_basic_settings(
 async def get_address_configs(
     store: ConfigRepository = Depends(get_store),
 ) -> list[AddressConfigItem]:
-    return store.load().address_configs
+    return (await store.load()).address_configs
 
 
 @router.put("/api/admin/address-configs")
@@ -204,7 +204,7 @@ async def put_address_configs(
 
 @router.get("/api/admin/data-connectors")
 async def get_data_connectors(store: ConfigRepository = Depends(get_store)) -> list[DataAccessItem]:
-    return store.load().data_access_items
+    return (await store.load()).data_access_items
 
 
 @router.put("/api/admin/data-connectors")
@@ -227,7 +227,7 @@ async def put_data_connectors(
 
 @router.get("/api/admin/data-assets")
 async def get_data_assets(store: ConfigRepository = Depends(get_store)) -> list[DataAssetItem]:
-    return store.load().data_assets
+    return (await store.load()).data_assets
 
 
 @router.put("/api/admin/data-assets")
@@ -252,7 +252,7 @@ async def put_data_assets(
 async def get_session_policies(
     store: ConfigRepository = Depends(get_store),
 ) -> list[SessionPolicyItem]:
-    return store.load().session_policies
+    return (await store.load()).session_policies
 
 
 @router.put("/api/admin/session-policies")
@@ -277,7 +277,7 @@ async def put_session_policies(
 async def get_dashboard_cards(
     store: ConfigRepository = Depends(get_store),
 ) -> list[DashboardCardConfig]:
-    return store.load().dashboard_cards
+    return (await store.load()).dashboard_cards
 
 
 @router.put("/api/admin/dashboard-cards")
@@ -302,7 +302,7 @@ async def put_dashboard_cards(
 async def get_security_policies(
     store: ConfigRepository = Depends(get_store),
 ) -> list[SecurityPolicyItem]:
-    return store.load().security_policies
+    return (await store.load()).security_policies
 
 
 @router.put("/api/admin/security-policies")
@@ -327,7 +327,7 @@ async def put_security_policies(
 async def get_glossary_terms(
     store: ConfigRepository = Depends(get_store),
 ) -> list[GlossaryTermItem]:
-    return store.load().glossary_terms
+    return (await store.load()).glossary_terms
 
 
 @router.put("/api/admin/glossary-terms")
@@ -352,7 +352,7 @@ async def put_glossary_terms(
 async def get_homepage_recommendations(
     store: ConfigRepository = Depends(get_store),
 ) -> list[HomeRecommendationItem]:
-    return store.load().homepage_recommendations
+    return (await store.load()).homepage_recommendations
 
 
 @router.put("/api/admin/homepage-recommendations")
@@ -377,7 +377,7 @@ async def put_homepage_recommendations(
 async def get_permission_rules(
     store: ConfigRepository = Depends(get_store),
 ) -> list[PermissionRule]:
-    state = store.load()
+    state = await store.load()
     return state.permission_rules
 
 
@@ -401,7 +401,7 @@ async def put_permission_rules(
 
 @router.get("/api/admin/role-policies")
 async def get_role_policies(store: ConfigRepository = Depends(get_store)) -> list[RolePolicy]:
-    return store.load().role_policies
+    return (await store.load()).role_policies
 
 
 @router.put("/api/admin/role-policies")
@@ -424,7 +424,7 @@ async def put_role_policies(
 
 @router.get("/api/admin/user-accounts")
 async def get_user_accounts(store: ConfigRepository = Depends(get_store)) -> list[UserAccount]:
-    return store.load().user_accounts
+    return (await store.load()).user_accounts
 
 
 @router.put("/api/admin/user-accounts")
@@ -449,7 +449,7 @@ async def put_user_accounts(
 async def get_knowledge_bindings(
     store: ConfigRepository = Depends(get_store),
 ) -> list[KnowledgeBinding]:
-    state = store.load()
+    state = await store.load()
     return state.knowledge_bindings
 
 
@@ -473,7 +473,7 @@ async def put_knowledge_bindings(
 
 @router.get("/api/admin/skill-policies")
 async def get_skill_policies(store: ConfigRepository = Depends(get_store)) -> list[SkillPolicy]:
-    state = store.load()
+    state = await store.load()
     return state.skill_policies
 
 
@@ -497,7 +497,7 @@ async def put_skill_policies(
 
 @router.get("/api/admin/flow-policy")
 async def get_flow_policy(store: ConfigRepository = Depends(get_store)) -> FlowPolicyConfig:
-    return store.load().flow_policy
+    return (await store.load()).flow_policy
 
 
 @router.put("/api/admin/flow-policy")
@@ -522,7 +522,7 @@ async def put_flow_policy(
 async def get_scenario_packs(
     store: ConfigRepository = Depends(get_store),
 ) -> list[ScenarioPackConfig]:
-    return store.load().scenario_packs
+    return (await store.load()).scenario_packs
 
 
 @router.put("/api/admin/scenario-packs")
@@ -547,7 +547,7 @@ async def put_scenario_packs(
 async def get_flow_skill_descriptors(
     store: ConfigRepository = Depends(get_store),
 ) -> list[FlowSkillDescriptor]:
-    return store.load().flow_skill_descriptors
+    return (await store.load()).flow_skill_descriptors
 
 
 @router.put("/api/admin/flow-skill-descriptors")
@@ -570,7 +570,7 @@ async def put_flow_skill_descriptors(
 
 @router.get("/api/admin/release-history")
 async def get_release_history(store: ConfigRepository = Depends(get_store)) -> list[ReleaseRecord]:
-    state = store.load()
+    state = await store.load()
     return state.release_history
 
 

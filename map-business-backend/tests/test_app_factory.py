@@ -21,17 +21,13 @@ from app.settings import Settings
 
 
 class FakeStore:
-    """In-memory ConfigRepository double."""
+    """In-memory async ConfigRepository double."""
 
     def __init__(self, state: AdminState | None = None) -> None:
         self._state = state or AdminState.default()
 
-    def load(self) -> AdminState:
+    async def load(self) -> AdminState:
         return self._state
-
-    def update(self, updater):
-        result = updater(self._state)
-        return self._state, result
 
 
 class FakeCoreClient:
@@ -62,7 +58,9 @@ class FakeCoreClient:
 def test_create_app_accepts_settings_override() -> None:
     settings = Settings(state_file="/tmp/does-not-need-to-exist.json")
     app = create_app(settings=settings)
-    assert app.state.store is not None
+    # J7a: production store is resolved per-request from PG, so no
+    # module-level file store is constructed here.
+    assert app.state.store is None
     assert app.state.core_client is not None
 
 
@@ -87,6 +85,8 @@ def test_module_level_app_uses_default_settings() -> None:
     from app.main import app, core_client, store
 
     assert isinstance(core_client, MapCoreClient)
-    assert store is not None
+    # J7a: the module-level ``store`` compatibility name is None; production
+    # read paths build a session-bound PG repository in ``get_store``.
+    assert store is None
     assert app.state.store is store
     assert app.state.core_client is core_client

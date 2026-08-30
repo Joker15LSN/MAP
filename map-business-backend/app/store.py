@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import os
 import tempfile
@@ -32,11 +31,15 @@ T = TypeVar("T")
 
 
 def state_hash(state: AdminState) -> str:
-    """Canonical hash of the state (sorted keys, stable across runs)."""
-    canonical = json.dumps(
-        state.model_dump(), sort_keys=True, ensure_ascii=False, separators=(",", ":")
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    """Canonical hash of the state (delegates to the shared digest module).
+
+    Kept as a function (not a module-level import) so importing
+    ``app.store`` can never trigger a circular import through the
+    ``runtime_snapshot`` package during its own initialization.
+    """
+    from .services.runtime_snapshot.digest import state_hash as _state_hash
+
+    return _state_hash(state)
 
 
 class BadStateFileError(Exception):

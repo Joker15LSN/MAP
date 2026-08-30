@@ -27,6 +27,20 @@ class SnapshotAuditWriteError(SnapshotError):
     """Audit append failed; the product write may have succeeded already."""
 
 
+class AdminStateUnavailableError(SnapshotError):
+    """The singleton PG admin state row is missing.
+
+    Callers must fail closed (never write defaults over a missing row).
+    """
+
+
+class BadAdminStateError(SnapshotError):
+    """The PG admin state row exists but failed validation or hash check.
+
+    The row must never be overwritten by defaults.
+    """
+
+
 class RuntimeSnapshotUnavailableError(SnapshotError):
     """Run creation needs a current snapshot but none is configured.
 
