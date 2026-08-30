@@ -2,7 +2,7 @@
   "schema_version": "1.2.0",
   "task_id": "P0-CFG-AUTH-01",
   "ac_id": "AC-CFG-AUTH-03",
-  "status": "blocked",
+  "status": "superseded",
   "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
   "implementation_sha": "1feb804c198e377b589b7c46aade9857adc3a7aa",
   "environment_digest": "d80d4199a2a9a83b4aafffd40d4ae0a98cb10a4498d52d4b51f2025c57dc712e",
@@ -50,12 +50,13 @@
   "waiver_owner": null,
   "waiver_expires_at": null,
   "not_applicable_reason": null,
-  "blocked_reason": "runtime snapshot service-identity API not implemented in this change set",
-  "blocker_owner": "development owner (golden-taskbook implementation)",
-  "superseded_by": null,
-  "superseded_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": "tmp/acceptance/P0-CFG-AUTH-01/0eb61ed203ddb3934889d4d7ca266717926392a4/AC-CFG-AUTH-03/evidence-manifest.json",
+  "superseded_reason": "superseded by evidence at freeze sha 0eb61ed203ddb3934889d4d7ca266717926392a4",
   "producer": {
     "agent": "map-acceptance-evidence",
     "version": "2.0.0"
-  }
+  },
+  "attestation": null
 }

@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.2.0",
+  "task_id": "P0-CONTRACT-01",
+  "ac_id": "AC-CONTRACT-01",
+  "status": "pass",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "0eb61ed203ddb3934889d4d7ca266717926392a4",
+  "environment_digest": "ec530e909a16fb1d6e35e61ee41acfd53220cdd31844d02c68af82cc8eb399f2",
+  "started_at": "2026-08-30T07:53:13.987163+00:00",
+  "finished_at": "2026-08-30T07:53:14.429180+00:00",
+  "command": "map-business-backend/.venv/bin/python -m pytest map-business-backend/tests/contracts/test_run_contract.py -q",
+  "exit_code": 0,
+  "artifacts": [
+    {
+      "path": "TODO/acceptance-profile.yaml",
+      "sha256": "dca9d1a85a44acbd08bd53d97d8b5a2fbd8b82f88966032fe93464aaf089e8e7",
+      "media_type": "text/yaml"
+    },
+    {
+      "path": "SPEC/contracts/run.md",
+      "sha256": "c5f062a8a4e6904821191897784da27033d3aeebd21b77bf03e9ea7698012d09",
+      "media_type": "text/markdown"
+    },
+    {
+      "path": "tmp/acceptance/P0-CONTRACT-01/0eb61ed203ddb3934889d4d7ca266717926392a4/AC-CONTRACT-01/logs/stdout.txt",
+      "sha256": "b701e7dd8d0f0fd498c8169c56e853fee0a80dbdcc9c7fda669fb3106e46d96b",
+      "media_type": "text/plain"
+    },
+    {
+      "path": "tmp/acceptance/P0-CONTRACT-01/0eb61ed203ddb3934889d4d7ca266717926392a4/AC-CONTRACT-01/logs/stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "media_type": "text/plain"
+    },
+    {
+      "path": "tmp/acceptance/P0-CONTRACT-01/0eb61ed203ddb3934889d4d7ca266717926392a4/AC-CONTRACT-01/logs/exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "media_type": "text/plain"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "transition_tables_exhaustive",
+      "expected": "legal transitions pass; illegal/terminal/unknown fail closed with specific exceptions",
+      "actual": "parametrized over all_transitions() and the illegal cross product; StateTransitionError only",
+      "result": "pass"
+    },
+    {
+      "name": "cancel_predicate_explicit_allowlist",
+      "expected": "only queued/running/paused allow cancel (R-05)",
+      "actual": "exhaustive over all 8 run states plus cancel_pending",
+      "result": "pass"
+    },
+    {
+      "name": "pytest_suite_green",
+      "expected": "pytest exit 0",
+      "actual": "exit 0: 71 passed",
+      "result": "pass"
+    }
+  ],
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": null,
+  "blocker_owner": null,
+  "superseded_by": null,
+  "superseded_reason": null,
+  "producer": {
+    "agent": "map-acceptance-evidence",
+    "version": "2.0.0"
+  },
+  "attestation": null
+}

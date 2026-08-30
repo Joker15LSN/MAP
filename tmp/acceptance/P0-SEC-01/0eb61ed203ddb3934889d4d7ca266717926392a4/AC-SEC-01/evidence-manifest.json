@@ -1,0 +1,67 @@
+{
+  "schema_version": "1.2.0",
+  "task_id": "P0-SEC-01",
+  "ac_id": "AC-SEC-01",
+  "status": "blocked",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "0eb61ed203ddb3934889d4d7ca266717926392a4",
+  "environment_digest": "ec530e909a16fb1d6e35e61ee41acfd53220cdd31844d02c68af82cc8eb399f2",
+  "started_at": "2026-08-30T07:53:21.937990+00:00",
+  "finished_at": "2026-08-30T07:54:52.136634+00:00",
+  "command": "python3 scripts/security_scan.py --scope tree,index,build-context --redact --fail-on-hit",
+  "exit_code": 0,
+  "artifacts": [
+    {
+      "path": "TODO/acceptance-profile.yaml",
+      "sha256": "dca9d1a85a44acbd08bd53d97d8b5a2fbd8b82f88966032fe93464aaf089e8e7",
+      "media_type": "text/yaml"
+    },
+    {
+      "path": "SPEC/contracts/run.md",
+      "sha256": "c5f062a8a4e6904821191897784da27033d3aeebd21b77bf03e9ea7698012d09",
+      "media_type": "text/markdown"
+    },
+    {
+      "path": "tmp/acceptance/P0-SEC-01/0eb61ed203ddb3934889d4d7ca266717926392a4/AC-SEC-01/logs/stdout.txt",
+      "sha256": "876c90f770bd9a0f2eb61eaae1c4bd4dd8d2b31e2f89ebed91f37c433c1ef612",
+      "media_type": "text/plain"
+    },
+    {
+      "path": "tmp/acceptance/P0-SEC-01/0eb61ed203ddb3934889d4d7ca266717926392a4/AC-SEC-01/logs/stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "media_type": "text/plain"
+    },
+    {
+      "path": "tmp/acceptance/P0-SEC-01/0eb61ed203ddb3934889d4d7ca266717926392a4/AC-SEC-01/logs/exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "media_type": "text/plain"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "tree_index_build_context_zero_hits",
+      "expected": "0 credential hits in tree/index/build-context",
+      "actual": "security_scan.py --fail-on-hit exit 0",
+      "result": "pass"
+    },
+    {
+      "name": "external_revocation_verified",
+      "expected": "verifiable revocation tickets for all leaked credentials",
+      "actual": "revocation pending security owner; incident tracker marks PENDING-REVOCATION",
+      "result": "fail"
+    }
+  ],
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": "tree/index/build-context scan is green (0 hits) but revocation of the leaked credentials in the external credential managers cannot be proven from the repository; AC-SEC-01 stays blocked until the security owner provides revocation evidence",
+  "blocker_owner": "development owner (golden-taskbook implementation)",
+  "superseded_by": null,
+  "superseded_reason": null,
+  "producer": {
+    "agent": "map-acceptance-evidence",
+    "version": "2.0.0"
+  }
+}

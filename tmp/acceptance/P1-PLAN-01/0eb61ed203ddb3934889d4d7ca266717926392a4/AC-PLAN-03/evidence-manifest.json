@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.2.0",
+  "task_id": "P1-PLAN-01",
+  "ac_id": "AC-PLAN-03",
+  "status": "blocked",
+  "baseline_sha": "e019059c2c8499454ecddc9eb63655aeadb0bd90",
+  "implementation_sha": "0eb61ed203ddb3934889d4d7ca266717926392a4",
+  "environment_digest": "ec530e909a16fb1d6e35e61ee41acfd53220cdd31844d02c68af82cc8eb399f2",
+  "started_at": "2026-08-30T07:55:44.442677+00:00",
+  "finished_at": "2026-08-30T07:55:44.983175+00:00",
+  "command": "python3 scripts/validate_acceptance_evidence.py --profile TODO/acceptance-profile.yaml --task P1-PLAN-01 --ac AC-PLAN-03 --require-final",
+  "exit_code": 1,
+  "artifacts": [
+    {
+      "path": "TODO/acceptance-profile.yaml",
+      "sha256": "dca9d1a85a44acbd08bd53d97d8b5a2fbd8b82f88966032fe93464aaf089e8e7",
+      "media_type": "text/yaml"
+    },
+    {
+      "path": "SPEC/contracts/run.md",
+      "sha256": "c5f062a8a4e6904821191897784da27033d3aeebd21b77bf03e9ea7698012d09",
+      "media_type": "text/markdown"
+    },
+    {
+      "path": "tmp/acceptance/P1-PLAN-01/0eb61ed203ddb3934889d4d7ca266717926392a4/AC-PLAN-03/logs/stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "media_type": "text/plain"
+    },
+    {
+      "path": "tmp/acceptance/P1-PLAN-01/0eb61ed203ddb3934889d4d7ca266717926392a4/AC-PLAN-03/logs/stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "media_type": "text/plain"
+    },
+    {
+      "path": "tmp/acceptance/P1-PLAN-01/0eb61ed203ddb3934889d4d7ca266717926392a4/AC-PLAN-03/logs/exit-code.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "media_type": "text/plain"
+    }
+  ],
+  "assertions": [
+    {
+      "name": "implementation_complete",
+      "expected": "P1-PLAN-01 AC-PLAN-03 acceptance per the golden taskbook and acceptance-profile",
+      "actual": "not implemented in this change set; see blocked_reason",
+      "result": "fail"
+    }
+  ],
+  "finding_ids": [],
+  "waiver_id": null,
+  "waiver_owner": null,
+  "waiver_expires_at": null,
+  "not_applicable_reason": null,
+  "blocked_reason": "planner/judge/replan not implemented in this change set",
+  "blocker_owner": "development owner (golden-taskbook implementation)",
+  "superseded_by": null,
+  "superseded_reason": null,
+  "producer": {
+    "agent": "map-acceptance-evidence",
+    "version": "2.0.0"
+  }
+}
