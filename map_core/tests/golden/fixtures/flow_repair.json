@@ -130,14 +130,143 @@
         "证据已补全"
       ]
     },
-    "mongo_events": {
-      "contains_event_types": [
-        "request.start",
-        "flow.agent_case_candidate",
-        "request.end"
-      ],
-      "request_end_success": true
-    },
-    "engine_parity": true
+    "engine_parity": true,
+    "execution_events": [
+      {
+        "type": "checkpoint.written",
+        "phase": "request.start",
+        "data": {
+          "mode": "flow"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "flow.policy_hit",
+        "data": {
+          "config_source": "static",
+          "runtime_override": false
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "flow.skill_authorization",
+        "data": {
+          "agent_code": "Supply_Chain",
+          "node_id": "order_revenue_confirmation_1_Supply_Chain"
+        }
+      },
+      {
+        "type": "step.started",
+        "component": "agent_execution",
+        "data": {
+          "agent_code": "Supply_Chain",
+          "stage": "start"
+        }
+      },
+      {
+        "type": "tool.invocation_created",
+        "data": {
+          "tool": "ask_database_agent"
+        }
+      },
+      {
+        "type": "tool.invocation_completed",
+        "data": {
+          "tool": "ask_database_agent"
+        }
+      },
+      {
+        "type": "step.completed",
+        "component": "Supply_Chain",
+        "status": "success",
+        "data": {
+          "agent_code": "Supply_Chain",
+          "stage": "end"
+        }
+      },
+      {
+        "type": "step.completed",
+        "component": "agent_execution",
+        "status": "success",
+        "data": {
+          "agent_code": "Supply_Chain",
+          "stage": "end"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "flow.skill_authorization",
+        "data": {
+          "agent_code": "Supply_Chain",
+          "node_id": "order_revenue_confirmation_1_Supply_Chain_repair_1"
+        }
+      },
+      {
+        "type": "step.started",
+        "component": "agent_execution",
+        "data": {
+          "agent_code": "Supply_Chain",
+          "stage": "start"
+        }
+      },
+      {
+        "type": "tool.invocation_created",
+        "data": {
+          "tool": "ask_database_agent"
+        }
+      },
+      {
+        "type": "tool.invocation_completed",
+        "data": {
+          "tool": "ask_database_agent"
+        }
+      },
+      {
+        "type": "step.completed",
+        "component": "Supply_Chain",
+        "status": "success",
+        "data": {
+          "agent_code": "Supply_Chain",
+          "stage": "end"
+        }
+      },
+      {
+        "type": "step.completed",
+        "component": "agent_execution",
+        "status": "success",
+        "data": {
+          "agent_code": "Supply_Chain",
+          "stage": "end"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "summarize_agent",
+        "component": "summarize_agent",
+        "data": {
+          "stage": "start"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "summarize_agent",
+        "component": "summarize_agent",
+        "status": "success",
+        "data": {
+          "stage": "end"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "flow.agent_case_candidate",
+        "data": {}
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "request.end",
+        "status": "success",
+        "data": {}
+      }
+    ]
   }
 }

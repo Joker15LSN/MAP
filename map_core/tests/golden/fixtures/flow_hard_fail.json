@@ -55,14 +55,36 @@
         "未命中可执行"
       ]
     },
-    "mongo_events": {
-      "contains_event_types": [
-        "request.start",
-        "flow.hard_fail",
-        "request.end"
-      ],
-      "request_end_success": false
-    },
-    "engine_parity": false
+    "engine_parity": false,
+    "execution_events": [
+      {
+        "type": "checkpoint.written",
+        "phase": "request.start",
+        "data": {
+          "mode": "flow"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "flow.policy_hit",
+        "data": {
+          "config_source": "static",
+          "runtime_override": true
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "flow.hard_fail",
+        "data": {
+          "reason": "no_matched_scenario"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "request.end",
+        "status": "failed",
+        "data": {}
+      }
+    ]
   }
 }

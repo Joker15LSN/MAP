@@ -2,8 +2,9 @@
 
 This module drives the REAL map_core pipelines (GlobalDomain / FlowDomain /
 MasterPipeline) with fake LLM and fake tool handlers, so the golden fixtures
-stay fully offline and deterministic. It also provides the event normalizer
-and the recording state store used to verify Mongo-bound event contracts.
+stay fully offline and deterministic. Typed ``CoreExecutionEvent`` streams are
+captured directly with :class:`InMemoryExecutionEventSink` and asserted against
+each fixture's ``expected.execution_events`` contract.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import json
 import re
 import uuid
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_args
 
 from map_core.schema.flow_domain_schema import FlowChatRequest
 from map_core.schema.global_domain_schema import GlobalDomainChatSchema
@@ -25,6 +26,7 @@ from map_core.service.agent_dispatcher import AgentDispatcher
 from map_core.service.execution_event import (
     CoreExecutionEvent,
     ExecutionEventEmitter,
+    ExecutionEventType,
     InMemoryExecutionEventSink,
     RunContext,
     set_run_context,
@@ -40,143 +42,9 @@ from map_core.utils.model_invocation import (
     ModelUsage,
 )
 
-# ---------------------------------------------------------------------------
-# Recording state store (stands in for GlobalAgentStateStore / MongoDB events)
-# ---------------------------------------------------------------------------
-
-
-class RecordingStateStore:
-    """Collects every record_event(...) call made by the pipeline."""
-
-    def __init__(self) -> None:
-        self.events: list[dict[str, Any]] = []
-
-    async def record_event(
-        self,
-        state_id: str,
-        event_type: str,
-        payload: dict[str, Any],
-        base_state: dict[str, Any] | None = None,
-    ) -> None:
-        self.events.append(
-            {
-                "state_id": state_id,
-                "event_type": event_type,
-                "payload": payload,
-                "base_state": base_state,
-            }
-        )
-
-    def event_types(self) -> list[str]:
-        return [item["event_type"] for item in self.events]
-
-    def by_type(self, event_type: str) -> list[dict[str, Any]]:
-        return [item for item in self.events if item["event_type"] == event_type]
-
-
-def _typed_to_state_event(event: CoreExecutionEvent, state_id: str) -> dict[str, Any]:
-    """Bridge one typed CoreExecutionEvent back to the legacy state_event shape.
-
-    The bridge is intentionally conservative: it restores the legacy
-    ``event_type`` (from ``data.phase`` / ``data.component``) and keeps the
-    remaining typed ``data`` as the payload.  Golden fixtures only assert
-    event-type presence and request.end status, which this shape preserves.
-    """
-    data = dict(event.data)
-    if event.type == "checkpoint.written":
-        legacy_type = data.pop("phase", None) or "checkpoint.written"
-        payload = data
-    elif event.type in {"step.started", "step.completed", "step.failed"}:
-        legacy_type = data.pop("component", None) or "agent_execution"
-        payload = data
-    elif event.type == "message.delta":
-        legacy_type = data.pop("component", None) or "agent_message"
-        payload = data
-    elif event.type == "tool.invocation_created":
-        legacy_type = "tool_call"
-        payload = data
-    elif event.type in {"tool.invocation_completed", "tool.invocation_failed"}:
-        legacy_type = "tool_result"
-        payload = data
-    elif event.type.startswith("model.invocation_"):
-        legacy_type = "llm_call"
-        payload = data
-    else:
-        legacy_type = event.type
-        payload = data
-    return {
-        "state_id": state_id,
-        "event_type": legacy_type,
-        "payload": payload,
-        "base_state": None,
-    }
-
-
-def merge_typed_events(
-    recording: RecordingStateStore,
-    typed_events: list[CoreExecutionEvent],
-    state_id: str,
-) -> None:
-    """Append bridged typed events to the recording store."""
-    for event in typed_events:
-        recording.events.append(_typed_to_state_event(event, state_id))
-
-
-# ---------------------------------------------------------------------------
-# fire_and_forget interceptor: turns async background writes into deterministic
-# coroutines the runner awaits after the pipeline stream is exhausted.
-# ---------------------------------------------------------------------------
-
-
-class PendingCoroutines:
-    def __init__(self) -> None:
-        self.coros: list[Any] = []
-
-    def collect(self, coro: Any) -> None:
-        self.coros.append(coro)
-
-    async def drain(self) -> None:
-        pending = self.coros
-        self.coros = []
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-
-
-# K3/K4: only legacy paths inside state_store still use fire_and_forget;
-# migrated modules emit typed events through ExecutionEventEmitter instead.
-_FIRE_AND_FORGET_MODULES = (
-    "map_core.service.state_store",
-)
-
-
-def _patch_fire_and_forget(pending: PendingCoroutines):
-    """Route every fire-and-forget event write through ``pending.collect``.
-
-    Returns a zero-arg restore callable. All modules that ``from .state_store
-    import fire_and_forget`` hold their own reference, so each must be patched.
-    """
-    import importlib
-
-    originals = {}
-    for module_name in _FIRE_AND_FORGET_MODULES:
-        module = importlib.import_module(module_name)
-        originals[module_name] = module.fire_and_forget
-        module.fire_and_forget = pending.collect
-
-    def restore() -> None:
-        for module_name, original in originals.items():
-            importlib.import_module(module_name).fire_and_forget = original
-
-    return restore
-
-
-def install_fire_and_forget(monkeypatch, pending: PendingCoroutines) -> None:
-    """Route all fire-and-forget event writes through ``pending.collect``."""
-    import importlib
-
-    for module_name in _FIRE_AND_FORGET_MODULES:
-        module = importlib.import_module(module_name)
-        monkeypatch.setattr(module, "fire_and_forget", pending.collect)
+# Frozen typed event type set (runtime view of ExecutionEventType, which is a
+# typing.Literal and therefore not directly iterable at runtime).
+TYPED_EVENT_TYPES: frozenset[str] = frozenset(get_args(ExecutionEventType))
 
 
 # ---------------------------------------------------------------------------
@@ -431,23 +299,38 @@ def _make_typed_recording() -> tuple[RunContext, InMemoryExecutionEventSink]:
     return run_context, sink
 
 
+def _execution_event_record(event: CoreExecutionEvent) -> dict[str, Any]:
+    """Serialize one typed event for golden assertions.
+
+    ``component`` / ``phase`` / ``status`` are lifted to the top level only
+    when the event data actually carries them, so fixtures can assert the
+    execution facts without reaching into the full ``data`` payload.
+    """
+    data = dict(event.data)
+    record: dict[str, Any] = {
+        "type": event.type,
+        "seq": event.seq,
+        "data": data,
+        "trace_id": event.trace_id,
+        "span_id": event.span_id,
+    }
+    for field in ("component", "phase", "status"):
+        if data.get(field) is not None:
+            record[field] = data[field]
+    return record
+
+
 def _install_global_components(
     gd: GlobalDomain,
     fake_llm: FakeLLM,
     tools: FakeToolHarness,
-    recording: RecordingStateStore,
 ) -> None:
     gd.llm = fake_llm
     gd.scene_selector._llm = fake_llm
     gd.summarize_agent.llm = fake_llm
     gd.query_rewriter.llm = fake_llm
-    gd.state_store = recording
     dispatcher = AgentDispatcher(llm=fake_llm, tool_registry=tools.registry)
     gd.agent_dispatcher = dispatcher
-
-
-def _collect_events(stream: Any) -> list[Any]:
-    return list(stream)
 
 
 def _build_global_request(fixture: dict[str, Any]) -> GlobalDomainChatSchema:
@@ -465,27 +348,16 @@ def run_global(fixture: dict[str, Any]) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
         fake_llm = FakeLLM(fixture.get("llm_script", []))
         tools = FakeToolHarness(fixture.get("tools", []))
-        recording = RecordingStateStore()
-        pending = PendingCoroutines()
-
-        # fire-and-forget is intercepted at module scope; use the real loop below
-        # by temporarily patching. We instead call pipeline with a local loop.
         gd = GlobalDomain(llm=fake_llm, request=request, staff_code=request.staff_code)
-        _install_global_components(gd, fake_llm, tools, recording)
+        _install_global_components(gd, fake_llm, tools)
 
         run_context, typed_sink = _make_typed_recording()
-        restore = _patch_fire_and_forget(pending)
-        try:
-            events = []
-            with set_run_context(run_id=run_context.run_id):
-                async for event in gd.pipeline_stream(request):
-                    events.append(event)
-                await pending.drain()
-                await ExecutionEventEmitter.current().drain()
-        finally:
-            restore()
-        merge_typed_events(recording, typed_sink.events, gd.state_id)
-        return _assemble_result(fixture, events, tools, recording, fake_llm)
+        events = []
+        with set_run_context(run_id=run_context.run_id):
+            async for event in gd.pipeline_stream(request):
+                events.append(event)
+            await ExecutionEventEmitter.current().close()
+        return _assemble_result(fixture, events, tools, typed_sink, fake_llm)
 
     return asyncio.run(_run())
 
@@ -497,38 +369,28 @@ def run_flow(fixture: dict[str, Any]) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
         fake_llm = FakeLLM(fixture.get("llm_script", []))
         tools = FakeToolHarness(fixture.get("tools", []))
-        recording = RecordingStateStore()
-        pending = PendingCoroutines()
-
         fd = FlowDomain(request=request)
-        _install_global_components(fd.global_domain, fake_llm, tools, recording)
-        fd.global_domain.llm = fake_llm
+        _install_global_components(fd.global_domain, fake_llm, tools)
 
         run_context, typed_sink = _make_typed_recording()
-        restore = _patch_fire_and_forget(pending)
+        if flow_config is not None:
+            snapshot = fixture.get("flow_snapshot")
+            provider = fd.flow_config_provider
+            original = provider.get_snapshot
+            provider.get_snapshot = _fake_snapshot_loader(snapshot)
+        else:
+            original = None
+            provider = None
         try:
-            if flow_config is not None:
-                snapshot = fixture.get("flow_snapshot")
-                provider = fd.flow_config_provider
-                original = provider.get_snapshot
-                provider.get_snapshot = _fake_snapshot_loader(snapshot)
-            else:
-                original = None
-                provider = None
-            try:
-                events = []
-                with set_run_context(run_id=run_context.run_id):
-                    async for event in fd.pipeline_stream(request):
-                        events.append(event)
-                    await pending.drain()
-                    await ExecutionEventEmitter.current().drain()
-            finally:
-                if original is not None:
-                    provider.get_snapshot = original
+            events = []
+            with set_run_context(run_id=run_context.run_id):
+                async for event in fd.pipeline_stream(request):
+                    events.append(event)
+                await ExecutionEventEmitter.current().close()
         finally:
-            restore()
-        merge_typed_events(recording, typed_sink.events, fd.state_id)
-        return _assemble_result(fixture, events, tools, recording, fake_llm)
+            if original is not None:
+                provider.get_snapshot = original
+        return _assemble_result(fixture, events, tools, typed_sink, fake_llm)
 
     return asyncio.run(_run())
 
@@ -575,9 +437,6 @@ def run_master(fixture: dict[str, Any]) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
         fake_llm = FakeLLM(fixture.get("llm_script", []))
         tools = FakeToolHarness(fixture.get("tools", []))
-        recording = RecordingStateStore()
-        pending = PendingCoroutines()
-
         mp = MasterPipeline(
             llm=fake_llm,
             request=request,
@@ -586,21 +445,14 @@ def run_master(fixture: dict[str, Any]) -> dict[str, Any]:
         )
         mp.agent_runtime.llm = fake_llm
         mp.agent_runtime.tool_registry = tools.registry
-        mp.state_store = recording
 
         run_context, typed_sink = _make_typed_recording()
-        restore = _patch_fire_and_forget(pending)
-        try:
-            events = []
-            with set_run_context(run_id=run_context.run_id):
-                async for event in mp.pipeline_stream(request):
-                    events.append(event)
-                await pending.drain()
-                await ExecutionEventEmitter.current().drain()
-        finally:
-            restore()
-        merge_typed_events(recording, typed_sink.events, mp.state_id)
-        return _assemble_result(fixture, events, tools, recording, fake_llm)
+        events = []
+        with set_run_context(run_id=run_context.run_id):
+            async for event in mp.pipeline_stream(request):
+                events.append(event)
+            await ExecutionEventEmitter.current().close()
+        return _assemble_result(fixture, events, tools, typed_sink, fake_llm)
 
     return asyncio.run(_run())
 
@@ -609,7 +461,7 @@ def _assemble_result(
     fixture: dict[str, Any],
     events: list[Any],
     tools: FakeToolHarness,
-    recording: RecordingStateStore,
+    typed_sink: InMemoryExecutionEventSink,
     fake_llm: FakeLLM,
 ) -> dict[str, Any]:
     event_records = []
@@ -624,7 +476,9 @@ def _assemble_result(
         "engine": fixture.get("engine"),
         "events": event_records,
         "tool_executions": list(tools.executions),
-        "state_events": list(recording.events),
+        "execution_events": [
+            _execution_event_record(event) for event in typed_sink.events
+        ],
         "llm_calls": list(fake_llm.calls),
     }
 
@@ -766,7 +620,7 @@ def assert_golden_result(result: dict[str, Any], fixture: dict[str, Any]) -> Non
     _assert_tool_io_contract(result, expected, fixture)
     _assert_failed_tool_results(result, expected, fixture)
     _assert_final_content(result, expected, fixture)
-    _assert_mongo_events(result, expected.get("mongo_events"), fixture)
+    _assert_execution_events(result, expected.get("execution_events"), fixture)
     _assert_flow_contract(result, expected.get("flow"), fixture)
     if expected.get("no_content_delta"):
         deltas = [item for item in result["events"] if item["event"] == "content_delta"]
@@ -931,38 +785,62 @@ def _scene_selected_agents(result: dict[str, Any]) -> list[str]:
     return agents
 
 
-def _assert_mongo_events(
-    result: dict[str, Any], spec: dict[str, Any] | None, fixture: dict[str, Any]
+def _assert_execution_events(
+    result: dict[str, Any], spec: list[dict[str, Any]] | None, fixture: dict[str, Any]
 ) -> None:
+    """Assert the typed execution-event stream against the fixture contract.
+
+    The fixture list freezes the full typed type sequence (event count and
+    order).  In addition, seq must be monotonic starting at 1 and every
+    record must carry trace/span fields (both None or both populated).
+    Finally each fixture item's key ``data`` fields and optional
+    ``component`` / ``phase`` / ``status`` are matched as a subset of the
+    recorded event.
+    """
     if not spec:
         return
-    state_types = [item["event_type"] for item in result["state_events"]]
-    for event_type in spec.get("contains_event_types") or []:
-        assert event_type in state_types, (
-            f"[{fixture['id']}] Mongo event missing {event_type!r} in {state_types}"
+    actual = result.get("execution_events") or []
+    expected_types = [item["type"] for item in spec]
+    actual_types = [item["type"] for item in actual]
+    assert actual_types == expected_types, (
+        f"[{fixture['id']}] typed execution event sequence mismatch: "
+        f"expected {expected_types!r} got {actual_types!r}"
+    )
+
+    seqs = [item["seq"] for item in actual]
+    assert seqs == list(range(1, len(actual) + 1)), (
+        f"[{fixture['id']}] execution event seq not monotonic from 1: {seqs!r}"
+    )
+
+    for item in actual:
+        assert "trace_id" in item and "span_id" in item, (
+            f"[{fixture['id']}] execution event missing trace_id/span_id fields"
         )
-    for event_type in spec.get("not_contains_event_types") or []:
-        assert event_type not in state_types, (
-            f"[{fixture['id']}] Mongo event {event_type!r} should be absent in {state_types}"
+        assert (item["trace_id"] is None) == (item["span_id"] is None), (
+            f"[{fixture['id']}] execution event trace/span presence mismatch: "
+            f"trace_id={item['trace_id']!r} span_id={item['span_id']!r}"
         )
-    if "request_end_success" in spec:
-        end_events = [item for item in result["state_events"] if item["event_type"] == "request.end"]
-        assert end_events, f"[{fixture['id']}] no request.end state event"
-        statuses = []
-        for item in end_events:
-            payload = item["payload"]
-            statuses.append(
-                str(payload.get("status"))
-                if isinstance(payload, dict)
-                else str(payload)
-            )
-        if spec["request_end_success"]:
-            assert any(s == "success" for s in statuses), (
-                f"[{fixture['id']}] request.end expected success, got {statuses}"
-            )
-        else:
-            assert any(s in {"failed", "error"} for s in statuses), (
-                f"[{fixture['id']}] request.end expected failure, got {statuses}"
+
+    for expected_item, actual_item in zip(spec, actual):
+        assert actual_item["type"] == expected_item["type"], (
+            f"[{fixture['id']}] typed event type mismatch at seq "
+            f"{actual_item['seq']}: expected {expected_item['type']!r} "
+            f"got {actual_item['type']!r}"
+        )
+        for field in ("component", "phase", "status"):
+            if field in expected_item:
+                assert actual_item.get(field) == expected_item[field], (
+                    f"[{fixture['id']}] typed event {actual_item['type']} "
+                    f"seq={actual_item['seq']} {field} mismatch: "
+                    f"expected {expected_item[field]!r} got {actual_item.get(field)!r}"
+                )
+        expected_data = expected_item.get("data") or {}
+        actual_data = actual_item.get("data") or {}
+        for key, expected_value in expected_data.items():
+            assert actual_data.get(key) == expected_value, (
+                f"[{fixture['id']}] typed event {actual_item['type']} "
+                f"seq={actual_item['seq']} data.{key} mismatch: "
+                f"expected {expected_value!r} got {actual_data.get(key)!r}"
             )
 
 

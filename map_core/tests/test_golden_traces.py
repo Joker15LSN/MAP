@@ -2,9 +2,9 @@
 
 Drives the REAL GlobalDomain / FlowDomain pipelines with scripted fake LLM and
 tool handlers (offline, no external services) and verifies each golden fixture's
-SSE event order / key fields / tool IO / Mongo-bound events / final content
-semantics. A subset of fixtures is executed on both engines (legacy + agentscope)
-to pin the cross-engine contract.
+SSE event order / key fields / tool IO / typed execution-event stream / final
+content semantics. A subset of fixtures is executed on both engines
+(legacy + agentscope) to pin the cross-engine contract.
 """
 
 from __future__ import annotations
@@ -299,8 +299,24 @@ def test_fixture_structure_contract(fixtures: dict[str, dict]) -> None:
         assert "contains" in expected.get("final_content", {}), (
             f"{fixture_id}: final_content must carry semantic assertions"
         )
-        assert isinstance(expected.get("mongo_events"), dict), (
-            f"{fixture_id}: expected.mongo_events must be present"
+        assert "mongo_events" not in expected, (
+            f"{fixture_id}: expected.mongo_events must be retyped to "
+            "expected.execution_events"
+        )
+        execution_events = expected.get("execution_events")
+        assert isinstance(execution_events, list) and execution_events, (
+            f"{fixture_id}: expected.execution_events must be a non-empty list"
+        )
+        typed_types = [item.get("type") for item in execution_events]
+        assert all(isinstance(item.get("type"), str) for item in execution_events), (
+            f"{fixture_id}: every execution_events item must carry a str type"
+        )
+        assert all(item_type in harness.TYPED_EVENT_TYPES for item_type in typed_types), (
+            f"{fixture_id}: execution_events contains unknown typed event type "
+            f"in {typed_types}"
+        )
+        assert all(isinstance(item.get("data"), dict) for item in execution_events), (
+            f"{fixture_id}: every execution_events item must carry a data dict"
         )
         # no secrets / tokens / real credentials inside fixtures
         blob = json.dumps(data, ensure_ascii=False)

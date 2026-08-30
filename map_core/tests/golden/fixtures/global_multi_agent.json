@@ -158,13 +158,137 @@
         "经营稳健"
       ]
     },
-    "mongo_events": {
-      "contains_event_types": [
-        "request.start",
-        "request.end"
-      ],
-      "request_end_success": true
-    },
-    "engine_parity": false
+    "engine_parity": false,
+    "execution_events": [
+      {
+        "type": "checkpoint.written",
+        "phase": "request.start",
+        "data": {
+          "staff_code": "golden_tester"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "scene_selector",
+        "component": "direct_sub_agent_route",
+        "data": {
+          "stage": "start"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "scene_selector",
+        "component": "direct_sub_agent_route",
+        "status": "success",
+        "data": {
+          "stage": "end"
+        }
+      },
+      {
+        "type": "step.started",
+        "component": "agent_execution",
+        "data": {
+          "agent_code": "General_Assistant",
+          "stage": "start"
+        }
+      },
+      {
+        "type": "step.started",
+        "component": "agent_execution",
+        "data": {
+          "agent_code": "Operations",
+          "stage": "start"
+        }
+      },
+      {
+        "type": "tool.invocation_created",
+        "data": {
+          "tool": "general_qa_agent"
+        }
+      },
+      {
+        "type": "tool.invocation_completed",
+        "data": {
+          "tool": "general_qa_agent"
+        }
+      },
+      {
+        "type": "tool.invocation_created",
+        "data": {
+          "tool": "ask_database_agent"
+        }
+      },
+      {
+        "type": "tool.invocation_completed",
+        "data": {
+          "tool": "ask_database_agent"
+        }
+      },
+      {
+        "type": "step.completed",
+        "component": "General_Assistant",
+        "status": "success",
+        "data": {
+          "agent_code": "General_Assistant",
+          "stage": "end"
+        }
+      },
+      {
+        "type": "step.completed",
+        "component": "agent_execution",
+        "status": "success",
+        "data": {
+          "agent_code": "General_Assistant",
+          "stage": "end"
+        }
+      },
+      {
+        "type": "step.completed",
+        "component": "Operations",
+        "status": "success",
+        "data": {
+          "agent_code": "Operations",
+          "stage": "end"
+        }
+      },
+      {
+        "type": "step.completed",
+        "component": "agent_execution",
+        "status": "success",
+        "data": {
+          "agent_code": "Operations",
+          "stage": "end"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "summarize_agent",
+        "component": "summarize_agent",
+        "data": {
+          "stage": "start"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "summarize_agent",
+        "component": "summarize_agent",
+        "status": "success",
+        "data": {
+          "stage": "end"
+        }
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "token_usage",
+        "component": "summarize_agent",
+        "data": {}
+      },
+      {
+        "type": "checkpoint.written",
+        "phase": "request.end",
+        "status": "success",
+        "data": {}
+      }
+    ]
   }
 }
