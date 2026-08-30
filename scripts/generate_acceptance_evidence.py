@@ -76,8 +76,10 @@ BLOCKED_REASON_BY_TASK = {
     "GLOBAL": "tenant isolation matrix and global evidence rollup are not "
               "implemented in this change set (P2 scope); blocked until the "
               "golden-taskbook tasks reach their final acceptance",
-    "P0-CFG-AUTH-01": "runtime snapshot service-identity API not implemented "
-                      "in this change set",
+    "P0-CFG-AUTH-01": "PG runtime snapshots, internal service-identity read "
+                       "route, Run id/digest pinning and core fixed-id "
+                       "transport are implemented (PR-J1-J7); cross-service "
+                       "CI evidence and full replay matrix still pending",
     "P0-CONV-01": "conversation parity work not implemented in this change set",
     "P0-CONTRACT-01": "remaining contract ACs (idempotency API, OpenAPI "
                       "separation, typed error HTTP projection) not "
@@ -97,8 +99,10 @@ BLOCKED_REASON_BY_TASK = {
                        "and CI attestation still pending",
     "P1-CLEAN-STATE-01": "Mongo state/telemetry abstraction retirement not "
                          "implemented in this change set",
-    "P1-CONFIG-01": "PG versioned configuration not implemented in this "
-                    "change set",
+    "P1-CONFIG-01": "PG AdminState + immutable runtime snapshots, lifecycle "
+                    "CAS, Run pinning and core transport are implemented "
+                    "(PR-J1-J7); asset owner/version/eval/canary/delete-guard "
+                    "semantics and CI migration evidence still pending",
     "P1-CTX-01": "OpenViking server integration not implemented in this "
                  "change set",
     "P1-DAG-01": "typed DAG scheduler not implemented in this change set",

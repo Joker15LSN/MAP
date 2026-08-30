@@ -188,7 +188,7 @@ sequenceDiagram
 | Agent 引擎 | legacy / AgentScope 双引擎；PR-H1 默认 AgentScope 并保留回滚开关 | AgentScope 单引擎 | 过渡中；计划 Step 5（PR-H2 待证据后删 switch） |
 | 沙箱事实 | Core 自有 ledger + BFF Effect guard | Invocation/Effect 统一模型 | 过渡中；计划 Phase 2 |
 | 模型调用 | 单一 typed ModelInvocation 承载全部 production caller；旧 `llm_engine.py` 壳已删除（PR-I B0–B6） | 小接口 ModelInvocation 模块（AC-03 CI/durable 对账待补） | 过渡中；计划 Step 6 |
-| 配置 | 文件快照 + mutation/audit | 版本化配置 + 固定 Runtime Snapshot | 过渡中；计划 Phase 6 |
+| 配置 | PG 单行 AdminState + 不可变 Runtime Snapshot + pointer CAS；file JSON/volume/reconciler 已删除（PR-J1–J7b） | 版本化配置 + 七类资产业务语义 + generated DTO | 过渡中；计划 Step 7（AC-06/07/08 待后续资产语义） |
 | 运行观测 | Mongo 记录 + OTel + SSE 语义并存 | Canonical Event 投影到观测 | 目标；计划 Phase 7 |
 
 完整顺序、删除门槛和验收标准见

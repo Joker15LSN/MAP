@@ -85,21 +85,20 @@ Router 只做协议解析、身份/权限调用、application module 调用和�
 这是一组高价值不变量。精简时可以统一命名和提取策略，但不得把 fencing、取消、结果不
 确定态简化掉。目标 Run worker 应复用这些已验证机制，不再新建第二套租约协议。
 
-### 3.4 配置与审计模块（当前过渡）
+### 3.4 配置与审计模块（PG 化已完成，资产语义待续）
 
-`app/services/config_mutation.py` 编排快照变更、mutation 事实和审计链；
-`app/repositories/config.py` 定义了基础读取/更新 seam，而当前编排还依赖文件 adapter 的
-附加能力。这意味着公开协议和真实调用关系不一致。
+`app/services/runtime_snapshot/` 现在是唯一管理写入口：完整 AdminState 存于 PG
+单行，运行时投影存于不可变 snapshot，publish/activate/rollback/retire 通过
+pointer CAS + hash-chained audit + outbox 原子提交；file adapter/reconciler 已删除。
+`app/repositories/config.py` 的读协议已收窄为 `async load()`，路由不再接触
+prepare/apply/hash sequencing。
 
-收敛方向：
+收敛方向（后续 PR）：
 
-1. 先按“管理配置事实”“原子快照写入”“审计 append”拆清内部职责；
-2. 由组合根装配具体 adapter；
-3. application module 只依赖它实际使用的最小接口；
-4. 版本化配置落地后删除文件特有接口和兼容分支。
-
-不要为了形式统一提前建立通用 Repository 基类。只有独立变化或可替换需求已出现时才保留
-seam。
+1. 七类资产（Agent/Scene/Skill/Tool/MCP/Model/Prompt）的 owner/version/state/
+   dependency/secret ref/eval/canary/delete guard 仍待领域化；
+2. 新写路径只允许表达领域意图，不得重新暴露 AdminState 任意 mutation；
+3. 前端 DTO 从 public schema 生成（P1-CLEAN-BUILD-01）后再退役手写同义类型。
 
 ### 3.5 Run 运行时基础（契约已实现；持久最小事实集与 worker 循环已实现）
 
