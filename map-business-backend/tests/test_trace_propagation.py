@@ -6,15 +6,22 @@ tracestate / baggage and fabricated a dangling parent traceparent instead.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_test_state.json")
-
 from app.core_client import _ensure_traceparent
-from app.main import app, core_client
+from app.main import create_app
+from app.schemas import AdminState
+
+
+class _FakeStore:
+    async def load(self) -> AdminState:
+        return AdminState.default()
+
+
+app = create_app(store=_FakeStore())
+core_client = app.state.core_client
 
 client = TestClient(app)
 

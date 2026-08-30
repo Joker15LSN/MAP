@@ -14,9 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_auth_test_state.json")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,9 +29,6 @@ OTHER_SECRET = "fake-other-value-99"
 
 
 def _app(settings: Settings):
-    from dataclasses import replace
-
-    settings = replace(settings, state_file="/tmp/map_bff_auth_test_state.json")
     app = create_app(settings=settings, store=None, core_client=None)
     _seed_pg_admin_state_sync()
     return app

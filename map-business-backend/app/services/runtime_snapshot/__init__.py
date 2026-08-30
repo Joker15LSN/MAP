@@ -32,10 +32,7 @@ from .schemas import (
     RuntimeSnapshotRecord,
     build_runtime_projection,
 )
-from .service import (
-    RuntimeSnapshotService,
-    reconcile_runtime_snapshot_mutations,
-)
+from .service import RuntimeSnapshotService
 
 __all__ = [
     "AdminStateUnavailableError",
@@ -56,7 +53,6 @@ __all__ = [
     "build_runtime_projection",
     "canonical_json_hash",
     "projection_digest",
-    "reconcile_runtime_snapshot_mutations",
     "snapshot_id_for_digest",
     "state_hash",
 ]

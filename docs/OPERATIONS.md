@@ -152,14 +152,15 @@ curl -fsS http://localhost:15151/api/v1/health
 - Mongo 当前是运行观测事实源，但目标只作为 Canonical Event 的投影；迁移期间不要提前删除
   仍被观测页面消费的字段。
 
-### 文件快照
+### 管理配置快照
 
-`admin_state.json` 是当前配置快照，不应脱离 PostgreSQL mutation/audit 事实单独恢复。恢复时：
+管理配置当前值是 PostgreSQL `map_control.admin_state` 单行（JSONB + 哈希）和
+`runtime_snapshots` / `runtime_snapshot_current` 的投影。恢复时：
 
 1. 停止配置写入；
-2. 恢复数据库与文件到一致恢复点；
-3. 启动 BFF reconciler；
-4. 验证 mutation 状态、快照 hash 和审计链；
+2. 恢复 `map_control` 数据库到一致恢复点；
+3. 启动 BFF（lifespan 会幂等补齐空库的默认 AdminState 和 active snapshot）；
+4. 验证审计链与当前 snapshot 指针一致；
 5. 再开放管理写流量。
 
 本仓库当前没有一键生产 backup/restore 脚本；这是部署平台必须补齐并定期演练的运维缺口。

@@ -98,14 +98,14 @@ flowchart LR
 
 ### 管理配置与审计
 
-管理配置的当前快照保存在 `map-business-backend/app/data/admin_state.json`，但写入不是简单覆盖文件：
+管理配置的当前快照保存在 PostgreSQL `map_control.admin_state` 单行（JSONB + 哈希），
+每个管理写入由 `RuntimeSnapshotService.apply_change` 在一个 PostgreSQL 事务内完成：
 
-1. `ConfigMutationService` 计算 expected/target hash 和脱敏 JSON Patch；
-2. PostgreSQL 先持久化 pending mutation；
-3. 通过临时文件、fsync 和原子 rename 更新快照；
-4. 随后以短事务追加 applied/failed/rejected 审计事件并终结 mutation；
-5. 审计事件形成 append-only SHA-256 hash chain，应用角色只有 SELECT/INSERT 权限；
-6. BFF 启动时 reconciler 处理崩溃遗留 mutation，未知状态不会猜测为成功。
+1. 锁定 PG 单行 AdminState，计算 before/target hash 和脱敏 JSON Patch；
+2. 构建 runtime projection 并写入 `runtime_snapshots` / `runtime_snapshot_current`；
+3. 同事务更新 AdminState、追加 applied/failed/rejected 审计事件和 outbox；
+4. 审计事件形成 append-only SHA-256 hash chain，应用角色只有 SELECT/INSERT 权限；
+5. 空库启动时 lifespan 幂等补齐默认 AdminState 和 active snapshot。
 
 ### Worker 与外部副作用
 
@@ -121,7 +121,7 @@ flowchart LR
 | 数据 | 事实源 | 主要写入方 | 主要读取方 |
 | --- | --- | --- | --- |
 | workspace、会话、消息、反馈、job、outbox、mutation、审计链 | PostgreSQL `map_control` schema | BFF、worker、migrator | BFF、worker、运维工具 |
-| 管理配置当前快照 | `admin_state.json` | BFF `ConfigMutationService` | BFF、map_core 运行时快照消费者 |
+| 管理配置当前快照 | `map_control.admin_state` 单行 + `runtime_snapshots` | BFF `RuntimeSnapshotService` | BFF、map_core 运行时快照消费者 |
 | request/agent/tool/LLM 运行记录 | MongoDB `map_db_dev` | map_core | 观测后端、E2E 交叉验证 |
 | trace/span | OTel Collector → Jaeger（可选） | BFF、map_core | Jaeger、E2E |
 
@@ -315,7 +315,6 @@ MAP_CONTROL_MIGRATION_DSN=postgresql+asyncpg://map_migrator:map-migrator-local@1
 ```bash
 cd map-business-backend
 MAP_CONTROL_DB_DSN=postgresql+asyncpg://map:map@127.0.0.1:15432/map \
-MAP_BFF_STATE_FILE="$PWD/app/data/admin_state.json" \
   uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 18080
 ```
 
@@ -324,7 +323,6 @@ MAP_BFF_STATE_FILE="$PWD/app/data/admin_state.json" \
 ```bash
 cd map-business-backend
 MAP_CONTROL_DB_DSN=postgresql+asyncpg://map:map@127.0.0.1:15432/map \
-MAP_BFF_STATE_FILE="$PWD/app/data/admin_state.json" \
   uv run python -m app.workers.main
 ```
 

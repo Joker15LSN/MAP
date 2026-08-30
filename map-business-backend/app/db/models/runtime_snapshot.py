@@ -20,7 +20,6 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
-    Text,
     UniqueConstraint,
     func,
     text,
@@ -31,7 +30,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 from ..base import Base
 
 SNAPSHOT_STATUSES = ("draft", "published", "active", "rolled_back", "retired")
-MUTATION_STATUSES = ("pending", "applied", "failed")
 
 
 class RuntimeSnapshot(Base):
@@ -98,47 +96,3 @@ class RuntimeSnapshotCurrent(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-
-
-class RuntimeSnapshotMutation(Base):
-    """Crash-recovery orchestration row (NOT part of the audit chain).
-
-    Mirrors ``config_mutations``: the row is committed BEFORE the file
-    rename and carries both admin hashes, the target snapshot id/digest/
-    projection and the original request context, so the reconciler can
-    close a pending row only on exact hash/pointer matches.
-    """
-
-    __tablename__ = "runtime_snapshot_mutations"
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('pending', 'applied', 'failed')",
-            name="ck_runtime_snapshot_mutations_status",
-        ),
-        Index("ix_runtime_snapshot_mutations_status", "status"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
-    )
-    resource: Mapped[str] = mapped_column(String(192), nullable=False)
-    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    expected_admin_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    target_admin_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    expected_current_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    target_current_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    target_projection: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending", server_default="pending"
-    )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    workspace_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    action: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    actor_user_id: Mapped[str | None] = mapped_column(String(192), nullable=True)
-    actor_subject: Mapped[str | None] = mapped_column(String(192), nullable=True)
-    actor_roles: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

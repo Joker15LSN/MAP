@@ -47,7 +47,6 @@ def _prod_explicit(origins: str, *, credentials: bool = True) -> Settings:
         auth_mode=AuthMode.TRUSTED_HEADER,
         trusted_proxy_secret=_SECRET,
         env="prod",
-        state_file="/tmp/map_bff_cors_schema_state.json",
         cors_origins=origins,
         cors_allow_credentials=credentials,
     )

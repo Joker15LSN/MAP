@@ -1,16 +1,21 @@
-import os
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_test_state.json")
-
-from app.main import app
-
-client = TestClient(app)
+from app.main import create_app
 
 
-def test_flow_policy_roundtrip() -> None:
+@pytest.fixture(scope="module")
+def client():
+    # TestClient as context manager runs lifespan, which seeds the PG
+    # admin state singleton idempotently (J7b: no file store anymore).
+    app = create_app()
+    with TestClient(app) as client:
+        yield client
+
+
+def test_flow_policy_roundtrip(client) -> None:
     response = client.get("/api/admin/flow-policy")
     assert response.status_code == 200
     payload = response.json()
@@ -26,7 +31,7 @@ def test_flow_policy_roundtrip() -> None:
     assert verify_response.json()["max_node_budget"] == 16
 
 
-def test_scenario_pack_roundtrip() -> None:
+def test_scenario_pack_roundtrip(client) -> None:
     scenario_packs = [
         {
             "scenario_id": "cross_domain_serial_analysis",
@@ -48,7 +53,7 @@ def test_scenario_pack_roundtrip() -> None:
     assert len(verify_response.json()) == 1
 
 
-def test_flow_skill_descriptor_roundtrip() -> None:
+def test_flow_skill_descriptor_roundtrip(client) -> None:
     skill_descriptors = [
         {
             "skill_id": "ops.ask_database.v1",
@@ -69,7 +74,7 @@ def test_flow_skill_descriptor_roundtrip() -> None:
     assert verify_response.json()[0]["skill_id"] == "ops.ask_database.v1"
 
 
-def test_flow_runtime_snapshot_contains_flow_sections() -> None:
+def test_flow_runtime_snapshot_contains_flow_sections(client) -> None:
     response = client.get("/api/admin/flow-runtime-snapshot")
     assert response.status_code == 200
     payload = response.json()
@@ -80,7 +85,7 @@ def test_flow_runtime_snapshot_contains_flow_sections() -> None:
     assert "skills" in payload
 
 
-def test_master_prompt_publish_diff_and_rollback() -> None:
+def test_master_prompt_publish_diff_and_rollback(client) -> None:
     master_response = client.get("/api/admin/master-agent")
     assert master_response.status_code == 200
     master = master_response.json()
@@ -114,7 +119,7 @@ def test_master_prompt_publish_diff_and_rollback() -> None:
     assert rollback_response.json()["current_version"] == original_version
 
 
-def test_mcp_skill_upload_and_runtime_snapshot() -> None:
+def test_mcp_skill_upload_and_runtime_snapshot(client) -> None:
     server_id = f"pytest-mcp-{uuid.uuid4().hex[:8]}"
     put_response = client.put(
         "/api/admin/mcp-servers",

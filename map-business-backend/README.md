@@ -126,7 +126,6 @@ Compose 使用 `/ready` 决定 BFF 是否可接流量。
 - `MAP_CONTROL_DB_DSN`：应用数据库 DSN；无代码默认值，缺失时 fail-fast/readiness-fail；
 - `MAP_CONTROL_MIGRATION_DSN`：迁移 DSN；仅 migrator 使用；
 - `MAP_CORE_API_ORIGIN`：Core 地址；
-- `MAP_BFF_STATE_FILE`：当前配置快照文件；
 - `MAP_AUTH_MODE`：`dev | trusted_header | oidc`；`oidc` 当前未实现，生产禁止 `dev`；
 - `MAP_TRUSTED_PROXY_SECRET` / `MAP_TRUSTED_PROXY_REQUIRED`：可信代理模式；
 - `MAP_SERVICE_CREDENTIALS` / `MAP_SERVICE_AUDIENCE`：internal 服务身份；
@@ -137,9 +136,9 @@ Compose 使用 `/ready` 决定 BFF 是否可接流量。
 
 ## 配置快照的当前边界
 
-`app/data/admin_state.json` 是当前管理配置快照。写入必须经过 `ConfigMutationService`，并与
-PostgreSQL mutation/audit 对账；不能直接覆盖文件。版本化配置与不可变 Runtime Snapshot
-是目标设计，尚未实现，见代码精简计划 Phase 6。
+管理配置当前值持久化在 PostgreSQL `map_control.admin_state` 单行（JSONB + 哈希），
+每个管理写入由 `RuntimeSnapshotService.apply_change` 在单事务内同时更新 AdminState、
+Runtime Snapshot、审计链和 outbox；不再使用本地 JSON 文件。
 
 ## 相关文档
 

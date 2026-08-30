@@ -1,4 +1,3 @@
-import os
 import uuid
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
@@ -6,11 +5,18 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_test_state.json")
-
 from app.api.deps import get_runtime_snapshots
-from app.main import app, core_client
+from app.main import create_app
+from app.schemas import AdminState
 
+
+class _FakeStore:
+    async def load(self) -> AdminState:
+        return AdminState.default()
+
+
+app = create_app(store=_FakeStore())
+core_client = app.state.core_client
 client = TestClient(app)
 
 SNAPSHOT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")

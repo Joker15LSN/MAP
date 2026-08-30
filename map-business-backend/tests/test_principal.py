@@ -8,13 +8,10 @@ forwards them to map_core.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_principal_test_state.json")
 
 from app.core.identity import AuthMode, is_valid_id
 from app.main import create_app
@@ -41,14 +38,31 @@ class FakeCoreClient:
 
 
 def _app(settings: Settings):
-    from dataclasses import replace
-
-    settings = replace(settings, state_file="/tmp/map_bff_principal_state.json")
-    return create_app(
+    app = create_app(
         settings=settings,
         store=None,
         core_client=FakeCoreClient(),
     )
+    _seed_pg_admin_state_sync()
+    return app
+
+
+def _seed_pg_admin_state_sync() -> None:
+    """Seed the PG admin state once for TestClient apps (no lifespan)."""
+    import asyncio
+
+    from app.db.session import get_session_factory
+    from app.schemas import AdminState
+    from app.services.runtime_snapshot.adapters.admin_state_pg import (
+        PgAdminStateRepository,
+    )
+
+    async def _seed() -> None:
+        async with get_session_factory()() as session:
+            await PgAdminStateRepository(session).seed_if_empty(AdminState.default())
+            await session.commit()
+
+    asyncio.run(_seed())
 
 
 def test_dev_mode_default_admin_can_write_admin_config() -> None:
@@ -148,7 +162,7 @@ def test_oidc_mode_fails_closed() -> None:
 def test_request_id_echoed_and_session_workspace_forwarded(monkeypatch) -> None:
     core = FakeCoreClient()
     app = create_app(
-        settings=Settings(auth_mode=AuthMode.DEV, state_file="/tmp/map_bff_principal_state.json"),
+        settings=Settings(auth_mode=AuthMode.DEV),
         store=None,
         core_client=core,
     )
@@ -173,7 +187,7 @@ def test_request_id_echoed_and_session_workspace_forwarded(monkeypatch) -> None:
 def test_invalid_request_id_is_replaced_with_fresh_one() -> None:
     core = FakeCoreClient()
     app = create_app(
-        settings=Settings(auth_mode=AuthMode.DEV, state_file="/tmp/map_bff_principal_state.json"),
+        settings=Settings(auth_mode=AuthMode.DEV),
         store=None,
         core_client=core,
     )
@@ -194,7 +208,7 @@ def test_invalid_request_id_is_replaced_with_fresh_one() -> None:
 def test_missing_request_id_mints_one_and_echoes() -> None:
     core = FakeCoreClient()
     app = create_app(
-        settings=Settings(auth_mode=AuthMode.DEV, state_file="/tmp/map_bff_principal_state.json"),
+        settings=Settings(auth_mode=AuthMode.DEV),
         store=None,
         core_client=core,
     )
@@ -211,6 +225,6 @@ def test_dev_mode_startup_fails_in_production(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="MAP_AUTH_MODE=dev is forbidden"):
         create_app(
             settings=Settings(
-                auth_mode=AuthMode.DEV, state_file="/tmp/map_bff_principal_state.json"
+                auth_mode=AuthMode.DEV
             )
         )

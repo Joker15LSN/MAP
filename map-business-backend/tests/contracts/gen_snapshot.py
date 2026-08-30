@@ -12,7 +12,6 @@ Usage (from map-business-backend/):
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -21,7 +20,6 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 # Explicit test settings: never inherit a developer shell's MAP_* vars.
-os.environ.pop("MAP_BFF_STATE_FILE", None)
 
 from app.main import create_app  # noqa: E402
 from app.settings import Settings  # noqa: E402
@@ -31,7 +29,7 @@ SNAPSHOT_PATH = Path(__file__).parent / "openapi_snapshot.json"
 
 def main() -> None:
     app = create_app(
-        settings=Settings(auth_mode="dev", state_file="/tmp/map_bff_gen_snapshot_state.json")
+        settings=Settings(auth_mode="dev")
     )
     schema = app.openapi()
     SNAPSHOT_PATH.write_text(

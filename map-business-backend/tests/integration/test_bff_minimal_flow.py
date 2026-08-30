@@ -13,10 +13,7 @@ consistency) lives in the repo-level Compose runner: ``e2e/run_e2e.py``.
 
 from __future__ import annotations
 
-import os
 import uuid
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_e2e_state.json")
 
 import pytest
 import pytest_asyncio
@@ -55,7 +52,6 @@ async def bff_app(_engine, session):
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file="/tmp/map_bff_e2e_state.json",
             default_workspace_id=WORKSPACE,
         ),
         store=None,

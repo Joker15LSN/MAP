@@ -13,10 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_feedback_fix_test_state.json")
 
 import pytest
 import pytest_asyncio
@@ -51,7 +48,6 @@ async def app_and_session(_engine, session):
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file=f"/tmp/map_bff_feedback_fix_{uuid.uuid4().hex[:8]}.json",
             default_workspace_id=WORKSPACE,
         ),
         store=None,
@@ -171,7 +167,6 @@ async def test_two_users_independent_feedback(app_and_session) -> None:
     other_app = create_app(
         settings=Settings(
             auth_mode=AuthMode.TRUSTED_HEADER,
-            state_file="/tmp/map_bff_feedback_fix_other.json",
             default_workspace_id=WORKSPACE,
             trusted_proxy_secret="s3cret",
             trusted_proxy_required=True,
@@ -221,7 +216,6 @@ async def test_user_b_aggregate_never_leaks_a_reasons(app_and_session) -> None:
     other_app = create_app(
         settings=Settings(
             auth_mode=AuthMode.TRUSTED_HEADER,
-            state_file="/tmp/map_bff_feedback_fix_other2.json",
             default_workspace_id=WORKSPACE,
             trusted_proxy_secret="s3cret",
             trusted_proxy_required=True,

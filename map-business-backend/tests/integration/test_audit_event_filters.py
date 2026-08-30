@@ -17,8 +17,6 @@ import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_filter_state.json")
-
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -110,7 +108,6 @@ async def filter_client(_engine, tmp_path):
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file=str(tmp_path / "filter_state.json"),
             default_workspace_id=str(WORKSPACE),
         ),
         store=None,

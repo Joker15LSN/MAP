@@ -19,7 +19,6 @@ RUN uv sync --no-dev --frozen
 # runs `uv run alembic upgrade head` inside it (R2-P1-05 E2E finding).
 COPY alembic.ini ./
 COPY app ./app
-RUN mkdir -p /app/data
 
 EXPOSE 18080
 

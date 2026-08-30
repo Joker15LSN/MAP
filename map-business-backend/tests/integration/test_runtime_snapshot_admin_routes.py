@@ -41,7 +41,6 @@ async def app_and_factory(_engine, session, tmp_path):
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file=str(tmp_path / "admin_state.json"),
             default_workspace_id=WORKSPACE,
         ),
         store=None,
@@ -195,7 +194,6 @@ async def test_admin_write_guard_protects_snapshot_routes(
     other_app = create_app(
         settings=Settings(
             auth_mode=AuthMode.TRUSTED_HEADER,
-            state_file=str(tmp_path / "other_state.json"),
             default_workspace_id=WORKSPACE,
             trusted_proxy_secret="s3cret",
             trusted_proxy_required=True,

@@ -8,10 +8,7 @@ ASGITransport on the same event loop as the DB session.
 from __future__ import annotations
 
 import json
-import os
 import uuid
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_conv_test_state.json")
 
 import pytest
 import pytest_asyncio
@@ -62,7 +59,6 @@ async def app_and_core(_engine, session):
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file="/tmp/map_bff_conv_test_state.json",
             default_workspace_id=WORKSPACE,
         ),
         store=None,
@@ -187,7 +183,6 @@ async def test_cross_user_conversation_is_404(app_and_core, session) -> None:
     other_app = create_app(
         settings=Settings(
             auth_mode=AuthMode.TRUSTED_HEADER,
-            state_file="/tmp/map_bff_conv_test_state.json",
             default_workspace_id="another-workspace",
             trusted_proxy_secret="s3cret",
             trusted_proxy_required=True,

@@ -9,10 +9,13 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.services.runtime_snapshot.digest import projection_digest, snapshot_id_for_digest
-from app.services.runtime_snapshot.migrate import migrate_state_file
+from app.services.runtime_snapshot.digest import (
+    projection_digest,
+    snapshot_id_for_digest,
+    state_hash,
+)
+from app.services.runtime_snapshot.migrate import _load_admin_state, migrate_state_file
 from app.services.runtime_snapshot.schemas import build_runtime_projection
-from app.store import AdminStateStore
 
 pytestmark = pytest.mark.asyncio
 
@@ -25,8 +28,12 @@ async def factory(_engine):
 
 
 def _expected_digest() -> str:
-    state = AdminStateStore(str(FIXTURE)).load()
+    state = _load_admin_state(str(FIXTURE))
     return projection_digest(build_runtime_projection(state))
+
+
+def _expected_admin_hash() -> str:
+    return state_hash(_load_admin_state(str(FIXTURE)))
 
 
 async def test_migrate_fixture_into_pg_is_idempotent(session, _engine, factory) -> None:
@@ -36,14 +43,17 @@ async def test_migrate_fixture_into_pg_is_idempotent(session, _engine, factory) 
 
     report = await migrate_state_file(_engine, str(FIXTURE), apply=True)
     assert report.ok is True
+    assert report.admin_count == 1
+    assert report.admin_hash == _expected_admin_hash()
     assert report.matching_count == 1
     assert report.digest == expected_digest
     assert report.current_digest == expected_digest
     assert report.snapshot_id == str(expected_snapshot_id)
     assert report.wrote is True
 
-    # Rerun is idempotent: no duplicate snapshot, pointer stays seeded.
+    # Rerun is idempotent: no duplicate rows, pointer stays seeded.
     rerun = await migrate_state_file(_engine, str(FIXTURE), apply=True)
+    assert rerun.admin_count == 1
     assert rerun.matching_count == 1
     assert rerun.wrote is True  # seed/insert used ON CONFLICT DO NOTHING, not a duplicate
 
@@ -79,6 +89,8 @@ async def test_migrate_check_mode_does_not_write(session, _engine) -> None:
     report = await migrate_state_file(_engine, str(FIXTURE), apply=False)
     assert report.ok is True
     assert report.wrote is False
+    assert report.admin_count == 0
+    assert report.admin_hash is None
 
     session_factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as s:

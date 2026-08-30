@@ -18,17 +18,15 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, TypeVar
 
 from fastapi import HTTPException
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.identity import RequestPrincipal
 from ...core.redaction import redact_payload
-from ...db.models import OutboxEvent, RuntimeSnapshotMutation
-from ...store import AdminStateStore, BadStateFileError
+from ...db.models import OutboxEvent
 from ..config_mutation import AuditWriteError, append_audit_event
 from ..json_diff import json_patch_diff
 from .adapters.admin_state_pg import PgAdminStateRepository
@@ -42,7 +40,6 @@ from .errors import (
 from .repository import RuntimeSnapshotRepository
 from .schemas import (
     MutationContext,
-    RuntimeProjection,
     RuntimeSnapshotRecord,
     build_runtime_projection,
 )
@@ -557,32 +554,6 @@ class RuntimeSnapshotService:
             error_message=error_message,
         )
 
-    async def _finish_mutation(
-        self,
-        session: AsyncSession,
-        mutation_id: uuid.UUID,
-        *,
-        status: str,
-        error: str | None = None,
-    ) -> None:
-        await session.execute(
-            update(RuntimeSnapshotMutation)
-            .where(RuntimeSnapshotMutation.id == mutation_id)
-            .values(status=status, error=error, finished_at=datetime.now(UTC))
-        )
-
-    async def _fail_mutation(
-        self,
-        session: AsyncSession,
-        mutation_id: uuid.UUID,
-        *,
-        error: str | None = None,
-    ) -> None:
-        await self._finish_mutation(
-            session, mutation_id, status="failed", error=error
-        )
-
-
 def _snapshot_not_found() -> HTTPException:
     return HTTPException(
         status_code=404,
@@ -605,142 +576,3 @@ def _snapshot_concurrent_modification(detail: str) -> HTTPException:
         detail=detail,
         headers={"X-MAP-Error-Code": "SNAPSHOT_CONCURRENT_MODIFICATION"},
     )
-
-
-async def reconcile_runtime_snapshot_mutations(
-    session_factory: async_sessionmaker[AsyncSession],
-    admin_store: AdminStateStore,
-    snapshots_factory: Callable[[AsyncSession], RuntimeSnapshotRepository],
-) -> int:
-    """Crash recovery for pending runtime snapshot mutations.
-
-    Exact-match rules only (mirrors ``reconcile_config_mutations``):
-
-    - unreadable state file            -> failed / BAD_STATE_FILE
-    - ``admin_hash == expected``       -> failed / NO_WRITE (no file write)
-    - ``admin_hash == target`` and pointer still at ``expected_current_digest``
-      -> applied: idempotently insert snapshot + activate
-    - ``admin_hash == target`` and pointer already at ``target_current_digest``
-      -> applied: snapshot side landed before the crash
-    - anything else                    -> failed / UNKNOWN_STATE
-
-    Every recovery writes a recovered audit event; attribution comes from
-    the original mutation row (actor/request/action) when persisted.
-    """
-    async with session_factory() as session:
-        pending = (
-            (
-                await session.execute(
-                    select(RuntimeSnapshotMutation).where(
-                        RuntimeSnapshotMutation.status == "pending"
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if not pending:
-            return 0
-
-        bad_file: str | None = None
-        try:
-            current_admin_hash = state_hash(admin_store.load())
-        except BadStateFileError as exc:
-            current_admin_hash = None
-            bad_file = str(exc)
-
-        repo = snapshots_factory(session)
-        current_snapshot = await repo.get_current()
-        pointer_digest = current_snapshot.digest if current_snapshot else None
-
-        recovered = 0
-        for mutation in pending:
-            if current_admin_hash is None:
-                status = "failed"
-                failure_code = "BAD_STATE_FILE"
-            elif current_admin_hash == mutation.expected_admin_hash:
-                status = "failed"
-                failure_code = "NO_WRITE"
-            elif current_admin_hash == mutation.target_admin_hash:
-                if pointer_digest == mutation.expected_current_digest:
-                    try:
-                        await _apply_snapshot_side(
-                            repo, mutation, current_snapshot
-                        )
-                        status = "applied"
-                        failure_code = None
-                    except (
-                        SnapshotStateConflictError,
-                        SnapshotConcurrentModificationError,
-                    ) as exc:
-                        logger.warning(
-                            "runtime snapshot reconciler could not apply %s: %s",
-                            mutation.snapshot_id,
-                            exc,
-                        )
-                        status = "failed"
-                        failure_code = "UNKNOWN_STATE"
-                elif pointer_digest == mutation.target_current_digest:
-                    status = "applied"
-                    failure_code = None
-                else:
-                    status = "failed"
-                    failure_code = "UNKNOWN_STATE"
-            else:
-                status = "failed"
-                failure_code = "UNKNOWN_STATE"
-
-            await session.execute(
-                update(RuntimeSnapshotMutation)
-                .where(RuntimeSnapshotMutation.id == mutation.id)
-                .values(status=status, finished_at=datetime.now(UTC))
-            )
-            await session.flush()
-            await append_audit_event(
-                session,
-                workspace_id=mutation.workspace_id,
-                resource_type="runtime_snapshot",
-                resource_id=str(mutation.snapshot_id),
-                action=mutation.action or "reconcile",
-                actor_user_id=mutation.actor_user_id or "system:reconciler",
-                actor_subject=mutation.actor_subject or "system:reconciler",
-                actor_roles=list(mutation.actor_roles or []),
-                request_id=mutation.request_id,
-                status=status,
-                failure_code=failure_code,
-                before_hash=mutation.expected_current_digest,
-                after_hash=(
-                    mutation.target_current_digest
-                    if status == "applied"
-                    else pointer_digest
-                ),
-                json_patch=None,
-                recovered=True,
-                error_message=bad_file if current_admin_hash is None else None,
-            )
-            recovered += 1
-        await session.commit()
-    if recovered:
-        logger.warning(
-            "runtime snapshot reconciler recovered %d mutation(s)", recovered
-        )
-    return recovered
-
-
-async def _apply_snapshot_side(
-    repo: RuntimeSnapshotRepository,
-    mutation: RuntimeSnapshotMutation,
-    current_snapshot: RuntimeSnapshotRecord | None,
-) -> None:
-    projection = RuntimeProjection.model_validate(mutation.target_projection)
-    parent_id = current_snapshot.id if current_snapshot else None
-    record = await repo.insert(
-        mutation.snapshot_id,
-        projection,
-        mutation.target_current_digest,
-        parent_id,
-        "draft",
-    )
-    if record.status == "draft":
-        await repo.transition_status(mutation.snapshot_id, "draft", "published")
-    await repo.activate(mutation.snapshot_id, mutation.expected_current_digest)

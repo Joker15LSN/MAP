@@ -165,7 +165,6 @@ _AUTH_SECRET = "fake-proxy-secret-for-cors-compose-test"
 # so a developer shell can never leak into the in-process startup assertions.
 _STARTUP_CLEAN_KEYS = (
     "MAP_CORE_API_ORIGIN",
-    "MAP_BFF_STATE_FILE",
     "MAP_AUTH_MODE",
     "MAP_ENV",
     "MAP_DEFAULT_WORKSPACE_ID",
@@ -217,7 +216,6 @@ def _inject_compose_env(
         if cors_allow_credentials is not None
         else backend_env.get("MAP_CORS_ALLOW_CREDENTIALS", "true"),
     )
-    monkeypatch.setenv("MAP_BFF_STATE_FILE", str(tmp_path / "admin_state.json"))
     if trusted_header:
         monkeypatch.setenv("MAP_AUTH_MODE", "trusted_header")
         monkeypatch.setenv("MAP_TRUSTED_PROXY_REQUIRED", "true")

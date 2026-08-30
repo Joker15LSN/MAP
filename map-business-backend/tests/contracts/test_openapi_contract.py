@@ -16,11 +16,8 @@ from __future__ import annotations
 
 import datetime
 import json
-import os
 import uuid
 from pathlib import Path
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_contract_test_state.json")
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -75,7 +72,7 @@ def _all_operations(openapi: dict) -> set[tuple[str, str]]:
 
 def _app():
     return create_app(
-        settings=Settings(auth_mode="dev", state_file="/tmp/map_bff_contract_test_state.json")
+        settings=Settings(auth_mode="dev")
     )
 
 

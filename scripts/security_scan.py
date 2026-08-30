@@ -218,13 +218,13 @@ EXEMPTIONS: tuple[Exemption, ...] = (
     # identity gates; never real credentials.
     Exemption(
         "map-business-backend/tests/integration/test_config_audit.py",
-        "literal_secret_assignment", 45,
+        "literal_secret_assignment", 44,
         "test fixture: fake bearer token", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:b51dbcb5689cdc37",
     ),
     Exemption(
         "map-business-backend/tests/integration/test_feedback.py",
-        "literal_secret_assignment", 34,
+        "literal_secret_assignment", 35,
         "test fixture: fake bearer token", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:df943f1ffb699d19",
     ),
@@ -236,7 +236,7 @@ EXEMPTIONS: tuple[Exemption, ...] = (
     ),
     Exemption(
         "map-business-backend/tests/test_auth_boundary.py",
-        "literal_secret_assignment", 28,
+        "literal_secret_assignment", 30,
         "test fixture: fake boundary secret", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:cc489fa5f758c598",
     ),

@@ -24,12 +24,9 @@ import contextlib
 import gc
 import inspect
 import json
-import os
 import uuid
 import warnings
 from datetime import UTC, datetime, timedelta
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_conv_fix_test_state.json")
 
 import pytest
 import pytest_asyncio
@@ -125,7 +122,6 @@ async def app_and_core(_engine, session):
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file="/tmp/map_bff_conv_fix_test_state.json",
             default_workspace_id=WORKSPACE,
         ),
         store=None,
@@ -745,7 +741,6 @@ async def test_other_user_cannot_replay_request_id(app_and_core, session) -> Non
     other_app = create_app(
         settings=Settings(
             auth_mode=AuthMode.TRUSTED_HEADER,
-            state_file="/tmp/map_bff_conv_fix_test_state.json",
             default_workspace_id=WORKSPACE,
             trusted_proxy_secret="s3cret",
             trusted_proxy_required=True,

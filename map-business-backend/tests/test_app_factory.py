@@ -7,12 +7,9 @@ and verify no import-time global state file is required.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from fastapi.testclient import TestClient
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_factory_test_state.json")
 
 from app.core_client import MapCoreClient
 from app.main import create_app
@@ -56,7 +53,7 @@ class FakeCoreClient:
 
 
 def test_create_app_accepts_settings_override() -> None:
-    settings = Settings(state_file="/tmp/does-not-need-to-exist.json")
+    settings = Settings()
     app = create_app(settings=settings)
     # J7a: production store is resolved per-request from PG, so no
     # module-level file store is constructed here.

@@ -191,7 +191,6 @@ services:
       # (MAP_ENV=prod) refuses wildcard + credentials at startup.
       MAP_CORS_ORIGINS: ${MAP_CORS_ORIGINS:-*}
       MAP_CORS_ALLOW_CREDENTIALS: ${MAP_CORS_ALLOW_CREDENTIALS:-true}
-      MAP_BFF_STATE_FILE: /app/data/admin_state.json
       MAP_CONTROL_DB_DSN: postgresql+asyncpg://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:?MAP_POSTGRES_APP_PASSWORD is required}@postgres:5432/map
       MAP_DEFAULT_WORKSPACE_ID: ${MAP_DEFAULT_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
       # R3-P1-02 secure profile: dev by default (unchanged behaviour for
@@ -219,8 +218,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    volumes:
-      - ./map-business-backend/app/data:/app/data
     ports:
       - "${MAP_BFF_PORT:-18080}:18080"
     healthcheck:
@@ -242,7 +239,6 @@ services:
       MAP_ENV: ${MAP_ENV:-dev}
       MAP_CONTROL_DB_DSN: postgresql+asyncpg://${MAP_POSTGRES_APP_USER:-map}:${MAP_POSTGRES_APP_PASSWORD:?MAP_POSTGRES_APP_PASSWORD is required}@postgres:5432/map
       MAP_CORE_API_ORIGIN: http://algorithm-service:10000
-      MAP_BFF_STATE_FILE: /app/data/admin_state.json
       MAP_LLM_API_KEY: ${MAP_LLM_API_KEY:-}
       # S6-03 / S7-04: the Bearer credential the worker presents to Core's
       # POST /sandbox/exec (must be registered in algorithm-service's
@@ -258,8 +254,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    volumes:
-      - ./map-business-backend/app/data:/app/data
 
   frontend-service:
     image: node:22-bookworm-slim

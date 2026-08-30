@@ -48,7 +48,6 @@ async def app_and_factory(_engine, tmp_path):
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file=str(tmp_path / "admin_state.json"),
             default_workspace_id=WORKSPACE,
             service_credentials=(SNAP_CRED,),
         ),
@@ -120,7 +119,6 @@ async def test_snapshot_read_requires_scope(app_and_factory) -> None:
     )
     app.state.settings = Settings(
         auth_mode=AuthMode.DEV,
-        state_file="/tmp/map_bff_snapshot_read_test.json",
         default_workspace_id=WORKSPACE,
         service_credentials=(limited,),
     )

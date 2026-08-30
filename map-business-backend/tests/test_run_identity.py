@@ -8,17 +8,23 @@ identity a Core tool invocation needs.
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from typing import Any
 
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_test_state.json")
-
-from app.main import app, core_client
+from app.main import create_app
+from app.schemas import AdminState
 from app.workers.job_runner import JobExecutionContext
 
+
+class _FakeStore:
+    async def load(self) -> AdminState:
+        return AdminState.default()
+
+
+app = create_app(store=_FakeStore())
+core_client = app.state.core_client
 client = TestClient(app)
 
 

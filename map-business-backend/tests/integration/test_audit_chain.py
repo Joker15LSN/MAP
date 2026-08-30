@@ -3,11 +3,6 @@
 - 100 concurrent appends x 20 rounds end in exactly one chain: one
   genesis, every non-tail node has exactly one child, ordinals are
   contiguous, verify stays OK;
-- the three crash recoveries (pending-before-write / after-rename /
-  bad-file) verify OK immediately after reconciliation — including the
-  bad-file ``error_message`` which is now persisted and hash-canonical;
-  the after-rename windows are proven by injecting real crashes INSIDE
-  ``apply_mutation()`` (R3-P1-01), never by hand-seeding ideal rows;
 - tampering with ANY hash-relevant column locates the first broken link;
   the explicit non-hash column set is asserted to be complete;
 - a second branch on a shared predecessor (and a second genesis /
@@ -20,9 +15,6 @@ import asyncio
 import json
 import os
 import uuid
-from pathlib import Path
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_chain_state.json")
 
 import pytest
 import pytest_asyncio
@@ -30,24 +22,19 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from starlette.requests import Request as StarletteRequest
 
 from app.api.audit_events import verify_chain_rows
-from app.core.identity import AuthMode, RequestPrincipal
-from app.db.models import ConfigAuditEvent, ConfigMutation
+from app.core.identity import AuthMode
+from app.db.models import ConfigAuditEvent
 from app.db.session import get_db_session
 from app.main import create_app
-from app.services import config_mutation as config_mutation_module
 from app.services.config_mutation import (
     NON_HASH_RELEVANT_COLUMNS,
-    ConfigMutationService,
     append_audit_event,
     audit_record_payload,
     compute_entry_hash,
-    reconcile_config_mutations,
 )
 from app.settings import Settings
-from app.store import AdminStateStore, state_hash
 
 pytestmark = pytest.mark.asyncio
 
@@ -141,7 +128,6 @@ async def _verify_via_api(factory, tmp_path) -> dict:
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file=str(tmp_path / "verify_state.json"),
             default_workspace_id=str(WORKSPACE),
         ),
         store=None,
@@ -160,6 +146,29 @@ async def _verify_via_api(factory, tmp_path) -> dict:
 
 
 # --- 1. concurrency: 100 appends x 20 rounds -> exactly one chain ----------
+
+
+def _canonical_columns() -> set[str]:
+    """Hash-relevant columns defined by ``audit_record_payload``."""
+    return set(
+        audit_record_payload(
+            workspace_id=None,
+            resource_type="chain_test",
+            resource_id="item",
+            action="append",
+            actor_user_id="chain-test",
+            actor_subject="chain-test",
+            actor_roles=["tester"],
+            request_id="chain",
+            status="applied",
+            failure_code=None,
+            before_hash=None,
+            after_hash=None,
+            json_patch=None,
+            recovered=False,
+            error_message=None,
+        ).keys()
+    )
 
 
 async def test_100_concurrent_appends_20_rounds_single_chain(chain_factory, tmp_path) -> None:
@@ -202,303 +211,6 @@ async def test_100_concurrent_appends_20_rounds_single_chain(chain_factory, tmp_
 
 
 # --- 2. recovery -> immediate verify (three crash classes) ------------------
-
-
-async def _seed_pending(factory, resource: str, expected_hash: str, target_hash=None) -> None:
-    async with factory() as session:
-        session.add(
-            ConfigMutation(
-                resource=resource,
-                expected_hash=expected_hash,
-                target_hash=target_hash,
-                status="pending",
-            )
-        )
-        await session.commit()
-
-
-async def test_pending_before_write_recovery_verifies(chain_factory, tmp_path) -> None:
-    factory = chain_factory
-    store = AdminStateStore(str(tmp_path / "state.json"))
-    await _seed_pending(factory, "admin_config:model_center", state_hash(store.load()))
-
-    assert await reconcile_config_mutations(factory, store) == 1
-
-    rows = await _rows(factory)
-    assert len(rows) == 1
-    assert rows[0].status == "failed"
-    assert rows[0].failure_code == "NO_WRITE"
-    assert rows[0].recovered is True
-    assert await _verify_via_api(factory, tmp_path) == {
-        "ok": True,
-        "count": 1,
-        "first_broken_at": None,
-    }
-
-
-class SimulatedCrash(Exception):
-    """Process death: nothing after this point commits."""
-
-
-def _fake_request(request_id: str) -> StarletteRequest:
-    scope = {
-        "type": "http",
-        "method": "PUT",
-        "path": "/api/admin/model-center",
-        "headers": [(b"user-agent", b"crash-injection-test")],
-        "client": ("127.0.0.1", 54321),
-    }
-    request = StarletteRequest(scope)
-    request.state.request_id = request_id
-    return request
-
-
-def _actor_principal() -> RequestPrincipal:
-    return RequestPrincipal(
-        subject="alice",
-        user_id="alice",
-        staff_code=None,
-        display_name="Alice",
-        roles=("admin",),
-        workspace_id=str(WORKSPACE),
-    )
-
-
-def _model_updater(round_index: int):
-    def updater(state):
-        state.master_agent.summary_model = f"crash-model-{round_index}"
-        return "ok"
-
-    return updater
-
-
-async def _apply_with_crash(factory, store, rnd: int, crash_point: str) -> str:
-    """One REAL ``apply_mutation()`` attempt that dies at ``crash_point``.
-
-    - ``after_pending_before_apply``: killed after the pending row (with
-      ``target_hash``) committed, before the CAS + rename;
-    - ``after_apply_before_audit``: killed after the rename, before the
-      audit event commits.
-    """
-    service = ConfigMutationService(store)
-    request_id = f"crash-{crash_point}-{rnd}"
-    patched = None
-
-    if crash_point == "after_pending_before_apply":
-        patched = store.apply_prepared
-
-        def boom(_prepared):
-            raise SimulatedCrash("killed after target commit, before rename")
-
-        store.apply_prepared = boom  # type: ignore[method-assign]
-    elif crash_point == "after_apply_before_audit":
-        patched = config_mutation_module.append_audit_event
-
-        async def crashing_append(session, *, status, **kwargs):
-            if status == "applied":
-                raise SimulatedCrash("killed after rename, before audit commit")
-            return await patched(session, status=status, **kwargs)
-
-        config_mutation_module.append_audit_event = crashing_append
-
-    try:
-        async with factory() as session:
-            with pytest.raises(SimulatedCrash):
-                await service.apply_mutation(
-                    session=session,
-                    request=_fake_request(request_id),
-                    principal=_actor_principal(),
-                    resource_type="admin_config",
-                    resource_id="model_center",
-                    action="update_model_center",
-                    updater=_model_updater(rnd),
-                )
-            await session.rollback()
-    finally:
-        if crash_point == "after_pending_before_apply":
-            store.apply_prepared = patched  # type: ignore[method-assign]
-        else:
-            config_mutation_module.append_audit_event = patched
-    return request_id
-
-
-async def _mutation_row(factory):
-    async with factory() as session:
-        return (
-            await session.execute(
-                text(
-                    "SELECT status, expected_hash, target_hash, workspace_id, action, "
-                    "actor_user_id, actor_subject, actor_roles, request_id "
-                    "FROM map_control.config_mutations ORDER BY created_at DESC LIMIT 1"
-                )
-            )
-        ).one()
-
-
-async def _assert_attribution(event_row, request_id: str) -> None:
-    """Recovered events keep the original request's identity (R3-P1-01)."""
-    assert event_row.workspace_id == WORKSPACE
-    assert event_row.actor_user_id == "alice"
-    assert event_row.actor_subject == "alice"
-    assert event_row.actor_roles == ["admin"]
-    assert event_row.request_id == request_id
-    assert event_row.action == "update_model_center"
-    assert event_row.resource_type == "admin_config"
-    assert event_row.resource_id == "model_center"
-
-
-async def test_crash_after_target_commit_before_rename_20_rounds(
-    chain_factory, tmp_path
-) -> None:
-    """Crash AFTER the pending row (expected+target+context) committed but
-    BEFORE the rename: recovery must close it failed/NO_WRITE with the
-    original attribution, never applied."""
-    factory = chain_factory
-    store = AdminStateStore(str(tmp_path / "crash_state.json"))
-    for rnd in range(20):
-        before = state_hash(store.load())
-        request_id = await _apply_with_crash(factory, store, rnd, "after_pending_before_apply")
-        assert state_hash(store.load()) == before  # the rename never happened
-
-        mutation = await _mutation_row(factory)
-        assert mutation.status == "pending"
-        assert mutation.target_hash is not None  # persisted BEFORE the rename
-
-        assert await reconcile_config_mutations(factory, store) == 1
-
-        mutation = await _mutation_row(factory)
-        assert mutation.status == "failed"
-        rec = (await _rows(factory))[-1]
-        assert rec.recovered is True
-        assert rec.status == "failed"
-        assert rec.failure_code == "NO_WRITE"
-        assert rec.after_hash == before
-        await _assert_attribution(rec, request_id)
-
-    verify = await _verify_via_api(factory, tmp_path)
-    assert verify == {"ok": True, "count": 20, "first_broken_at": None}
-
-
-async def test_crash_after_rename_before_audit_20_rounds(chain_factory, tmp_path) -> None:
-    """Crash AFTER the rename but BEFORE the audit commits: recovery must
-    close it applied with ``after_hash`` EXACTLY the persisted target."""
-    factory = chain_factory
-    store = AdminStateStore(str(tmp_path / "crash_state.json"))
-    for rnd in range(20):
-        request_id = await _apply_with_crash(factory, store, rnd, "after_apply_before_audit")
-        current = state_hash(store.load())
-
-        mutation = await _mutation_row(factory)
-        assert mutation.status == "pending"
-        assert mutation.target_hash == current  # the rename DID land
-
-        assert await reconcile_config_mutations(factory, store) == 1
-
-        mutation = await _mutation_row(factory)
-        assert mutation.status == "applied"
-        rec = (await _rows(factory))[-1]
-        assert rec.recovered is True
-        assert rec.status == "applied"
-        assert rec.failure_code is None
-        assert rec.after_hash == mutation.target_hash  # exact, not guessed
-        await _assert_attribution(rec, request_id)
-
-    verify = await _verify_via_api(factory, tmp_path)
-    assert verify == {"ok": True, "count": 20, "first_broken_at": None}
-
-
-async def test_unrelated_write_after_crash_is_unknown_state_20_rounds(
-    chain_factory, tmp_path
-) -> None:
-    """Crash after rename/audit-loss, then ANOTHER instance lands an
-    unrelated write before recovery: the mutation must be closed
-    failed/UNKNOWN_STATE — never applied, never attributed to the crash."""
-    factory = chain_factory
-    store = AdminStateStore(str(tmp_path / "crash_state.json"))
-    for rnd in range(20):
-        request_id = await _apply_with_crash(factory, store, rnd, "after_apply_before_audit")
-        target_hash = (await _mutation_row(factory)).target_hash
-
-        # A second instance completes an unrelated write first.
-        def foreign(state, _rnd=rnd):
-            state.master_agent.summary_model = f"foreign-model-{_rnd}"
-            return "ok"
-
-        store.update(foreign)
-        foreign_hash = state_hash(store.load())
-        assert foreign_hash != target_hash
-
-        assert await reconcile_config_mutations(factory, store) == 1
-
-        mutation = await _mutation_row(factory)
-        assert mutation.status == "failed"  # never a guessed applied
-        rec = (await _rows(factory))[-1]
-        assert rec.recovered is True
-        assert rec.status == "failed"
-        assert rec.failure_code == "UNKNOWN_STATE"
-        assert rec.after_hash == foreign_hash  # the foreign hash, recorded
-        assert rec.after_hash != target_hash
-        await _assert_attribution(rec, request_id)
-
-    verify = await _verify_via_api(factory, tmp_path)
-    assert verify == {"ok": True, "count": 20, "first_broken_at": None}
-
-
-async def test_bad_file_recovery_verifies_and_error_message_is_canonical(
-    chain_factory, tmp_path
-) -> None:
-    """The regression that motivated R2-P1-03: bad-file recovery hashed a
-    non-persisted error_message, so the verifier could never recompute it.
-    Now error_message is a persisted canonical column."""
-    factory = chain_factory
-    state_file = tmp_path / "state.json"
-    store = AdminStateStore(str(state_file))
-    await _seed_pending(factory, "admin_config:model_center", "0" * 64)
-    Path(state_file).write_text("{not-json", encoding="utf-8")
-
-    assert await reconcile_config_mutations(factory, store) == 1
-    assert Path(state_file).read_text(encoding="utf-8") == "{not-json"  # kept
-
-    rows = await _rows(factory)
-    assert len(rows) == 1
-    assert rows[0].failure_code == "BAD_STATE_FILE"
-    assert rows[0].error_message  # persisted, hash-canonical
-
-    verify = await _verify_via_api(factory, tmp_path)
-    assert verify == {"ok": True, "count": 1, "first_broken_at": None}
-
-    # Proof error_message is hash-relevant: tamper it and verify breaks.
-    await _admin_execute(
-        "UPDATE map_control.config_audit_events "
-        "SET error_message = 'covered up' WHERE ordinal = 0"
-    )
-    tampered = await _verify_via_api(factory, tmp_path)
-    assert tampered["ok"] is False
-    assert tampered["first_broken_at"] == f"0:{rows[0].id}"
-
-
-# --- 3. canonical field split + per-field tamper detection ------------------
-
-
-def _canonical_columns() -> set[str]:
-    record = audit_record_payload(
-        workspace_id=None,
-        resource_type="t",
-        resource_id="r",
-        action="a",
-        actor_user_id="u",
-        actor_subject=None,
-        actor_roles=[],
-        request_id=None,
-        status="applied",
-        failure_code=None,
-        before_hash=None,
-        after_hash=None,
-        json_patch=None,
-        recovered=False,
-        error_message=None,
-    )
-    return set(record)
 
 
 async def test_column_split_is_explicit_and_complete() -> None:
@@ -700,7 +412,6 @@ async def test_concurrent_http_admin_writes_keep_single_chain(chain_factory, tmp
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file=str(tmp_path / "http_state.json"),
             default_workspace_id=str(WORKSPACE),
         ),
         store=None,

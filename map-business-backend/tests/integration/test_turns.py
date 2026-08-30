@@ -7,11 +7,8 @@ same seam as the route, plus the public HTTP path for the new endpoint.
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import UTC, datetime
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_turns_test_state.json")
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -88,7 +85,6 @@ async def http_client(
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file="/tmp/map_bff_turns_test_state.json",
             default_workspace_id=str(WORKSPACE),
         )
     )

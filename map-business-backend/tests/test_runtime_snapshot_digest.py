@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_runtime_snapshot_test.json")
 
 from app.schemas import AdminState
 from app.services.runtime_payloads import (
@@ -16,9 +13,9 @@ from app.services.runtime_snapshot.digest import (
     canonical_json_hash,
     projection_digest,
     snapshot_id_for_digest,
+    state_hash,
 )
 from app.services.runtime_snapshot.schemas import build_runtime_projection
-from app.store import state_hash
 
 
 def test_canonical_json_hash_matches_state_hash_algorithm() -> None:

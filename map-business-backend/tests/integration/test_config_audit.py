@@ -22,8 +22,6 @@ import os
 import urllib.parse
 import uuid
 
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_audit_fix_state.json")
-
 import pytest
 import pytest_asyncio
 from conftest import ADMIN_DSN, APP_DSN, MIGRATION_DSN, seed_pg_admin_state
@@ -36,7 +34,6 @@ from app.db.session import get_db_session
 from app.main import create_app
 from app.services.runtime_snapshot.schemas import RuntimeProjection
 from app.settings import Settings
-from app.store import AdminStateStore
 
 pytestmark = pytest.mark.asyncio
 
@@ -45,14 +42,12 @@ SECRET = "Bearer fake-super-secret-token"
 
 
 @pytest_asyncio.fixture
-async def app_and_session(_engine, session, tmp_path):
+async def app_and_session(_engine, session):
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    state_file = str(tmp_path / "admin_state.json")
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file=state_file,
             default_workspace_id=WORKSPACE,
         ),
         store=None,
@@ -68,7 +63,7 @@ async def app_and_session(_engine, session, tmp_path):
     app.state.test_factory = factory
     async with factory() as _seed_session:
         await seed_pg_admin_state(_seed_session)
-    return app, session, state_file
+    return app, session
 
 
 async def _client(app):
@@ -111,7 +106,7 @@ async def test_every_admin_write_is_audited_and_actor_trusted(app_and_session) -
     admin-state audit (resource_type != 'runtime_snapshot') plus one
     runtime_snapshot audit; both carry the trusted principal.
     """
-    app, session, _ = app_and_session
+    app, session = app_and_session
     openapi = app.openapi()
     write_paths = sorted(
         f"{method.upper()} {path}"
@@ -178,7 +173,7 @@ async def test_flow_policy_put_advances_runtime_snapshot_pointer(
     """Step 7 PR-J3: an admin write creates an active runtime snapshot,
     points ``runtime_snapshot_current`` at it, rolls the previous active
     snapshot back, and emits one admin audit + one snapshot audit."""
-    app, session, _ = app_and_session
+    app, session = app_and_session
 
     async with await _client(app) as client:
         base = (await client.get("/api/admin/flow-policy")).json()
@@ -239,7 +234,7 @@ async def test_concurrent_snapshot_cas_failure_rolls_back_admin_state(
 ) -> None:
     """J7a: a snapshot pointer CAS failure rolls the whole PG transaction
     back (admin state NOT persisted) and returns 409."""
-    app, session, _state_file = app_and_session
+    app, session = app_and_session
     before_hash = await pg_admin_hash(session)
 
     from app.services.runtime_snapshot.adapters.pg import PgRuntimeSnapshotRepository
@@ -284,7 +279,7 @@ async def test_admin_state_save_failure_rolls_back_whole_transaction(
     app_and_session, monkeypatch
 ) -> None:
     """J7a: if the admin state UPDATE fails, nothing is committed."""
-    app, session, _state_file = app_and_session
+    app, session = app_and_session
     before_hash = await pg_admin_hash(session)
 
     from app.services.runtime_snapshot.adapters.admin_state_pg import (
@@ -314,7 +309,7 @@ async def test_admin_state_save_failure_rolls_back_whole_transaction(
 async def test_bad_admin_state_row_is_never_overwritten_by_defaults(
     app_and_session,
 ) -> None:
-    app, session, _state_file = app_and_session
+    app, session = app_and_session
     # Tamper with the stored hash so load() fails closed.
     await session.execute(
         text("UPDATE map_control.admin_state SET state_hash = :bad WHERE id = 1"),
@@ -347,75 +342,8 @@ async def test_bad_admin_state_row_is_never_overwritten_by_defaults(
     assert code == "BAD_ADMIN_STATE"
 
 
-async def test_reconciler_recovers_pending_and_unknown_state_crashes(
-    app_and_session,
-) -> None:
-    app, session, state_file = app_and_session
-    from app.store import AdminStateStore
-
-    store = AdminStateStore(state_file)
-
-    # Crash point 1: pending mutation, no file write (current == expected).
-
-    from app.db.models import ConfigMutation
-
-    async with app.state.test_factory() as s:
-        s.add(
-            ConfigMutation(
-                resource="admin_config:model-center",
-                expected_hash=store_load_hash(store),
-                status="pending",
-            )
-        )
-        await s.commit()
-
-    # Crash point 2: legacy pending row without a persisted target_hash and
-    # a file hash matching NEITHER expected nor target: R3-P1-01 forbids
-    # guessing "applied" here — it must be reconciled as UNKNOWN_STATE.
-    async with app.state.test_factory() as s:
-        s.add(
-            ConfigMutation(
-                resource="admin_config:flow-policy",
-                expected_hash="0000000000000000000000000000000000000000000000000000000000000000",
-                status="pending",
-            )
-        )
-        await s.commit()
-
-    from app.services.config_mutation import reconcile_config_mutations
-
-    recovered = await reconcile_config_mutations(app.state.test_factory, store)
-    assert recovered == 2
-
-    statuses = (
-        (
-            await session.execute(
-                text("SELECT status FROM map_control.config_mutations ORDER BY created_at")
-            )
-        )
-        .scalars()
-        .all()
-    )
-    assert statuses == ["failed", "failed"]
-
-    events = (
-        await session.execute(
-            text(
-                "SELECT status, failure_code, recovered FROM map_control.config_audit_events "
-                "WHERE recovered = true ORDER BY created_at"
-            )
-        )
-    ).all()
-    assert len(events) == 2
-    assert {row.status for row in events} == {"failed"}
-    assert [row.failure_code for row in events] == ["NO_WRITE", "UNKNOWN_STATE"]
-
-    # Idempotent: nothing left pending.
-    assert await reconcile_config_mutations(app.state.test_factory, store) == 0
-
-
 async def test_tampered_audit_row_detected_by_chain_verify(app_and_session) -> None:
-    app, _session, _ = app_and_session
+    app, _session = app_and_session
     async with await _client(app) as client:
         payload = (await client.get("/api/admin/model-center")).json()
         await client.put("/api/admin/model-center", json=payload)
@@ -446,7 +374,7 @@ async def test_tampered_audit_row_detected_by_chain_verify(app_and_session) -> N
 
 
 async def test_secret_never_in_audit(app_and_session) -> None:
-    app, session, _st = app_and_session
+    app, session = app_and_session
     async with await _client(app) as client:
         payload = (await client.get("/api/admin/model-center")).json()
         payload["large_models"] = [
@@ -476,7 +404,7 @@ async def test_secret_never_in_audit(app_and_session) -> None:
 
 
 async def test_audit_viewer_and_workspace_scope(app_and_session) -> None:
-    app, _session, _st = app_and_session
+    app, _session = app_and_session
     async with await _client(app) as client:
         payload = (await client.get("/api/admin/model-center")).json()
         await client.put("/api/admin/model-center", json=payload)
@@ -493,7 +421,6 @@ async def test_audit_viewer_and_workspace_scope(app_and_session) -> None:
     other_app = create_app(
         settings=Settings(
             auth_mode=AuthMode.TRUSTED_HEADER,
-            state_file="/tmp/map_bff_audit_fix_other.json",
             default_workspace_id=WORKSPACE,
             trusted_proxy_secret="s3cret",
             trusted_proxy_required=True,
@@ -924,7 +851,7 @@ async def test_every_admin_write_operation_has_fixture_and_is_audited(
     """R2-P1-02: OpenAPI admin write operations == fixture set (exact),
     each fixture really executes, and audit deltas match the Step 7 PR-J3
     contract per resource_type bucket."""
-    app, session, _ = app_and_session
+    app, session = app_and_session
     openapi = app.openapi()
     enumerated = {
         f"{method.upper()} {path}"
@@ -983,12 +910,6 @@ async def test_every_admin_write_operation_has_fixture_and_is_audited(
     assert len(rows) == expected_total
     assert {row.actor_user_id for row in rows} == {"local-admin"}
     assert {row.status for row in rows} == {"applied"}
-
-
-def store_load_hash(store: AdminStateStore) -> str:
-    from app.store import state_hash
-
-    return state_hash(store.load())
 
 
 async def pg_admin_hash(session) -> str:

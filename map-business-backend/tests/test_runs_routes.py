@@ -63,7 +63,7 @@ async def client():
     store = InMemoryRunStore()
     application = RunApplication(store)
     app = create_app(
-        settings=Settings(auth_mode="dev", state_file="/tmp/map_runs_route_state.json")
+        settings=Settings(auth_mode="dev")
     )
 
     projection = _runtime_projection()

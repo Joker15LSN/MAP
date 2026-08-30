@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 import pytest_asyncio
 from fastapi import HTTPException
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import text
 from starlette.requests import Request
 
 from app.core.identity import AuthMode, RequestPrincipal
-from app.db.models import RuntimeSnapshotMutation
 from app.schemas import AdminState
 from app.services.config_mutation import AuditWriteError
 from app.services.runtime_snapshot import RuntimeSnapshotService
@@ -28,12 +24,7 @@ from app.services.runtime_snapshot.digest import (
 from app.services.runtime_snapshot.schemas import (
     MutationContext,
     RuntimeProjection,
-    build_runtime_projection,
 )
-from app.services.runtime_snapshot.service import (
-    reconcile_runtime_snapshot_mutations,
-)
-from app.store import AdminStateStore
 
 pytestmark = pytest.mark.asyncio
 
@@ -119,10 +110,6 @@ async def test_apply_change_commits_snapshot_audit_outbox_and_no_pending(
     current = await service.get_current()
     assert current is not None and current.status == "active"
 
-    # J7a: no runtime_snapshot_mutations row is written anymore.
-    mutations = (await session.execute(select(RuntimeSnapshotMutation))).scalars().all()
-    assert mutations == []
-
     assert await _audit_rows(session) == [
         ("flow_policy", "update", "applied"),
         ("runtime_snapshot", "activate", "applied"),
@@ -152,7 +139,6 @@ async def test_apply_change_business_rejection_is_audited_without_snapshot(
     assert await _audit_rows(session) == [
         ("flow_policy", "update", "rejected")
     ]
-    assert (await session.execute(select(RuntimeSnapshotMutation))).scalars().all() == []
     assert await service.get_current() is None
 
 
@@ -268,250 +254,7 @@ async def test_apply_change_audit_failure_rolls_back_whole_transaction(
     # J7a: PG atomicity rolls the admin state back together with the
     # snapshot side; no pending mutation row is needed for recovery.
     assert state_hash(await store.load()) == before_hash
-    mutations = (await session.execute(select(RuntimeSnapshotMutation))).scalars().all()
-    assert mutations == []
     snapshot_count = (
         await session.execute(text("SELECT count(*) FROM map_control.runtime_snapshots"))
     ).scalar_one()
     assert snapshot_count == 0
-
-
-async def test_reconciler_recovers_pending_mutations_exact_match(
-    session, tmp_path
-) -> None:
-    state_file = str(tmp_path / "admin_state.json")
-    store = AdminStateStore(state_file)
-    expected_admin_hash = state_hash(store.load())
-
-    # Build the target state/hash exactly like apply_change would.
-    target_state = store.load().model_copy(deep=True)
-    target_state.basic_settings = []
-    target_admin_hash = state_hash(target_state)
-    target_projection = build_runtime_projection(target_state)
-    target_digest = projection_digest(target_projection)
-    target_id = snapshot_id_for_digest(target_digest)
-
-    # Case 1: NO_WRITE (file still at expected).
-    async with async_sessionmaker(
-        session.bind, class_=AsyncSession, expire_on_commit=False
-    )() as s:
-        s.add(
-            RuntimeSnapshotMutation(
-                resource="flow_policy:flow_policy",
-                snapshot_id=target_id,
-                expected_admin_hash=expected_admin_hash,
-                target_admin_hash=target_admin_hash,
-                expected_current_digest=None,
-                target_current_digest=target_digest,
-                target_projection=target_projection.model_dump(mode="json"),
-                status="pending",
-                action="update",
-                actor_user_id="local-admin",
-                actor_subject="admin",
-                actor_roles=["platform_admin"],
-                request_id="req-1",
-            )
-        )
-        await s.commit()
-
-    recovered = await reconcile_runtime_snapshot_mutations(
-        async_sessionmaker(session.bind, class_=AsyncSession, expire_on_commit=False),
-        store,
-        PgRuntimeSnapshotRepository,
-    )
-    assert recovered == 1
-
-    mutation = (
-        (await session.execute(select(RuntimeSnapshotMutation))).scalars().one()
-    )
-    assert mutation.status == "failed"
-    recovered_audit = (
-        await session.execute(
-            text(
-                "SELECT status, failure_code, recovered FROM map_control.config_audit_events "
-                "ORDER BY ordinal"
-            )
-        )
-    ).all()
-    assert len(recovered_audit) == 1
-    assert recovered_audit[0].status == "failed"
-    assert recovered_audit[0].failure_code == "NO_WRITE"
-    assert recovered_audit[0].recovered is True
-    assert await reconcile_runtime_snapshot_mutations(
-        async_sessionmaker(session.bind, class_=AsyncSession, expire_on_commit=False),
-        store,
-        PgRuntimeSnapshotRepository,
-    ) == 0
-
-
-async def test_reconciler_applied_when_file_target_and_pointer_expected(
-    session, tmp_path
-) -> None:
-    state_file = str(tmp_path / "admin_state.json")
-    store = AdminStateStore(state_file)
-    expected_admin_hash = state_hash(store.load())
-
-    # Seed the current pointer with the OLD digest so the reconciler has to
-    # insert the new snapshot and activate it (crash after file rename,
-    # before snapshot insert).
-    old_projection = _projection("old")
-    old_digest = projection_digest(old_projection)
-    old_id = snapshot_id_for_digest(old_digest)
-    async with async_sessionmaker(
-        session.bind, class_=AsyncSession, expire_on_commit=False
-    )() as s:
-        repo = PgRuntimeSnapshotRepository(s)
-        await repo.insert(old_id, old_projection, old_digest, None, "published")
-        await repo.activate(old_id, None)
-        await s.commit()
-
-    # Now write the target file directly (simulating the rename landing).
-    target_state = store.load().model_copy(deep=True)
-    target_state.basic_settings = []
-    target_admin_hash = state_hash(target_state)
-    store._write_atomic(target_state)
-    target_projection = build_runtime_projection(target_state)
-    target_digest = projection_digest(target_projection)
-    target_id = snapshot_id_for_digest(target_digest)
-
-    async with async_sessionmaker(
-        session.bind, class_=AsyncSession, expire_on_commit=False
-    )() as s:
-        s.add(
-            RuntimeSnapshotMutation(
-                resource="flow_policy:flow_policy",
-                snapshot_id=target_id,
-                expected_admin_hash=expected_admin_hash,
-                target_admin_hash=target_admin_hash,
-                expected_current_digest=old_digest,
-                target_current_digest=target_digest,
-                target_projection=target_projection.model_dump(mode="json"),
-                status="pending",
-                action="update",
-                actor_user_id="local-admin",
-                actor_subject="admin",
-                actor_roles=["platform_admin"],
-                request_id="req-2",
-            )
-        )
-        await s.commit()
-
-    recovered = await reconcile_runtime_snapshot_mutations(
-        async_sessionmaker(session.bind, class_=AsyncSession, expire_on_commit=False),
-        store,
-        PgRuntimeSnapshotRepository,
-    )
-    assert recovered == 1
-
-    mutation = (
-        (await session.execute(select(RuntimeSnapshotMutation))).scalars().one()
-    )
-    assert mutation.status == "applied"
-    repo = PgRuntimeSnapshotRepository(session)
-    current = await repo.get_current()
-    assert current.id == target_id
-    assert current.digest == target_digest
-    assert current.parent_id == old_id
-    old = await repo.get(old_id)
-    assert old.status == "rolled_back"
-
-    recovered_audit = (
-        await session.execute(
-            text(
-                "SELECT status, failure_code, recovered, before_hash, after_hash "
-                "FROM map_control.config_audit_events ORDER BY ordinal"
-            )
-        )
-    ).all()
-    assert len(recovered_audit) == 1
-    assert recovered_audit[0].status == "applied"
-    assert recovered_audit[0].failure_code is None
-    assert recovered_audit[0].before_hash == old_digest
-    assert recovered_audit[0].after_hash == target_digest
-
-
-async def test_reconciler_unknown_state(session, tmp_path) -> None:
-    state_file = str(tmp_path / "admin_state.json")
-    store = AdminStateStore(state_file)
-
-    mutation = RuntimeSnapshotMutation(
-        resource="flow_policy:flow_policy",
-        snapshot_id=uuid.uuid4(),
-        expected_admin_hash="0" * 64,
-        target_admin_hash="1" * 64,
-        expected_current_digest=None,
-        target_current_digest="2" * 64,
-        target_projection=_projection("x").model_dump(mode="json"),
-        status="pending",
-        action="update",
-        actor_user_id="local-admin",
-        actor_subject="admin",
-        actor_roles=["platform_admin"],
-        request_id="req-3",
-    )
-    factory = async_sessionmaker(session.bind, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as s:
-        s.add(mutation)
-        await s.commit()
-
-    recovered = await reconcile_runtime_snapshot_mutations(
-        factory, store, PgRuntimeSnapshotRepository
-    )
-    assert recovered == 1
-    row = (await session.execute(select(RuntimeSnapshotMutation))).scalars().one()
-    assert row.status == "failed"
-    failure = (
-        await session.execute(
-            text(
-                "SELECT failure_code FROM map_control.config_audit_events "
-                "WHERE recovered = true"
-            )
-        )
-    ).scalars().one()
-    assert failure == "UNKNOWN_STATE"
-
-
-async def test_reconciler_bad_state_file(session, tmp_path) -> None:
-    state_file = str(tmp_path / "admin_state.json")
-    store = AdminStateStore(state_file)
-    expected_admin_hash = state_hash(store.load())
-
-    mutation = RuntimeSnapshotMutation(
-        resource="flow_policy:flow_policy",
-        snapshot_id=uuid.uuid4(),
-        expected_admin_hash=expected_admin_hash,
-        target_admin_hash="1" * 64,
-        expected_current_digest=None,
-        target_current_digest="2" * 64,
-        target_projection=_projection("y").model_dump(mode="json"),
-        status="pending",
-        action="update",
-        actor_user_id="local-admin",
-        actor_subject="admin",
-        actor_roles=["platform_admin"],
-        request_id="req-4",
-    )
-    factory = async_sessionmaker(session.bind, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as s:
-        s.add(mutation)
-        await s.commit()
-
-    import pathlib
-
-    pathlib.Path(state_file).write_text("{not-json", encoding="utf-8")
-
-    recovered = await reconcile_runtime_snapshot_mutations(
-        factory, store, PgRuntimeSnapshotRepository
-    )
-    assert recovered == 1
-    row = (await session.execute(select(RuntimeSnapshotMutation))).scalars().one()
-    assert row.status == "failed"
-    failure = (
-        await session.execute(
-            text(
-                "SELECT failure_code FROM map_control.config_audit_events "
-                "WHERE recovered = true"
-            )
-        )
-    ).scalars().one()
-    assert failure == "BAD_STATE_FILE"

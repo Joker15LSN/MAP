@@ -21,15 +21,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ...db.models import RuntimeSnapshot, RuntimeSnapshotCurrent
 from ...db.session import build_engine
-from ...store import AdminStateStore, BadStateFileError
+from ...schemas import AdminState
 from .adapters.admin_state_pg import PgAdminStateRepository
 from .digest import projection_digest, snapshot_id_for_digest, state_hash
 from .schemas import build_runtime_projection
@@ -51,15 +54,108 @@ class MigrationReport:
         return not self.conflict_digests
 
 
-def _load_admin_state(state_file: str):
+def _load_admin_state(state_file: str) -> AdminState:
+    """Read a legacy admin state JSON file (fail-closed).
+
+    The old file-backed store was deleted in Step 7 PR-J7b; this reader
+    preserves the same validation and legacy-payload normalization so an
+    operator can still import an old ``admin_state.json`` exactly once.
+    """
     path = Path(state_file)
     if not path.exists():
         raise FileNotFoundError(f"state file does not exist: {state_file}")
-    store = AdminStateStore(state_file)
     try:
-        return store.load()
-    except BadStateFileError as exc:
-        raise SystemExit(f"BAD_STATE_FILE: {exc}") from exc
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"BAD_STATE_FILE: state file is not valid JSON: {exc}") from exc
+    payload = _migrate_payload(payload)
+    try:
+        return AdminState.model_validate(payload)
+    except ValidationError as exc:
+        raise SystemExit(
+            f"BAD_STATE_FILE: state file failed validation (kept untouched): {exc}"
+        ) from exc
+
+
+def _migrate_payload(payload: dict) -> dict:
+    """Normalize persisted admin JSON across schema revisions.
+
+    Kept byte-for-byte compatible with the deleted file-backed store so
+    legacy state files import exactly as the old ``AdminStateStore.load``
+    would have read them.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    master = payload.get("master_agent")
+    if isinstance(master, dict):
+        for legacy_key in (
+            "enabled",
+            "fallback_enabled",
+            "query_rewrite_enabled",
+            "content_review_enabled",
+        ):
+            master.pop(legacy_key, None)
+
+        model = str(
+            master.get("model") or master.get("scene_selector_model") or "deepseek-v4-flash"
+        )
+        master.setdefault("route_model", master.get("scene_selector_model") or model)
+        master.setdefault("summary_model", model)
+        master.setdefault(
+            "route_prompt",
+            "你是 MAP Master 路由智能体。请根据用户问题、历史上下文和可用业务智能体，"
+            "直接判断应调用哪些 sub-agent，输出候选 agent_code、confidence 与 reason。",
+        )
+        master.setdefault(
+            "summary_prompt",
+            "请整合各业务智能体结果，优先给出结论、证据来源和下一步建议。",
+        )
+        master.setdefault("current_version", "v1")
+        master.setdefault("draft_version", f"{master['current_version']}-draft")
+        if not isinstance(master.get("prompt_versions"), list) or not master["prompt_versions"]:
+            now = datetime.now().isoformat()
+            master["prompt_versions"] = [
+                {
+                    "version": master["current_version"],
+                    "created_at": now,
+                    "operator": "migration",
+                    "note": "旧配置迁移生成",
+                    "route_prompt": master["route_prompt"],
+                    "summary_prompt": master["summary_prompt"],
+                    "route_model": master["route_model"],
+                    "summary_model": master["summary_model"],
+                    "model": model,
+                    "temperature": master.get("temperature", 0.2),
+                    "max_tokens": master.get("max_tokens", 4096),
+                }
+            ]
+
+    for agent in payload.get("business_agents") or []:
+        if not isinstance(agent, dict):
+            continue
+        prompt_config = agent.get("prompt_config")
+        if isinstance(prompt_config, dict):
+            prompt_config.setdefault(
+                "tool_call_prompt",
+                prompt_config.get("system_prompt", ""),
+            )
+            if "tool_internal_prompts" not in prompt_config:
+                prompt_config["tool_internal_prompts"] = [
+                    {
+                        "tool_name": item.get("tool_name", ""),
+                        "prompt": item.get("system_prompt") or item.get("user_prompt") or "",
+                        "enabled": True,
+                    }
+                    for item in prompt_config.get("tool_prompts") or []
+                    if isinstance(item, dict)
+                ]
+        agent.setdefault("resource_mounts", [])
+
+    payload.setdefault("mcp_servers", [])
+    payload.setdefault("skills", [])
+    payload.setdefault("flow_skill_descriptors", [])
+    return payload
 
 
 async def migrate_state_file(

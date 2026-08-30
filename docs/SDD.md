@@ -96,14 +96,13 @@ PostgreSQL 和 MongoDB 是基础设施而非业务模块。两个前端通过
 
 ### 5.2 管理配置与审计（已实现，过渡中）
 
-1. 管理写入统一进入 `ConfigMutationService`。
-2. 模块计算前后哈希与脱敏差异，在 PostgreSQL 登记 mutation。
-3. 当前快照以临时文件、同步和原子替换写入 `admin_state.json`。
-4. 成功、失败或拒绝结果进入 append-only 审计链；启动时 reconciler 处理未知结果。
+1. 管理写入统一进入 `RuntimeSnapshotService.apply_change`（单 PostgreSQL 事务）。
+2. 模块计算前后哈希与脱敏差异，在同一事务内更新 PG 单行 AdminState。
+3. 当前快照与 current pointer 由 `runtime_snapshots` / `runtime_snapshot_current` 承载。
+4. 成功、失败或拒绝结果进入 append-only 审计链；不再有文件快照或 reconciler。
 5. Core 通过 BFF 的运行时快照入口消费心流配置。
 
-文件快照是当前过渡实现；目标是版本化配置与不可变 Runtime Snapshot。审计契约见
-[`audit.md`](../SPEC/contracts/audit.md)。
+审计契约见 [`audit.md`](../SPEC/contracts/audit.md)。
 
 ### 5.3 Worker 与外部副作用（已实现基础）
 
@@ -139,7 +138,7 @@ PostgreSQL 和 MongoDB 是基础设施而非业务模块。两个前端通过
 | --- | --- | --- | --- |
 | Workspace、Conversation、Message、Feedback | PostgreSQL `map_control` | BFF | 保持 |
 | Job、Outbox、Effect、配置 Mutation、审计链 | PostgreSQL `map_control` | BFF / Worker | 由明确单写者和 fencing 约束 |
-| 管理配置当前值 | `admin_state.json` + mutation/audit 事实 | BFF | 迁移到版本化配置与 Runtime Snapshot |
+| 管理配置当前值 | `map_control.admin_state` 单行 + audit 事实 | BFF | 保持 PG 单行 + Runtime Snapshot |
 | 请求、Agent、Tool、LLM 运行记录 | MongoDB | Core | 作为投影；不承担 Canonical Run 真相 |
 | 沙箱调用事实 | run_events 中 effect.* 事件（PR-E）；旧 `sandbox_invocations`/`effect_ledger` 停写待排空 | RunWorker（单写者）；core 无状态 | 收敛到 Canonical Invocation/Effect 所有权 |
 | Trace / Span | OTel 后端 | BFF / Core | 与 Run/Event 标识稳定关联 |

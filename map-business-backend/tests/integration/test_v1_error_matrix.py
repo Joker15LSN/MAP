@@ -13,16 +13,11 @@ The second-round review required parametrized runtime proof that ALL new
 - 500: the DB session dependency is overridden to raise, proving the new
   generic exception handler wraps unexpected failures in the envelope.
 
-The temp state file is an EXPLICIT test setting (passed to Settings), not
-an environment impersonation of production defaults.
 """
 
 from __future__ import annotations
 
-import os
 import uuid
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_error_matrix_state.json")
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -35,7 +30,6 @@ from app.settings import DEFAULT_WORKSPACE_CODE, DEFAULT_WORKSPACE_ID, Settings
 
 pytestmark = pytest.mark.asyncio
 
-STATE_FILE = "/tmp/map_bff_error_matrix_state.json"
 SECRET = "matrix-secret-fake-1"
 RANDOM_ID = str(uuid.uuid4())
 ENVELOPE_KEYS = {"code", "message", "details", "request_id"}
@@ -64,13 +58,12 @@ def _trusted_app() -> object:
             auth_mode=AuthMode.TRUSTED_HEADER,
             trusted_proxy_secret=SECRET,
             trusted_proxy_required=True,
-            state_file=STATE_FILE,
         )
     )
 
 
 def _dev_app() -> object:
-    return create_app(settings=Settings(auth_mode="dev", state_file=STATE_FILE))
+    return create_app(settings=Settings(auth_mode="dev"))
 
 
 def _assert_envelope(response, expected_code: str) -> None:

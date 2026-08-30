@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -104,36 +103,13 @@ def create_app(
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
-        # Best-effort boot reconciliation (never blocks startup):
-        # 1. drain legacy pending mutation rows when an old file store still
-        #    exists (J7a only; J7b removes this path);
-        # 2. seed the PG admin state singleton + an active runtime snapshot
-        #    when the database is empty. Existing data is never overwritten.
+        # Best-effort boot reconciliation (never blocks startup): seed the
+        # PG admin state singleton + an active runtime snapshot when the
+        # database is empty. Existing data is never overwritten.
         try:
             from .db.session import get_session_factory
 
             factory = get_session_factory()
-            state_file = Path(settings.state_file)
-            if state_file.exists():
-                from .services.config_mutation import (
-                    reconcile_config_mutations,
-                )
-                from .services.runtime_snapshot.adapters.pg import (
-                    PgRuntimeSnapshotRepository,
-                )
-                from .services.runtime_snapshot.service import (
-                    reconcile_runtime_snapshot_mutations,
-                )
-                from .store import AdminStateStore
-
-                legacy_store = AdminStateStore(settings.state_file)
-                await reconcile_config_mutations(factory, legacy_store)
-                await reconcile_runtime_snapshot_mutations(
-                    factory,
-                    legacy_store,
-                    lambda session: PgRuntimeSnapshotRepository(session),
-                )
-
             from .schemas import AdminState
             from .services.runtime_snapshot.adapters.admin_state_pg import (
                 PgAdminStateRepository,
@@ -289,9 +265,9 @@ def create_app(
 # ``create_app(overrides)``.
 #
 # R2-P2-04: these are LAZY (PEP 562). Importing ``app.main`` must never
-# touch the filesystem — eager construction here forced every importer to
-# pre-set MAP_BFF_STATE_FILE to avoid creating /app/data, which is exactly
-# the "pretending to be defaults" anti-pattern the second-round review
+# touch the filesystem or the database — eager construction here would make
+# every importer pay for a PG connection, which is exactly the
+# "pretending to be defaults" anti-pattern the second-round review
 # rejected.
 _lazy_app: FastAPI | None = None
 

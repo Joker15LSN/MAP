@@ -93,10 +93,6 @@ services:
   backend-service:
     container_name: ${E2E_PREFIX:-map-e2e}-backend-service
     image: map-e2e/backend:latest
-    # Dedicated state dir: the E2E mutates admin config (audit scenarios)
-    # and must never touch the dev stack's app/data/admin_state.json.
-    volumes:
-      - ${E2E_DATA_DIR:-./e2e/tmp/data}:/app/data
 
   worker-service:
     container_name: ${E2E_PREFIX:-map-e2e}-worker-service
@@ -120,8 +116,6 @@ services:
       # AFTER the Core call returned (before the job complete).
       MAP_SANDBOX_CORE_TOKEN: ${MAP_SANDBOX_CORE_TOKEN:-}
       MAP_E2E_SANDBOX_AFTER_CORE_BARRIER_S: ${MAP_E2E_SANDBOX_AFTER_CORE_BARRIER_S:-0}
-    volumes:
-      - ${E2E_DATA_DIR:-./e2e/tmp/data}:/app/data
 
   frontend-service:
     container_name: ${E2E_PREFIX:-map-e2e}-frontend-service

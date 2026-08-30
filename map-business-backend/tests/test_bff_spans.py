@@ -9,23 +9,28 @@ map_core with no BFF SERVER/CLIENT nodes. Expected shape:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_test_state.json")
-
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 
-from app.main import app
+from app.main import create_app
+from app.schemas import AdminState
 from app.telemetry import instrument_app
+
+
+class _FakeStore:
+    async def load(self) -> AdminState:
+        return AdminState.default()
+
+
+app = create_app(store=_FakeStore())
 
 INBOUND_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
 INBOUND_SPAN_ID = "00f067aa0ba902b7"

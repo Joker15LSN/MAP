@@ -60,7 +60,6 @@ async def http_client(_engine, session, tmp_path):
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file=str(tmp_path / "admin_state.json"),
             default_workspace_id=str(WORKSPACE),
         )
     )

@@ -31,9 +31,6 @@ class Settings:
     map_core_api_origin: str = field(
         default_factory=lambda: _env_or("MAP_CORE_API_ORIGIN", "http://127.0.0.1:10000")
     )
-    state_file: str = field(
-        default_factory=lambda: _env_or("MAP_BFF_STATE_FILE", "/app/data/admin_state.json")
-    )
     auth_mode: AuthMode = field(default_factory=lambda: AuthMode(_env_or("MAP_AUTH_MODE", "dev")))
     env: str = field(default_factory=lambda: _env_or("MAP_ENV", "dev").strip().lower())
     default_workspace_id: str = field(
@@ -78,7 +75,6 @@ def load_settings() -> Settings:
     """Load settings from the process environment (cached per call)."""
     return Settings(
         map_core_api_origin=_env_or("MAP_CORE_API_ORIGIN", "http://127.0.0.1:10000"),
-        state_file=_env_or("MAP_BFF_STATE_FILE", "/app/data/admin_state.json"),
         auth_mode=AuthMode(_env_or("MAP_AUTH_MODE", "dev")),
         env=_env_or("MAP_ENV", "dev").strip().lower(),
         default_workspace_id=_env_or("MAP_DEFAULT_WORKSPACE_ID", DEFAULT_WORKSPACE_ID),

@@ -11,10 +11,7 @@ events instead).
 
 from __future__ import annotations
 
-import os
 import uuid
-
-os.environ.setdefault("MAP_BFF_STATE_FILE", "/tmp/map_bff_audit_test_state.json")
 
 import pytest
 import pytest_asyncio
@@ -35,13 +32,9 @@ WORKSPACE = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
 
 @pytest_asyncio.fixture
 async def app_and_session(_engine, session):
-    import uuid as _uuid
-
-    state_file = f"/tmp/map_bff_audit_state_{_uuid.uuid4().hex[:8]}.json"
     app = create_app(
         settings=Settings(
             auth_mode=AuthMode.DEV,
-            state_file=state_file,
             default_workspace_id=WORKSPACE,
         ),
     )
@@ -196,7 +189,6 @@ async def test_non_admin_write_is_403_and_not_audited(app_and_session) -> None:
     other_app = create_app(
         settings=Settings(
             auth_mode=AuthMode.TRUSTED_HEADER,
-            state_file="/tmp/map_bff_audit_state.json",
             default_workspace_id=WORKSPACE,
             trusted_proxy_secret="s3cret",
             trusted_proxy_required=True,
