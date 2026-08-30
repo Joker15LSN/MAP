@@ -218,25 +218,25 @@ EXEMPTIONS: tuple[Exemption, ...] = (
     # identity gates; never real credentials.
     Exemption(
         "map-business-backend/tests/integration/test_config_audit.py",
-        "literal_secret_assignment", 44,
+        "literal_secret_assignment", 41,
         "test fixture: fake bearer token", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:b51dbcb5689cdc37",
     ),
     Exemption(
         "map-business-backend/tests/integration/test_feedback.py",
-        "literal_secret_assignment", 35,
+        "literal_secret_assignment", 32,
         "test fixture: fake bearer token", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:df943f1ffb699d19",
     ),
     Exemption(
         "map-business-backend/tests/integration/test_v1_error_matrix.py",
-        "literal_secret_assignment", 39,
+        "literal_secret_assignment", 33,
         "test fixture: fake matrix secret", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:89298538bf28486d",
     ),
     Exemption(
         "map-business-backend/tests/test_auth_boundary.py",
-        "literal_secret_assignment", 30,
+        "literal_secret_assignment", 27,
         "test fixture: fake boundary secret", "platform-security", "2027-08-31",
         expected_fingerprint="sha256:cc489fa5f758c598",
     ),
@@ -248,19 +248,19 @@ EXEMPTIONS: tuple[Exemption, ...] = (
     ),
     # README quickstart DSNs: documented dev placeholders, never secrets.
     Exemption(
-        "README.md", "uri_embedded_password", 338,
+        "README.md", "uri_embedded_password", 336,
         "documented dev DSN placeholder (P0-SEC-01 injection example)",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:8aac73349fc3c064",
     ),
     Exemption(
-        "README.md", "uri_embedded_password", 339,
+        "README.md", "uri_embedded_password", 337,
         "documented dev DSN placeholder (P0-SEC-01 injection example)",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:90f504e0156a0007",
     ),
     Exemption(
-        "README.md", "uri_embedded_password", 355,
+        "README.md", "uri_embedded_password", 353,
         "documented dev DSN placeholder (P0-SEC-01 injection example)",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:90f504e0156a0007",
@@ -276,7 +276,7 @@ EXEMPTIONS: tuple[Exemption, ...] = (
     ),
     Exemption(
         "map-business-backend/tests/test_cors_schema.py",
-        "uri_embedded_password", 75,
+        "uri_embedded_password", 74,
         "S4-06 counterexample matrix: userinfo origin must be rejected",
         "platform-security", "2027-08-31",
         expected_fingerprint="sha256:fbddae166ead16d1",
