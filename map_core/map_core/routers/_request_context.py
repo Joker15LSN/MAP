@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from contextlib import contextmanager
 from typing import Any, Iterator
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from fastapi import Request
 
@@ -23,6 +23,7 @@ from ..service.execution_event import (
     coerce_uuid,
     set_run_context,
 )
+from .runtime_transport import build_service_run_context as build_service_run_context
 
 _ATTEMPT_RE = re.compile(r"^att-(\d+)$")
 
@@ -57,30 +58,6 @@ def build_run_context(
         attempt=_parse_attempt(getattr(state, "attempt_id", None)),
         request_id=request_id,
         session_id=getattr(state, "session_id", None),
-        staff_code=staff_code,
-    )
-
-
-def build_service_run_context(
-    *,
-    run_id: UUID,
-    attempt: int,
-    workspace_id: UUID | None = None,
-    request_id: str | None = None,
-    session_id: str | None = None,
-    staff_code: str | None = None,
-) -> RunContext:
-    """Freeze a RunContext for an internal service boundary.
-
-    Unlike :func:`build_run_context`, the durable identity comes from the
-    validated path parameters (never minted from caller-chosen headers).
-    """
-    return RunContext(
-        run_id=run_id,
-        workspace_id=workspace_id,
-        attempt=attempt,
-        request_id=request_id,
-        session_id=session_id,
         staff_code=staff_code,
     )
 

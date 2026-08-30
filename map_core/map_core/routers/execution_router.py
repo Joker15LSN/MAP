@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import uuid
 from contextlib import suppress
 from typing import Any
@@ -41,26 +40,18 @@ from ..service.run_auth import (
     authenticate_run_request,
     parse_run_credentials,
 )
-from ._request_context import build_service_run_context
+from .runtime_transport import (
+    build_service_run_context,
+    parse_attempt,
+    project_error_response,
+    validated_id_header,
+)
 
 execution_router = APIRouter(prefix="/internal/v1", tags=["internal"])
 
 _RUNS_EXECUTE_ERROR = "RUNS_EXECUTE_UNAUTHORIZED"
 _RUNS_EXECUTE_FORBIDDEN = "RUNS_EXECUTE_FORBIDDEN"
 _RUNS_EXECUTE_INVALID = "RUNS_EXECUTE_INVALID_REQUEST"
-
-_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
-_ATTEMPT_RE = re.compile(r"^att-(\d+)$")
-
-
-def _validated_id_header(raw: str | None) -> str | None:
-    if not isinstance(raw, str):
-        return None
-    value = raw.strip()
-    if value and _ID_RE.fullmatch(value):
-        return value
-    return None
-
 
 def _credentials_or_fail() -> tuple[object, ...]:
     try:
@@ -77,9 +68,10 @@ def _authenticate(request: Request) -> JSONResponse | None:
         credentials = _credentials_or_fail()
     except RuntimeError as exc:
         logger.error("run service credentials malformed: {}", exc)
-        return JSONResponse(
-            status_code=500,
-            content={"detail": str(exc), "error_code": _RUNS_EXECUTE_INVALID},
+        return project_error_response(
+            500,
+            detail=str(exc),
+            error_code=_RUNS_EXECUTE_INVALID,
         )
     credential, reason = authenticate_run_request(
         request.headers.get("Authorization"), credentials
@@ -92,19 +84,17 @@ def _authenticate(request: Request) -> JSONResponse | None:
             reason,
             request.headers.get("X-Request-ID"),
         )
-        return JSONResponse(
-            status_code=status_code,
-            content={
-                "detail": (
-                    "the typed run stream requires a valid service credential "
-                    "with the runs.execute scope (fail-closed)"
-                ),
-                "error_code": (
-                    _RUNS_EXECUTE_FORBIDDEN
-                    if status_code == 403
-                    else _RUNS_EXECUTE_ERROR
-                ),
-            },
+        return project_error_response(
+            status_code,
+            detail=(
+                "the typed run stream requires a valid service credential "
+                "with the runs.execute scope (fail-closed)"
+            ),
+            error_code=(
+                _RUNS_EXECUTE_FORBIDDEN
+                if status_code == 403
+                else _RUNS_EXECUTE_ERROR
+            ),
         )
     logger.info(
         "run stream authorization GRANTED service={} key_id={} request_id={}",
@@ -113,33 +103,6 @@ def _authenticate(request: Request) -> JSONResponse | None:
         request.headers.get("X-Request-ID"),
     )
     return None
-
-
-def _parse_attempt_header(raw: str | None) -> int | None:
-    """Parse an X-Attempt-ID header into an attempt number, or None."""
-    if not isinstance(raw, str):
-        return None
-    value = raw.strip()
-    if value.isdigit() and int(value) >= 1:
-        return int(value)
-    match = _ATTEMPT_RE.fullmatch(value)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-def _parse_path_attempt(raw: str) -> int | None:
-    if not raw.isdigit():
-        return None
-    value = int(raw)
-    return value if value >= 1 else None
-
-
-def _invalid_request(detail: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=400,
-        content={"detail": detail, "error_code": _RUNS_EXECUTE_INVALID},
-    )
 
 
 def _validate_identity_consistency(
@@ -154,21 +117,31 @@ def _validate_identity_consistency(
         try:
             parsed_run_id = uuid.UUID(header_run_id.strip())
         except (ValueError, AttributeError):
-            return _invalid_request("X-Run-ID must be a valid UUID")
+            return project_error_response(
+                400,
+                detail="X-Run-ID must be a valid UUID",
+                error_code=_RUNS_EXECUTE_INVALID,
+            )
         if parsed_run_id != run_id:
-            return _invalid_request(
-                "X-Run-ID header does not match the path run_id"
+            return project_error_response(
+                400,
+                detail="X-Run-ID header does not match the path run_id",
+                error_code=_RUNS_EXECUTE_INVALID,
             )
     header_attempt_id = request.headers.get("X-Attempt-ID")
     if header_attempt_id is not None:
-        parsed_attempt = _parse_attempt_header(header_attempt_id)
+        parsed_attempt = parse_attempt(header_attempt_id)
         if parsed_attempt is None:
-            return _invalid_request(
-                "X-Attempt-ID must be an attempt number or att-N"
+            return project_error_response(
+                400,
+                detail="X-Attempt-ID must be an attempt number or att-N",
+                error_code=_RUNS_EXECUTE_INVALID,
             )
         if parsed_attempt != attempt:
-            return _invalid_request(
-                "X-Attempt-ID header does not match the path attempt"
+            return project_error_response(
+                400,
+                detail="X-Attempt-ID header does not match the path attempt",
+                error_code=_RUNS_EXECUTE_INVALID,
             )
     return None
 
@@ -187,14 +160,18 @@ def _parse_run_identity(
     try:
         path_run_id = uuid.UUID(run_id)
     except (ValueError, AttributeError):
-        return None, None, _invalid_request(
-            "run_id path parameter must be a valid UUID"
+        return None, None, project_error_response(
+            400,
+            detail="run_id path parameter must be a valid UUID",
+            error_code=_RUNS_EXECUTE_INVALID,
         )
-    path_attempt = _parse_path_attempt(attempt)
-    if path_attempt is None:
-        return None, None, _invalid_request(
-            "attempt path parameter must be an integer >= 1"
+    if not attempt.isdigit() or int(attempt) < 1:
+        return None, None, project_error_response(
+            400,
+            detail="attempt path parameter must be an integer >= 1",
+            error_code=_RUNS_EXECUTE_INVALID,
         )
+    path_attempt = int(attempt)
     identity_error = _validate_identity_consistency(
         request,
         run_id=path_run_id,
@@ -211,19 +188,39 @@ async def _parse_chat_schema(
     try:
         raw_body = await http_request.body()
     except Exception as exc:  # noqa: BLE001 - transport read failure
-        return None, _invalid_request(f"failed to read request body: {exc}")
+        return None, project_error_response(
+            400,
+            detail=f"failed to read request body: {exc}",
+            error_code=_RUNS_EXECUTE_INVALID,
+        )
     if not raw_body:
-        return None, _invalid_request("request body must be a JSON object")
+        return None, project_error_response(
+            400,
+            detail="request body must be a JSON object",
+            error_code=_RUNS_EXECUTE_INVALID,
+        )
     try:
         payload = json.loads(raw_body)
     except json.JSONDecodeError:
-        return None, _invalid_request("request body must be valid JSON")
+        return None, project_error_response(
+            400,
+            detail="request body must be valid JSON",
+            error_code=_RUNS_EXECUTE_INVALID,
+        )
     if not isinstance(payload, dict):
-        return None, _invalid_request("request body must be a JSON object")
+        return None, project_error_response(
+            400,
+            detail="request body must be a JSON object",
+            error_code=_RUNS_EXECUTE_INVALID,
+        )
     try:
         return GlobalDomainChatSchema.model_validate(payload), None
     except ValidationError as exc:
-        return None, _invalid_request(f"invalid GlobalDomainChatSchema: {exc}")
+        return None, project_error_response(
+            400,
+            detail=f"invalid GlobalDomainChatSchema: {exc}",
+            error_code=_RUNS_EXECUTE_INVALID,
+        )
 
 
 def _terminal_data(
@@ -338,12 +335,12 @@ async def execution_event_stream(
     # Internal service boundary: freeze the durable identity from the path,
     # not from caller-chosen identity headers.  request_id/session_id stay
     # correlation-only F-04 headers (invalid/missing -> deterministic fallback).
-    request_id = _validated_id_header(
+    request_id = validated_id_header(
         http_request.headers.get("X-Request-ID")
     ) or str(path_run_id)
-    session_id = _validated_id_header(http_request.headers.get("X-Session-ID"))
+    session_id = validated_id_header(http_request.headers.get("X-Session-ID"))
     workspace_id = coerce_uuid(
-        _validated_id_header(http_request.headers.get("X-Workspace-ID")),
+        validated_id_header(http_request.headers.get("X-Workspace-ID")),
         namespace="workspace",
     )
 
@@ -352,7 +349,7 @@ async def execution_event_stream(
     # legacy chat routes so the service stream observes one identity.
     http_request.state.request_id = request_id
     http_request.state.session_id = session_id
-    http_request.state.workspace_id = _validated_id_header(
+    http_request.state.workspace_id = validated_id_header(
         http_request.headers.get("X-Workspace-ID")
     )
     http_request.state.run_id = str(path_run_id)
