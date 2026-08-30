@@ -18,6 +18,7 @@ from fastapi import Request
 from starlette.datastructures import Headers
 
 from map_core.routers import flow_domain_router
+from map_core.routers.runtime_transport import apply_runtime_headers
 from map_core.schema.flow_domain_schema import FlowChatRequest
 from map_core.service.execution_event import set_run_context
 from map_core.service.flow_domain import FlowDomain
@@ -131,7 +132,13 @@ def test_router_injected_runtime_headers_reach_provider() -> None:
         "app": None,
     }
     http_request = Request(scope)
-    flow_domain_router._apply_runtime_headers(http_request, request_token=None)
+    apply_runtime_headers(http_request, request_token=None)
+    http_request.state.runtime_snapshot_id = flow_domain_router._runtime_snapshot_id_value(
+        http_request.headers.get("X-Runtime-Snapshot-ID")
+    )
+    http_request.state.runtime_snapshot_digest = flow_domain_router._runtime_snapshot_digest_value(
+        http_request.headers.get("X-Runtime-Snapshot-Digest")
+    )
 
     provider = _RaisingProvider(RuntimeSnapshotAuthError("auth rejected"))
     flow_domain = FlowDomain(
@@ -186,7 +193,13 @@ def test_apply_runtime_headers_validation(snapshot_id, digest, expected_id, expe
     }
     http_request = Request(scope)
 
-    flow_domain_router._apply_runtime_headers(http_request, request_token=None)
+    apply_runtime_headers(http_request, request_token=None)
+    http_request.state.runtime_snapshot_id = flow_domain_router._runtime_snapshot_id_value(
+        http_request.headers.get("X-Runtime-Snapshot-ID")
+    )
+    http_request.state.runtime_snapshot_digest = flow_domain_router._runtime_snapshot_digest_value(
+        http_request.headers.get("X-Runtime-Snapshot-Digest")
+    )
 
     assert http_request.state.runtime_snapshot_id == expected_id
     assert http_request.state.runtime_snapshot_digest == expected_digest

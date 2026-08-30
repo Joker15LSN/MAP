@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import re
 import sys
 import uuid
 from argparse import ArgumentParser
@@ -17,6 +16,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .config.base_config import LOG_DIR
+from .routers.runtime_transport import validated_id_header
 from .utils.global_context import request_id_ctx, session_id_ctx
 
 _PACKAGE_DIR = str(Path(__file__).parent.absolute())
@@ -25,19 +25,6 @@ MAX_LOGGED_REQUEST_BODY_CHARS = 13000
 MAX_LOGGED_JSON_FIELD_CHARS = 5000
 LOG_REDACTED_VALUE = "***REDACTED***"
 
-# Shared ID contract with the routers and the BFF (F-04): non-empty,
-# <=128 chars, restricted charset; illegal/missing request ids are replaced
-# with uuid4().hex, missing session ids stay None.
-_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
-
-
-def _validated_id_header(value: str | None) -> str | None:
-    if value is None:
-        return None
-    cleaned = value.strip()
-    if cleaned and _ID_PATTERN.fullmatch(cleaned):
-        return cleaned
-    return None
 SENSITIVE_KEYWORDS: tuple[str, ...] = (
     "api_key",
     "apikey",
@@ -327,8 +314,8 @@ class RequestContextMiddleware:
             return
 
         headers = Headers(scope=scope)
-        rid = _validated_id_header(headers.get("X-Request-ID")) or uuid.uuid4().hex
-        sid = _validated_id_header(headers.get("X-Session-ID"))
+        rid = validated_id_header(headers.get("X-Request-ID")) or uuid.uuid4().hex
+        sid = validated_id_header(headers.get("X-Session-ID"))
         path = str(scope.get("path") or "")
         request_log_enabled = path != "/health"
         state = scope.setdefault("state", {})

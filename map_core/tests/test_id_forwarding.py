@@ -1,7 +1,8 @@
 """F-04 contract tests: unified request/session/workspace id resolution in map_core.
 
-Covers the three map_core routers' ``_apply_runtime_headers`` behavior plus the
-MasterPipeline consumption of the resolved ids:
+Covers the public ``runtime_transport.apply_runtime_headers`` seam (used by
+the three legacy routers) plus the MasterPipeline consumption of the resolved
+ids:
 
 - valid X-Request-ID / X-Session-ID / X-Workspace-ID headers are honored and
   attached to ``request.state``;
@@ -20,20 +21,16 @@ import pytest
 from fastapi import Request
 from starlette.datastructures import Headers
 
-from map_core.routers import (
-    flow_domain_router,
-    global_domain_router,
-    master_pipeline_router,
-)
+from map_core.routers.runtime_transport import apply_runtime_headers
 from map_core.service.master_pipeline import MasterPipeline
 
 UUID4_HEX = re.compile(r"^[0-9a-f]{32}$")
 
 # Each router must apply the exact same id resolution contract.
 ROUTER_APPLY_FN = [
-    ("global_domain", global_domain_router._apply_runtime_headers),
-    ("master_pipeline", master_pipeline_router._apply_runtime_headers),
-    ("flow_domain", flow_domain_router._apply_runtime_headers),
+    ("global_domain", apply_runtime_headers),
+    ("master_pipeline", apply_runtime_headers),
+    ("flow_domain", apply_runtime_headers),
 ]
 
 
@@ -133,7 +130,7 @@ def test_master_pipeline_consumes_resolved_state_ids() -> None:
             "X-Workspace-ID": "ws-1",
         }
     )
-    master_pipeline_router._apply_runtime_headers(req, request_token=None)
+    apply_runtime_headers(req, request_token=None)
 
     master = MasterPipeline(request=None, http_request=req, tool_registry={})
     assert master.request_id == "req-1"
@@ -146,7 +143,7 @@ def test_master_pipeline_consumes_resolved_state_ids() -> None:
 
 def test_master_pipeline_consumes_generated_request_id() -> None:
     req = _make_http_request({})
-    master_pipeline_router._apply_runtime_headers(req, request_token=None)
+    apply_runtime_headers(req, request_token=None)
 
     master = MasterPipeline(request=None, http_request=req, tool_registry={})
     assert UUID4_HEX.fullmatch(master.request_id), master.request_id

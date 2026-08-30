@@ -1,11 +1,7 @@
-import json
-import re
 from typing import Any
-from uuid import uuid4
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from ..schema.master_pipeline_schema import (
     MasterAgentChatSchema,
@@ -13,8 +9,11 @@ from ..schema.master_pipeline_schema import (
     MasterPipelineStreamEvent,
 )
 from ..service.master_pipeline import MasterPipeline
-from ..service.run_identity import resolve_run_identity
-from ._request_context import request_run_context
+from .runtime_transport import (
+    apply_runtime_headers,
+    format_sse_event,
+    request_run_context,
+)
 
 master_pipeline_router = APIRouter(prefix="/master_pipeline")
 
@@ -31,65 +30,6 @@ STREAM_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 
 
-_ID_HEADER_PATTERN = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
-
-
-def _validated_id_header(raw: str | None) -> str | None:
-    """Return the trimmed header value when it satisfies the F-04 ID contract.
-
-    Contract: non-empty, at most 128 chars, charset [A-Za-z0-9._:-].
-    Returns None when missing, empty, over-long, or containing other chars.
-    """
-    if not isinstance(raw, str):
-        return None
-    value = raw.strip()
-    if not value:
-        return None
-    if len(value) > 128:
-        return None
-    if not _ID_HEADER_PATTERN.fullmatch(value):
-        return None
-    return value
-
-
-def _apply_runtime_headers(
-    http_request: Request,
-    *,
-    request_token: str | None,
-) -> None:
-    http_request.state.request_token = request_token
-    http_request.state.x_userid = http_request.headers.get("X-UserId", "missing")
-    http_request.state.x_username = http_request.headers.get("X-UserName", "missing")
-    # F-04 unified id resolution: honor valid inbound headers, otherwise
-    # request_id falls back to a fresh uuid4().hex; session/workspace stay None.
-    http_request.state.request_id = (
-        _validated_id_header(http_request.headers.get("X-Request-ID"))
-        or uuid4().hex
-    )
-    http_request.state.session_id = _validated_id_header(
-        http_request.headers.get("X-Session-ID")
-    )
-    http_request.state.workspace_id = _validated_id_header(
-        http_request.headers.get("X-Workspace-ID")
-    )
-    _run_identity = resolve_run_identity(
-        http_request,
-        request_id=http_request.state.request_id,
-        workspace_id=http_request.state.workspace_id,
-    )
-    http_request.state.run_id = _run_identity["run_id"]
-    http_request.state.attempt_id = _run_identity["attempt_id"]
-    http_request.state.client_request_id = _run_identity["client_request_id"]
-
-
-def _format_sse_event(event: MasterPipelineStreamEvent) -> str:
-    payload = (
-        event.data.model_dump() if isinstance(event.data, BaseModel) else event.data
-    )
-    data = json.dumps(payload, ensure_ascii=False)
-    return f"event: {event.event}\ndata: {data}\n\n"
-
-
 @master_pipeline_router.post(
     "/chat/stream",
     responses=STREAM_RESPONSES,
@@ -99,7 +39,7 @@ async def master_chat_stream(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ):
-    _apply_runtime_headers(http_request, request_token=request_token)
+    apply_runtime_headers(http_request, request_token=request_token)
     master_pipeline = MasterPipeline(request=request, http_request=http_request)
 
     async def iter_events():
@@ -108,7 +48,7 @@ async def master_chat_stream(
             staff_code=getattr(request, "staff_code", None),
         ):
             async for event in master_pipeline.pipeline_stream(request):
-                yield _format_sse_event(event)
+                yield format_sse_event(event)
         http_request.state._stream_logically_completed = True
 
     return StreamingResponse(
@@ -124,7 +64,7 @@ async def master_chat(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ) -> MasterPipelineChatResponse:
-    _apply_runtime_headers(http_request, request_token=request_token)
+    apply_runtime_headers(http_request, request_token=request_token)
     master_pipeline = MasterPipeline(request=request, http_request=http_request)
     with request_run_context(
         http_request,

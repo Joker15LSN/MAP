@@ -15,7 +15,7 @@ import pytest
 from fastapi import Request
 from starlette.datastructures import Headers
 
-from map_core.routers import master_pipeline_router
+from map_core.routers.runtime_transport import apply_runtime_headers
 from map_core.service.agent.base import AgentRequest
 from map_core.service.agent.tool_executor import ToolExecutor
 from map_core.service.agent.tool_runtime import ToolSet
@@ -143,7 +143,7 @@ def test_master_pipeline_freezes_run_identity() -> None:
             "X-Client-Request-ID": "creq-3",
         }
     )
-    master_pipeline_router._apply_runtime_headers(req, request_token=None)
+    apply_runtime_headers(req, request_token=None)
     master = MasterPipeline(request=None, http_request=req, tool_registry={})
     assert master.run_id == "run-9"
     assert master.attempt_id == "att-2"

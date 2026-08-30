@@ -345,7 +345,7 @@ async def execution_event_stream(
     )
 
     # The GlobalDomain constructor reads http_request.state for its own
-    # correlation fields; mirror what _apply_runtime_headers does for the
+    # correlation fields; mirror what apply_runtime_headers does for the
     # legacy chat routes so the service stream observes one identity.
     http_request.state.request_id = request_id
     http_request.state.session_id = session_id

@@ -1,11 +1,7 @@
-import json
-import re
 from typing import Any
-from uuid import uuid4
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from ..schema.global_domain_schema import (
     DebugSelectSceneRequestSchema,
@@ -20,9 +16,12 @@ from ..schema.global_domain_schema import (
 )
 from ..schema.scene_classification_schema import SceneClassificationResult
 from ..service.global_domain import GlobalDomain
-from ..service.run_identity import resolve_run_identity
 from ..utils.content_review.content_reviewer import build_stream_content_reviewer
-from ._request_context import request_run_context
+from .runtime_transport import (
+    apply_runtime_headers,
+    format_sse_event,
+    request_run_context,
+)
 
 global_domain_router = APIRouter(prefix="/global_domain")
 
@@ -38,65 +37,6 @@ STREAM_V2_RESPONSES: dict[int | str, dict[str, Any]] = {
         },
     }
 }
-
-
-_ID_HEADER_PATTERN = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
-
-
-def _validated_id_header(raw: str | None) -> str | None:
-    """Return the trimmed header value when it satisfies the F-04 ID contract.
-
-    Contract: non-empty, at most 128 chars, charset [A-Za-z0-9._:-].
-    Returns None when missing, empty, over-long, or containing other chars.
-    """
-    if not isinstance(raw, str):
-        return None
-    value = raw.strip()
-    if not value:
-        return None
-    if len(value) > 128:
-        return None
-    if not _ID_HEADER_PATTERN.fullmatch(value):
-        return None
-    return value
-
-
-def _apply_runtime_headers(
-    http_request: Request,
-    *,
-    request_token: str | None,
-) -> None:
-    http_request.state.request_token = request_token
-    http_request.state.x_userid = http_request.headers.get("X-UserId", "missing")
-    http_request.state.x_username = http_request.headers.get("X-UserName", "missing")
-    # F-04 unified id resolution: honor valid inbound headers, otherwise
-    # request_id falls back to a fresh uuid4().hex; session/workspace stay None.
-    http_request.state.request_id = (
-        _validated_id_header(http_request.headers.get("X-Request-ID"))
-        or uuid4().hex
-    )
-    http_request.state.session_id = _validated_id_header(
-        http_request.headers.get("X-Session-ID")
-    )
-    http_request.state.workspace_id = _validated_id_header(
-        http_request.headers.get("X-Workspace-ID")
-    )
-    _run_identity = resolve_run_identity(
-        http_request,
-        request_id=http_request.state.request_id,
-        workspace_id=http_request.state.workspace_id,
-    )
-    http_request.state.run_id = _run_identity["run_id"]
-    http_request.state.attempt_id = _run_identity["attempt_id"]
-    http_request.state.client_request_id = _run_identity["client_request_id"]
-
-
-def _format_sse_event(event: GlobalDomainStreamEvent) -> str:
-    payload = (
-        event.data.model_dump() if isinstance(event.data, BaseModel) else event.data
-    )
-    data = json.dumps(payload, ensure_ascii=False)
-    return f"event: {event.event}\ndata: {data}\n\n"
 
 
 def _format_debug_scene_agents(
@@ -131,7 +71,7 @@ async def chat_stream_v2(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ):
-    _apply_runtime_headers(
+    apply_runtime_headers(
         http_request,
         request_token=request_token,
     )
@@ -153,7 +93,7 @@ async def chat_stream_v2(
                     request_id=global_domain.request_id,
                     state_id=global_domain.state_id,
                 ):
-                    yield _format_sse_event(event)
+                    yield format_sse_event(event)
             http_request.state._stream_logically_completed = True
         finally:
             await reviewer.aclose()
@@ -174,7 +114,7 @@ async def chat_stream_v3(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ):
-    _apply_runtime_headers(
+    apply_runtime_headers(
         http_request,
         request_token=request_token,
     )
@@ -196,7 +136,7 @@ async def chat_stream_v3(
                     request_id=global_domain.request_id,
                     state_id=global_domain.state_id,
                 ):
-                    yield _format_sse_event(event)
+                    yield format_sse_event(event)
             http_request.state._stream_logically_completed = True
         finally:
             await reviewer.aclose()
@@ -214,7 +154,7 @@ async def chat(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ) -> GlobalDomainChatResponse:
-    _apply_runtime_headers(
+    apply_runtime_headers(
         http_request,
         request_token=request_token,
     )
@@ -239,7 +179,7 @@ async def debug_select_scene(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ) -> list[str]:
-    _apply_runtime_headers(http_request, request_token=request_token)
+    apply_runtime_headers(http_request, request_token=request_token)
     chat_request = request.to_chat_request()
     global_domain = GlobalDomain(request=chat_request, http_request=http_request)
     with request_run_context(
@@ -260,7 +200,7 @@ async def debug_run_scene_agent(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ) -> SceneAgentDebugResponse:
-    _apply_runtime_headers(http_request, request_token=request_token)
+    apply_runtime_headers(http_request, request_token=request_token)
     global_domain = GlobalDomain(request=request, http_request=http_request)
     with request_run_context(
         http_request,
@@ -278,7 +218,7 @@ async def debug_run_tool_agent(
     http_request: Request,
     request_token: str | None = Header(default=None, alias="X-request-token"),
 ) -> ToolAgentDebugResponse:
-    _apply_runtime_headers(http_request, request_token=request_token)
+    apply_runtime_headers(http_request, request_token=request_token)
     global_domain = GlobalDomain(request=request, http_request=http_request)
     with request_run_context(
         http_request,
