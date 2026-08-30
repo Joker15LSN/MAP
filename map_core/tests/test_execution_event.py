@@ -272,6 +272,56 @@ def test_current_returns_registry_singleton_per_run_context() -> None:
         assert ExecutionEventEmitter.current() is not emitter
 
 
+def test_otel_projector_adds_span_event_with_redacted_attributes() -> None:
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+
+    sink = InMemoryExecutionEventSink()
+    emitter = ExecutionEventEmitter(RunContext(run_id=_run_id()), sinks=[sink])
+
+    async def scenario() -> None:
+        with tracer.start_as_current_span("request.span"):
+            emitter.emit(
+                "step.completed",
+                data={
+                    "component": "scene_selector",
+                    "status": "success",
+                    "secret": "must-not-leak",
+                },
+            )
+        await emitter.drain()
+
+    asyncio.run(scenario())
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    events = spans[0].events
+    assert [event.name for event in events] == ["map.execution_event"]
+    attrs = dict(events[0].attributes or {})
+    assert attrs["type"] == "step.completed"
+    assert attrs["component"] == "scene_selector"
+    assert attrs["status"] == "success"
+    assert "data" not in attrs
+    assert "secret" not in attrs
+
+
+def test_otel_projector_is_noop_without_span() -> None:
+    sink = InMemoryExecutionEventSink()
+    emitter = ExecutionEventEmitter(RunContext(run_id=_run_id()), sinks=[sink])
+
+    event = emitter.emit("step.started", data={"component": "flow"})
+    assert event.seq == 1
+
+    async def scenario() -> None:
+        await emitter.drain()
+        await emitter.close()
+
+    # Must not raise and the event still reaches the regular sink.
+    asyncio.run(scenario())
+    assert [e.type for e in sink.events] == ["step.started"]
+
+
 def test_queue_full_drops_event_without_raising() -> None:
     sink = _TrackingSink()
     emitter = ExecutionEventEmitter(

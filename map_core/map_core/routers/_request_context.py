@@ -1,13 +1,12 @@
 """Request-boundary RunContext wiring shared by the chat routers.
 
-The three chat routers install a ``RunContext`` around the request-handling
+The chat routers install a ``RunContext`` around the request-handling
 block (route body for non-stream endpoints, stream-iteration body for SSE
-endpoints) and attach the production legacy Mongo sink to the request-level
-emitter.  Sandbox routes are intentionally not touched.
+endpoints).  Sandbox routes are intentionally not touched.
 
 Internal service routes (execution_router) use
 :func:`build_service_run_context` instead: they freeze run_id/attempt from
-the validated path parameters and never attach the legacy Mongo sink.
+the validated path parameters.
 """
 
 from __future__ import annotations
@@ -19,9 +18,7 @@ from uuid import UUID, uuid4
 
 from fastapi import Request
 
-from ..main import attach_legacy_event_sink
 from ..service.execution_event import (
-    ExecutionEventEmitter,
     RunContext,
     coerce_uuid,
     set_run_context,
@@ -94,7 +91,7 @@ def request_run_context(
     *,
     staff_code: str | None = None,
 ) -> Iterator[RunContext]:
-    """Install a RunContext and attach the production legacy sink."""
+    """Install a RunContext for the request."""
     run_context = build_run_context(http_request, staff_code=staff_code)
     with set_run_context(
         run_id=run_context.run_id,
@@ -104,6 +101,4 @@ def request_run_context(
         session_id=run_context.session_id,
         staff_code=run_context.staff_code,
     ):
-        emitter = ExecutionEventEmitter.current()
-        attach_legacy_event_sink(emitter)
         yield run_context

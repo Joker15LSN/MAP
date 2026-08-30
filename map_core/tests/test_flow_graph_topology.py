@@ -18,11 +18,6 @@ from map_core.service.flow_domain import FlowDomain
 from map_core.service.skill_hub import SkillMountPlan
 
 
-class _DummyStateStore:
-    async def record_event(self, **_: Any) -> None:
-        return None
-
-
 async def _collect_events(stream: AsyncGenerator[Any, None]) -> list[Any]:
     rows: list[Any] = []
     with set_run_context(run_id=uuid.uuid4()):
@@ -34,7 +29,6 @@ async def _collect_events(stream: AsyncGenerator[Any, None]) -> list[Any]:
 def test_flow_graph_runs_in_dependency_order(monkeypatch) -> None:
     request = FlowChatRequest(query="跨域串行")
     flow_domain = FlowDomain(request=request)
-    flow_domain.global_domain.state_store = _DummyStateStore()
 
     scenario = ScenarioPackSchema(
         scenario_id="cross_domain_serial_analysis",

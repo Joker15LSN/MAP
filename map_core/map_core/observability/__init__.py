@@ -1,8 +1,8 @@
 """MAP OpenTelemetry observability package.
 
 Provides TracerProvider configuration (OTLP grpc/http), log-to-span-event
-bridging and a minimal ASGI SERVER span middleware. Coexists with the Mongo
-event system; it never replaces it.
+bridging and a minimal ASGI SERVER span middleware. Coexists with the typed
+execution event stream; it never replaces it.
 """
 
 from .asgi import OpenTelemetryASGIMiddleware

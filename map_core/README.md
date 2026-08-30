@@ -3,10 +3,10 @@
 Core 负责场景选择、Agent 调度、模型/工具调用、Flow 执行和 typed 流输出。它不面向浏览器；
 生产由 BFF/Worker 通过受保护的内部网络调用。
 
-当前模块仍保留 legacy 与 AgentScope 双引擎，并直接保存部分 Mongo 运行记录和沙箱 ledger。
-目标边界是消费不可变 Runtime Snapshot、返回 typed events/results，而不直接写 Canonical
-Run/Event 事实。详见 [`docs/SDD.md`](../docs/SDD.md) 与
-[`docs/TDD.md`](../docs/TDD.md#4-core-技术设计)。
+当前模块仍保留 legacy 与 AgentScope 双引擎，并通过 typed execution event 流输出运行观测；
+Mongo 仅用于 agent memory（可选）。目标边界是消费不可变 Runtime Snapshot、返回 typed
+events/results，而不直接写 Canonical Run/Event 事实。详见 [`docs/SDD.md`](../docs/SDD.md)
+与 [`docs/TDD.md`](../docs/TDD.md#4-core-技术设计)。
 
 ## 当前职责
 
@@ -15,7 +15,7 @@ Run/Event 事实。详见 [`docs/SDD.md`](../docs/SDD.md) 与
 - AgentRuntime：按 `MAP_AGENT_ENGINE` 选择 legacy 或 AgentScope；
 - Model/Tool/MCP 调用与统一运行身份传播；
 - OpenSandbox client、身份、ledger、fencing 和 crash recovery；
-- Mongo 运行记录与可选 OTel trace；
+- Typed execution event 流与可选 OTel trace；
 - 健康与受服务身份保护的 sandbox/internal 入口。
 
 `python_exec_tool`、`bash_tool`、本地文件和宿主 stdio MCP 能力已删除或 fail-closed。生产不得

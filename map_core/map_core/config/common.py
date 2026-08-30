@@ -176,16 +176,12 @@ POSTGRES_CONFIG = {
 
 # MongoDB 配置（可通过环境变量覆盖，便于容器化部署）
 # P0-SEC-01: same policy — the URI must be injected via environment.
+# Step 8 PR-K8: Core no longer writes telemetry collections; this config is
+# only for the agent-session memory store.
 MONGODB_CONFIG = {
     "uri": os.getenv("MONGODB_URI", ""),
     "database": os.getenv("MONGODB_DATABASE", "map_db_dev"),
 }
-
-# Collections for the three-way event routing in MongoAgentStateHandler
-MONGODB_AGENT_EXECUTIONS_COLLECTION = "agent_executions"
-MONGODB_TOOL_CALL_COLLECTION = "tool_call_records"
-MONGODB_REQUEST_COLLECTION = "request_records"
-MONGODB_LLM_CALL_COLLECTION = "llm_call_records"
 
 # Agents memory
 MONGODB_AGENT_MEMORY_COLLECTION = "agent_session_memories"

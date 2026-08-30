@@ -34,11 +34,6 @@ SNAPSHOT_ID = "00000000-0000-0000-0000-000000000001"
 DIGEST = "a" * 64
 
 
-class _DummyStateStore:
-    async def record_event(self, **_: Any) -> None:
-        return None
-
-
 class _RaisingProvider:
     def __init__(self, exc: RuntimeSnapshotError) -> None:
         self._exc = exc
@@ -89,7 +84,6 @@ def test_pipeline_stream_fails_closed_without_global_fallback(exc, code) -> None
         request=request,
         flow_config_provider=provider,  # type: ignore[arg-type]
     )
-    flow_domain.global_domain.state_store = _DummyStateStore()
     fallback_called = False
 
     async def fake_global_stream(_: Any):
@@ -145,7 +139,6 @@ def test_router_injected_runtime_headers_reach_provider() -> None:
         http_request=http_request,
         flow_config_provider=provider,  # type: ignore[arg-type]
     )
-    flow_domain.global_domain.state_store = _DummyStateStore()
     flow_domain.global_domain._prepare_runtime_request = lambda incoming: incoming
 
     events = asyncio.run(

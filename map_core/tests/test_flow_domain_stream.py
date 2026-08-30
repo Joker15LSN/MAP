@@ -18,11 +18,6 @@ from map_core.service.flow_domain import FlowDomain
 from map_core.service.skill_hub import SkillMountPlan
 
 
-class _DummyStateStore:
-    async def record_event(self, **_: Any) -> None:
-        return None
-
-
 async def _collect_events(stream: AsyncGenerator[Any, None]) -> list[Any]:
     items: list[Any] = []
     with set_run_context(run_id=uuid.uuid4()):
@@ -34,7 +29,6 @@ async def _collect_events(stream: AsyncGenerator[Any, None]) -> list[Any]:
 def test_flow_domain_success_path_with_expected_phases(monkeypatch) -> None:
     request = FlowChatRequest(query="订单确认收入")
     flow_domain = FlowDomain(request=request)
-    flow_domain.global_domain.state_store = _DummyStateStore()
 
     scenario = ScenarioPackSchema(
         scenario_id="order_revenue_confirmation",
@@ -129,7 +123,6 @@ def test_flow_domain_success_path_with_expected_phases(monkeypatch) -> None:
 def test_flow_domain_fallback_to_global_domain_when_no_scenario(monkeypatch) -> None:
     request = FlowChatRequest(query="普通问答")
     flow_domain = FlowDomain(request=request)
-    flow_domain.global_domain.state_store = _DummyStateStore()
 
     monkeypatch.setattr(flow_domain.global_domain, "_prepare_runtime_request", lambda incoming: incoming)
     monkeypatch.setattr(
@@ -184,7 +177,6 @@ def test_flow_domain_hard_fail_when_fallback_disabled(monkeypatch) -> None:
         flow_config=FlowConfigSchema(fallback_to_global=False),
     )
     flow_domain = FlowDomain(request=request)
-    flow_domain.global_domain.state_store = _DummyStateStore()
 
     monkeypatch.setattr(flow_domain.global_domain, "_prepare_runtime_request", lambda incoming: incoming)
     monkeypatch.setattr(

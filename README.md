@@ -39,7 +39,7 @@ MAP 是一个面向企业场景的多智能体应用平台。它把业务 UI、�
 - 安全边界：可信代理身份、服务身份、workspace/user 所有权隔离、集中授权和标准错误 envelope。
 - 异步执行：独立 worker、短事务 heartbeat、lease/attempt fencing、崩溃回收和副作用 ledger。
 - 不可抵赖审计：所有管理写操作经过 mutation 编排，并写入 append-only hash chain。
-- 端到端观测：Mongo 请求/智能体/工具记录，独立观测前后端，以及可选的 BFF → map_core 分布式追踪。
+- 端到端观测：typed execution event 流、独立观测前后端，以及可选的 BFF → map_core 分布式追踪。
 - 可复现质量门禁：冻结依赖、后端 Ruff/pytest、前端 test/build、bundle、依赖审计和 Compose 跨服务 E2E。
 
 ## 系统架构（当前过渡实现）
@@ -57,7 +57,7 @@ flowchart LR
     Worker --> Core
     Migrator["一次性 Migrator"] --> PG
 
-    Core --> Mongo[("MongoDB<br/>运行记录")]
+    Core -. "agent memory（可选）" .-> Mongo[("MongoDB")]
     Core --> LLM["LLM / MCP / 外部工具"]
     Core --> PG
 
@@ -122,7 +122,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | workspace、会话、消息、反馈、job、outbox、mutation、审计链 | PostgreSQL `map_control` schema | BFF、worker、migrator | BFF、worker、运维工具 |
 | 管理配置当前快照 | `map_control.admin_state` 单行 + `runtime_snapshots` | BFF `RuntimeSnapshotService` | BFF、map_core 运行时快照消费者 |
-| request/agent/tool/LLM 运行记录 | MongoDB `map_db_dev` | map_core | 观测后端、E2E 交叉验证 |
+| request/agent/tool/LLM 运行记录（历史） | MongoDB `map_db_dev` | 已停止应用写入（Step 8 PR-K8） | 观测后端、E2E 交叉验证 |
 | trace/span | OTel Collector → Jaeger（可选） | BFF、map_core | Jaeger、E2E |
 
 PostgreSQL 使用三个角色分权：
@@ -261,7 +261,7 @@ MAP_OTEL_ENDPOINT=http://otel-collector:4317
 - master pipeline：`/master_pipeline/*`；
 - 健康检查：`/health`、`/status`。
 
-map_core 会把请求、智能体、工具和 LLM 运行记录写入 MongoDB，观测服务通过相同 `request_id`/`trace_id` 关联查询。
+map_core 自 Step 8 PR-K8 起不再写入 Mongo 运行记录（`agent_session_memories` 除外）；观测服务通过相同 `request_id`/`trace_id` 关联查询历史记录，实时运行观测走 typed execution event 流与 OTel。
 
 ## 身份与权限
 

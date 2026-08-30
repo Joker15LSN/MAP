@@ -10,6 +10,10 @@ This test boots the *real* application lifespan with fake DB clients and
 asserts that startup connectivity verification and shutdown cleanup are now
 driven explicitly from the lifespan. It failed before the fix (AttributeError
 on startup) and passes after.
+
+Step 8 PR-K8: MongoDB became an optional boot dependency.  The same
+lifespan must boot without a usable MONGODB_CONFIG and must only call
+``verify_startup`` when a Mongo client was actually configured.
 """
 
 from __future__ import annotations
@@ -28,8 +32,9 @@ class _FakeDbClient:
     def __init__(self, *args, **kwargs) -> None:
         self.events: list[str] = []
 
-    async def verify_startup(self) -> None:
+    async def verify_startup(self) -> bool:
         self.events.append("verify")
+        return True
 
     async def close(self) -> None:
         self.events.append("close")
@@ -51,6 +56,11 @@ def _clear_app_state():
 def test_app_lifespan_boots_and_cleans_up(
     monkeypatch: pytest.MonkeyPatch, _clear_app_state
 ) -> None:
+    monkeypatch.setattr(
+        mongodb_module.app_config,
+        "MONGODB_CONFIG",
+        {"uri": "mongodb://fake:27017", "database": "map_db_dev"},
+    )
     pg_instances: list[_FakeDbClient] = []
     mongo_instances: list[_FakeDbClient] = []
 
@@ -78,3 +88,30 @@ def test_app_lifespan_boots_and_cleans_up(
     # Shutdown must close both clients exactly once.
     assert pg_instances[0].events == ["verify", "close"]
     assert mongo_instances[0].events == ["verify", "close"]
+
+
+def test_app_lifespan_boots_without_mongo_config(
+    monkeypatch: pytest.MonkeyPatch, _clear_app_state
+) -> None:
+    monkeypatch.setattr(
+        mongodb_module.app_config,
+        "MONGODB_CONFIG",
+        {"uri": "", "database": "map_db_dev"},
+    )
+    mongo_instances: list[_FakeDbClient] = []
+
+    def _mongo_factory(*args, **kwargs) -> _FakeDbClient:
+        client = _FakeDbClient()
+        mongo_instances.append(client)
+        return client
+
+    monkeypatch.setattr(mongodb_module, "MongoClient", _mongo_factory)
+
+    with TestClient(app) as client:
+        response = client.get("/openapi.json")
+        assert response.status_code == 200
+        # No Mongo client may be configured when the URI is empty.
+        assert mongo_instances == []
+        assert not hasattr(app.state, "mongodb_client")
+
+    assert mongo_instances == []

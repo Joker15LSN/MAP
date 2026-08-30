@@ -112,13 +112,13 @@ Message 生命周期迁移到 Canonical Run，而不是永久保留两套执行�
 
 ## 8. 跟一遍观测查询
 
-1. Core 运行记录：`map_core/map_core/service/state_store.py` 与 `observability/`
+1. Core 运行观测：`map_core/map_core/service/execution_event.py`（typed execution events）与 `observability/`
 2. 观测 API：`map-observability/map-observability-backend/app/main.py`
 3. 查询模块：观测后端 `app/services/requests.py`、`llm_calls.py`、`correlation_service.py`
 4. 观测 UI：`map-observability/map-observability-frontend/src/pages/`
 5. 共享树：`packages/map-tree-core/src/RequestCallTree.tsx`
 
-Mongo 与 OTel 当前并存。不要假设两者已经由 Canonical Event 完全统一。
+Mongo 历史观测与 OTel 当前并存。Core 自 Step 8 PR-K8 起不再写入 telemetry 集合（`agent_session_memories` 除外），观测后端仍读取历史集合；实时观测以 typed execution event 流与 OTel 为准。
 
 ## 9. 第一次本地验证
 

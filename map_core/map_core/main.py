@@ -164,35 +164,6 @@ def load_config():
     return cfg
 
 
-_legacy_execution_sink: object | None = None
-
-
-def attach_legacy_event_sink(emitter: object) -> None:
-    """Attach the production legacy Mongo sink to a request-level emitter.
-
-    The sink is created lazily on first use: without a usable Mongo config
-    the emitter gets a Null sink (fail-closed for the legacy projection, the
-    typed stream is unaffected).  The legacy handler is a process-wide
-    singleton so every request emitter shares one connection pool.
-    """
-    global _legacy_execution_sink
-    if _legacy_execution_sink is None:
-        from . import config as app_config
-        from .service.execution_event import NullExecutionEventSink
-        from .service.legacy_event_sink import LegacyMongoEventSink
-        from .service.state_store import MongoAgentStateHandler
-
-        mongo_cfg = getattr(app_config, "MONGODB_CONFIG", None)
-        if not mongo_cfg or "uri" not in mongo_cfg:
-            _legacy_execution_sink = NullExecutionEventSink()
-        else:
-            _legacy_execution_sink = LegacyMongoEventSink(MongoAgentStateHandler())
-    attach = getattr(emitter, "attach_sink", None)
-    if attach is not None:
-        attach(_legacy_execution_sink)
-
-
-
 def _resolve_default_workers() -> int:
     env = _ensure_env()
     module_name = {
@@ -230,9 +201,16 @@ async def lifespan(app: FastAPI):
     # FastAPI >= 0.141 removed `add_event_handler`, so startup connectivity
     # verification and shutdown cleanup are driven explicitly from lifespan.
     pg_client = setup_postgres(app, config=cfg.POSTGRES_CONFIG)
-    mongo_client = setup_mongodb(app, config=cfg.MONGODB_CONFIG)
     await pg_client.verify_startup()
-    await mongo_client.verify_startup()
+
+    # Step 8 PR-K8: Mongo is optional at boot.  The only remaining core
+    # Mongo consumer is agent memory; without a configured URI (or when the
+    # ping fails) the app must still boot, and Mongo-backed adapters simply
+    # degrade per-request.
+    mongo_client = setup_mongodb(app, config=cfg.MONGODB_CONFIG)
+    if mongo_client is not None and not await mongo_client.verify_startup():
+        delattr(app.state, "mongodb_client")
+        mongo_client = None
 
     from .utils.map_logger import init_logger
 
@@ -247,7 +225,6 @@ async def lifespan(app: FastAPI):
     from .routers.sandbox_router import sandbox_router
     from .routers.system_router import system_router
     from .service import sandbox_tools
-    from .service.state_store import GlobalAgentStateStore
 
     app.include_router(system_router)
     app.include_router(global_domain_router)
@@ -256,9 +233,6 @@ async def lifespan(app: FastAPI):
     app.include_router(openapi_router)
     app.include_router(sandbox_router)
     app.include_router(execution_router)
-
-    GlobalAgentStateStore.instance().start()
-    logger.info("[PID: {}] EventDispatcher started.", os.getpid())
 
     # S5-01: the durable OpenSandbox reconciler converges crashed
     # non-terminal invocations (owner died between a remote create/execute
@@ -283,10 +257,6 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        state_store = GlobalAgentStateStore.maybe_instance()
-        if state_store is not None:
-            await state_store.close()
-
         # S5-01: stop the reconciler first, then close the sandbox ledger
         # pool so a stopping process never leaks pooled connections.
         if sandbox_reconciler_task is not None:

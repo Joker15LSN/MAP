@@ -13,9 +13,7 @@ Design A, frozen by the run.md contract work:
   await delivery.  When the queue is full the event is dropped with a
   warning, matching the legacy async dispatcher queue-full semantics.
 
-This module is core plumbing only.  K3/K4 will register real sinks and
-replace the legacy ``GlobalAgentStateStore`` callers; nothing in this
-commit changes production call sites.
+This module is core plumbing for the typed execution event stream.
 """
 
 from __future__ import annotations
@@ -33,6 +31,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 from loguru import logger
+from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..observability import current_trace_context
@@ -296,13 +295,52 @@ class NdjsonExecutionEventSink:
 
 
 class NullExecutionEventSink:
-    """No-op sink used as the emitter default until K3/K4 wire real sinks."""
+    """No-op sink used as the emitter default when no consumer is attached."""
 
     async def emit(self, event: CoreExecutionEvent) -> None:
         return None
 
     async def aclose(self) -> None:
         return None
+
+
+_OTEL_ATTRIBUTE_MAX_CHARS = 128
+
+
+def _redact_otel_attribute(value: Any) -> str:
+    """Project a data field to a short, redacted span attribute.
+
+    Only a handful of event fields are projected (never the full ``data``
+    payload); values are sanitized with the same log-redaction entrypoint
+    used by the OTel log bridge, then capped so a pathological value cannot
+    bloat a span.
+    """
+    from ..observability.telemetry import _sanitize_log_message
+
+    return _sanitize_log_message(value)[:_OTEL_ATTRIBUTE_MAX_CHARS]
+
+
+class OtelEventProjector:
+    """Internal synchronous sink: project typed events onto the active span.
+
+    Runs at the ``ExecutionEventEmitter.emit`` call site (inside the request
+    task) so the current span is still active.  Only ``type`` and, when the
+    event data carries them, ``component`` / ``status`` are added as
+    attributes under the ``map.execution_event`` span event; ``data`` is
+    never written in full.  With no active/recording span this is a no-op.
+    """
+
+    def project(self, event: CoreExecutionEvent) -> None:
+        span = trace.get_current_span()
+        if not span.is_recording():
+            return
+
+        attributes: dict[str, str] = {"type": event.type}
+        for field in ("component", "status"):
+            value = event.data.get(field)
+            if isinstance(value, str) and value.strip():
+                attributes[field] = _redact_otel_attribute(value)
+        span.add_event("map.execution_event", attributes=attributes)
 
 
 class ExecutionEventEmitter:
@@ -328,6 +366,7 @@ class ExecutionEventEmitter:
     ) -> None:
         self._run_context = run_context
         self._sinks: list[ExecutionEventSink] = list(sinks) or [NullExecutionEventSink()]
+        self._otel_projector = OtelEventProjector()
         self._queue: asyncio.Queue[CoreExecutionEvent | None] = asyncio.Queue(
             maxsize=queue_size
         )
@@ -406,6 +445,15 @@ class ExecutionEventEmitter:
             span_id=trace_ctx.get("span_id"),
             data=json_safe_data,
         )
+        try:
+            self._otel_projector.project(event)
+        except Exception:
+            logger.debug(
+                "OtelEventProjector failed for {} seq={}",
+                event.type,
+                event.seq,
+                exc_info=True,
+            )
         self._enqueue(event)
         return event
 

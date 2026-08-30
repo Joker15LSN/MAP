@@ -126,8 +126,6 @@ def test_legacy_concurrent_timeout_marks_span_error(monkeypatch) -> None:
     owner = SimpleNamespace(
         name="LegacyAgent",
         agent_display_name="Legacy Agent",
-        state_store=None,
-        state_id=None,
         record_tool_result=lambda **kwargs: recorded_results.append(kwargs),
         record_tool_call=lambda **kwargs: None,
     )
