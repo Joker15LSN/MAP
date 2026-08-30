@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-08-30T12:34:06.370282+00:00",
+  "freeze_sha": "0eb61ed203ddb3934889d4d7ca266717926392a4",
+  "current": {
+    "manifest_count": 145,
+    "superseded": 0,
+    "example": "P1-EVAL-01/AC-EVAL-02"
+  },
+  "historical_freeze_shas": [
+    "03ad82a69d70540bb868ceeb644a52e4caed4338",
+    "16b6b3c565197555b7f56ad7b06570e54a0697fd",
+    "1feb804c198e377b589b7c46aade9857adc3a7aa",
+    "30d04e5faa621c7ca15e724e6a1c767741f01ad9",
+    "5b188eaf18518c7741bb92716b4f5bf717d1967e",
+    "61e265a1d7bf5a3fee69ae60d1d3b1273b7aec85",
+    "98937df8a0aac7b42ea6fababa988978f4892d01",
+    "ab8adff6088a2d22a3f04b3c375dfc8faed22530",
+    "c5a3a03e6ed04ffc5d2eba7ec9a6e6cddcfa5565",
+    "d7a1c346be890aae9418ef248c0b0675bd80b6c2",
+    "d7b71d3dfdfbed6c394ede07506b34f9ed62a041",
+    "dd785a251dcb95dc53b8713cd5d0e9ca0e1949c5",
+    "eb9158011d86ac57803df33a643f72e619630db6",
+    "f99ce0caa513401537edfdb43d431a109e4d52de"
+  ],
+  "tracked_file_count": 6819,
+  "archive_command": "tar -C /Users/liusongnan/MAP -czf acceptance-history-<date>.tar.gz --exclude='tmp/acceptance/0eb61ed203ddb3934889d4d7ca266717926392a4' tmp/acceptance/03ad82a69d70540bb868ceeb644a52e4caed4338 tmp/acceptance/16b6b3c565197555b7f56ad7b06570e54a0697fd tmp/acceptance/1feb804c198e377b589b7c46aade9857adc3a7aa tmp/acceptance/30d04e5faa621c7ca15e724e6a1c767741f01ad9 tmp/acceptance/5b188eaf18518c7741bb92716b4f5bf717d1967e tmp/acceptance/61e265a1d7bf5a3fee69ae60d1d3b1273b7aec85 tmp/acceptance/98937df8a0aac7b42ea6fababa988978f4892d01 tmp/acceptance/ab8adff6088a2d22a3f04b3c375dfc8faed22530 tmp/acceptance/c5a3a03e6ed04ffc5d2eba7ec9a6e6cddcfa5565 tmp/acceptance/d7a1c346be890aae9418ef248c0b0675bd80b6c2 tmp/acceptance/d7b71d3dfdfbed6c394ede07506b34f9ed62a041 tmp/acceptance/dd785a251dcb95dc53b8713cd5d0e9ca0e1949c5 tmp/acceptance/eb9158011d86ac57803df33a643f72e619630db6 tmp/acceptance/f99ce0caa513401537edfdb43d431a109e4d52de",
+  "policy": "TODO/retention/acceptance-evidence-retention.md"
+}

@@ -1,5 +1,10 @@
 # MAP 基于 AgentScope 2.0 的引擎改造与 OpenTelemetry 可观测性建设 —— 评估与改造计划
 
+> **状态：Superseded（2026-08-30）**。本文是 Step 5 前的评估快照，已被
+> [`代码精简与可读性改造执行计划.md`](代码精简与可读性改造执行计划.md)、
+> [`下一开发阶段_多智能体运行时收敛与观测融合_黄金任务书.md`](下一开发阶段_多智能体运行时收敛与观测融合_黄金任务书.md)
+> 与 SPEC/ADR 取代；仅作历史审计保留，不作为当前事实。
+
 > 版本：v1.0（2026-08-07）
 > 参考实现：`/Users/liusongnan/hgt-2`（分支 `qoder/dev-lsn`，AgentScope `2.0.4` + OTel 已落地验证）
 > 改造对象：`/Users/liusongnan/MAP`（重点为 `map_core`，联动 `map-observability`）
