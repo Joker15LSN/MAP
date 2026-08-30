@@ -136,7 +136,10 @@ Checkpoint/ArtifactRef 表在获得第一个 production writer 的步骤按需�
 - `flow_domain_router.py`：心流执行；
 - `sandbox_router.py`：受控沙箱入口；
 - `system_router.py`：健康与系统信息；
-- `master_pipeline_router.py`：主编排入口。
+- `master_pipeline_router.py`：主编排入口；
+- `execution_router.py`：service-identity NDJSON typed event 流；
+- `runtime_transport.py`：ingress 的唯一 header/state/RunContext/SSE/error
+  投影边界（Step 9 候选 1），router 不得再保留局部重复 helper。
 
 这些 router 不应成为执行策略的第二事实源。运行身份从入口冻结后，应通过显式上下文传播，
 避免从模块级全局变量重新推导。
