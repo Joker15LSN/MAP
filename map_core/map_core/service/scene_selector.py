@@ -836,8 +836,6 @@ class SceneSelector:
         route_items: list[dict[str, Any]] = []
         try:
             with llm_trace_context(
-                state_store=getattr(observer, "state_store", None),
-                state_id=getattr(observer, "state_id", None),
                 request_id=(getattr(observer, "base_state", {}) or {}).get("request_id")
                 if isinstance(getattr(observer, "base_state", None), dict)
                 else None,

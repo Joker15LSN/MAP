@@ -1189,11 +1189,6 @@ class ModelInvocation:
         otel_span: Span | None = None,
     ) -> None:
         trace_context = get_llm_trace_context()
-        state_store = trace_context.get("state_store")
-        state_id = trace_context.get("state_id")
-        if state_store is None or not state_id:
-            return
-
         payload = self._build_llm_call_payload(
             trace_context=trace_context,
             messages=messages,
@@ -1206,16 +1201,16 @@ class ModelInvocation:
             usage=usage,
         )
         self._attach_llm_span_context(payload, otel_span)
+        event_type = {
+            "success": "model.invocation_succeeded",
+            "failed": "model.invocation_failed",
+            "cancelled": "model.invocation_failed",
+            "unknown": "model.invocation_unknown",
+        }.get(status, "model.invocation_unknown")
         try:
-            from ...service.state_store import fire_and_forget
+            from ...service.execution_event import ExecutionEventEmitter
 
-            fire_and_forget(
-                state_store.record_event(
-                    state_id=str(state_id),
-                    event_type="llm_call",
-                    payload=payload,
-                )
-            )
+            ExecutionEventEmitter.current().emit(event_type, data=payload)
         except Exception:
             self.logger.debug("LLM trace recording skipped", exc_info=True)
 

@@ -9,7 +9,6 @@ from ...schema.state_event_schema import ToolCallData, ToolResultData
 from ...utils.model_invocation import ModelInvocation
 from ...utils.serialization import safe_serialize
 from ..execution_event import ExecutionEventEmitter
-from ..state_store import GlobalAgentStateStore
 from .base import AgentExecutionCancelled, AgentRequest, AgentResult, BaseAgent
 
 
@@ -23,8 +22,6 @@ class TraceableAgent(BaseAgent):
         self, llm: ModelInvocation, name: str = "TraceableAgent", aid: str | None = None
     ) -> None:
         super().__init__(llm, name=name)
-        self.state_store: GlobalAgentStateStore | None = None
-        self.state_id: str | None = None
         self.aid = aid or secrets.token_hex(10)
         self.parid: str = "-"
         self.cancel_event: asyncio.Event | None = None
@@ -33,11 +30,6 @@ class TraceableAgent(BaseAgent):
         """Raise :class:`AgentExecutionCancelled` when the cancel event is set."""
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise AgentExecutionCancelled("cancelled")
-
-    def set_execution_context(self, state_store: GlobalAgentStateStore, state_id: str):
-        """K3 compatibility shim: retain legacy context without using it."""
-        self.state_store = state_store
-        self.state_id = state_id
 
     def _record_runtime_event(self, event_type: str, payload: dict[str, Any]):
         """Low-level typed recording method using the request emitter."""

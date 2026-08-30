@@ -20,7 +20,7 @@ from typing import Any, Protocol, runtime_checkable
 from agentscope.message import Msg, ToolResultBlock
 
 from ...observability import get_tracer
-from ..state_store import safe_serialize
+from ...utils.serialization import safe_serialize
 
 _tracer = get_tracer(__name__)
 

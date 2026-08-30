@@ -10,11 +10,11 @@ from loguru import logger
 
 from ...schema.state_event_schema import AgentEventSchema
 from ...utils.model_invocation import ModelInvocation, ModelInvocationRequest
+from ...utils.serialization import safe_serialize
 from ..prompt.tool_call_prompt import (
     SCENE_POST_SUMMARY_SYSTEM_PROMPT,
     SCENE_POST_SUMMARY_USER_PROMPT_TEMPLATE,
 )
-from ..state_store import safe_serialize
 from .base import AgentRequest, AgentResult
 from .tool_call_session import ToolCallSession
 from .traceable_agent import TraceableAgent

@@ -15,6 +15,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from map_core.config.config_schema import LLMConfig
+from map_core.service.execution_event import set_run_context
 from map_core.utils.llm_trace_context import llm_trace_context
 from map_core.utils.model_invocation import (
     ModelInvocation,
@@ -26,14 +27,7 @@ from tests.model_invocation.scripted_provider import (
     ScriptedProvider,
     completion_payload,
 )
-
-
-class _CapturingStore:
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict]] = []
-
-    async def record_event(self, *, state_id, event_type, payload):
-        self.events.append((event_type, payload))
+from tests.run_context_utils import make_run_context_sink
 
 
 def _config() -> LLMConfig:
@@ -62,7 +56,8 @@ def _llm_spans(exporter: InMemorySpanExporter):
 
 
 async def _scenario(
-    store: _CapturingStore,
+    run_context,
+    sink,
     exporter: InMemorySpanExporter,
     *,
     tools: bool,
@@ -83,8 +78,6 @@ async def _scenario(
         request["tools"] = [{"type": "function", "function": {"name": "search"}}]
 
     with llm_trace_context(
-        state_store=store,
-        state_id="state-1",
         agent_code="TestAgent",
         agent_name="Test Agent",
         component="test",
@@ -93,13 +86,14 @@ async def _scenario(
         call_kind="tool_selection" if tools else "chat",
     ):
         with otel_trace.get_tracer("test").start_as_current_span("request.parent"):
-            await invocation.invoke(ModelInvocationRequest(**request))
+            with set_run_context(run_id=run_context.run_id):
+                await invocation.invoke(ModelInvocationRequest(**request))
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
 
 def _assert_event_binds_llm_span(
-    store: _CapturingStore, exporter: InMemorySpanExporter
+    sink, exporter: InMemorySpanExporter
 ) -> None:
     llm_spans = _llm_spans(exporter)
     assert len(llm_spans) == 1
@@ -110,24 +104,28 @@ def _assert_event_binds_llm_span(
     assert parent_like, "parent span must be exported"
     parent_span_id = format(parent_like[0].context.span_id, "016x")
 
-    llm_events = [payload for kind, payload in store.events if kind == "llm_call"]
-    assert llm_events, "llm_call Mongo event must be recorded"
-    assert llm_events[0]["span_id"] == actual_span_id
-    assert llm_events[0]["span_id"] != parent_span_id
+    llm_events = [
+        event for event in sink.events if event.type.startswith("model.invocation_")
+    ]
+    assert llm_events, "model.invocation_* event must be recorded"
+    assert llm_events[0].data["span_id"] == actual_span_id
+    assert llm_events[0].data["span_id"] != parent_span_id
 
 
 def test_ainvoke_mongo_event_binds_actual_llm_span(monkeypatch) -> None:
     exporter = _install_tracer(monkeypatch)
-    store = _CapturingStore()
-    asyncio.run(_scenario(store, exporter, tools=False))
-    _assert_event_binds_llm_span(store, exporter)
+    run_context, sink = make_run_context_sink()
+    asyncio.run(_scenario(run_context, sink, exporter, tools=False))
+    _assert_event_binds_llm_span(sink, exporter)
 
 
 def test_ask_tool_mongo_event_binds_actual_llm_span(monkeypatch) -> None:
     exporter = _install_tracer(monkeypatch)
-    store = _CapturingStore()
-    asyncio.run(_scenario(store, exporter, tools=True))
-    _assert_event_binds_llm_span(store, exporter)
+    run_context, sink = make_run_context_sink()
+    asyncio.run(_scenario(run_context, sink, exporter, tools=True))
+    _assert_event_binds_llm_span(sink, exporter)
 
-    llm_events = [payload for kind, payload in store.events if kind == "llm_call"]
-    assert llm_events[0]["call_kind"] == "tool_selection"
+    llm_events = [
+        event for event in sink.events if event.type.startswith("model.invocation_")
+    ]
+    assert llm_events[0].data["call_kind"] == "tool_selection"

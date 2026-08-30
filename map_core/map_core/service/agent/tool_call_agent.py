@@ -14,6 +14,7 @@ from ...utils.model_invocation import (
     ModelInvocationOutcome,
     ModelInvocationRequest,
 )
+from ...utils.serialization import safe_serialize
 from ..prompt.tool_call_prompt import (
     NEXT_STEP_PROMPT,
     SCENE_POST_SUMMARY_SYSTEM_PROMPT,  # noqa: F401  # public re-export seam
@@ -21,7 +22,6 @@ from ..prompt.tool_call_prompt import (
     SYSTEM_PROMPT,
     UPLOADED_KB_FILE_SYSTEM_PROMPT_TEMPLATE,
 )
-from ..state_store import safe_serialize
 from .base import AgentActionEvent, AgentRequest, AgentResult, ExecutionResult
 from .tool_call_exit import ScenePostSummaryRuntimeConfig, ToolCallExitHandler
 from .tool_call_session import ToolCallSession
@@ -499,8 +499,6 @@ class ToolCallAgent(TraceableAgent):
             )
             self.check_cancelled()
             with llm_trace_context(
-                state_store=self.state_store,
-                state_id=self.state_id,
                 agent_code=self.name,
                 agent_name=self.agent_display_name,
                 component=self.name,

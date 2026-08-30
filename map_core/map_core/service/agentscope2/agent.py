@@ -24,6 +24,7 @@ from agentscope.tool import ToolBase, Toolkit
 from loguru import logger
 
 from ...utils.global_context import agent_log_context
+from ...utils.serialization import safe_serialize
 from ..agent.base import AgentActionEvent, AgentRequest, AgentResult, ExecutionResult
 from ..agent.tool_call_exit import (
     ScenePostSummaryRuntimeConfig,
@@ -37,7 +38,6 @@ from ..prompt.tool_call_prompt import (
     NEXT_STEP_PROMPT,
     UPLOADED_KB_FILE_SYSTEM_PROMPT_TEMPLATE,
 )
-from ..state_store import safe_serialize
 from .event import model_usage
 from .message import (
     map_history_to_agentscope,

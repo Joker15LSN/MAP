@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Awaitable, Callable, override
 
 from ...utils.global_context import agent_log_context
-from ..state_store import safe_serialize
+from ...utils.serialization import safe_serialize
 from .base import AgentRequest, AgentResult, BaseAgent, ExecutionResult, ToolResult
 from .traceable_agent import TraceableAgent
 
@@ -275,12 +275,6 @@ class AgentTool(Tool):
         if self._agent_factory is None:
             raise RuntimeError(f"Tool '{self.name}' has no agent factory")
         agent = self._agent_factory()
-
-        state_store = getattr(request, "state_store", None)
-        state_id = getattr(request, "state_id", None)
-
-        if state_store and state_id and isinstance(agent, TraceableAgent):
-            agent.set_execution_context(state_store, state_id)
 
         query = args.get("query", request.query)
         staff_code = args.get("staff_code", request.staff_code)

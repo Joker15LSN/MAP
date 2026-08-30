@@ -335,18 +335,7 @@ class ToolExecutor:
                 and agent_instance is not None
                 and tool_request is not None
             ):
-                if (
-                    isinstance(agent_instance, TraceableAgent)
-                    and self.owner.state_store is not None
-                    and self.owner.state_id is not None
-                ):
-                    agent_instance.set_execution_context(
-                        self.owner.state_store,
-                        self.owner.state_id,
-                    )
                 with llm_trace_context(
-                    state_store=self.owner.state_store,
-                    state_id=self.owner.state_id,
                     agent_code=self.owner.name,
                     agent_name=self.owner.agent_display_name,
                     component=tool_name,
@@ -357,8 +346,6 @@ class ToolExecutor:
                     result = await tool._run_prepared(agent_instance, tool_request, parid)
             else:
                 with llm_trace_context(
-                    state_store=self.owner.state_store,
-                    state_id=self.owner.state_id,
                     agent_code=self.owner.name,
                     agent_name=self.owner.agent_display_name,
                     component=tool_name,

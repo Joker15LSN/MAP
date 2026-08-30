@@ -19,7 +19,7 @@ from agentscope.message import (
 )
 
 from ...schema.agent_schema import Message
-from ..state_store import safe_serialize
+from ...utils.serialization import safe_serialize
 
 
 def _history_item_to_dict(item: Message | dict[str, Any] | Any) -> dict[str, Any]:

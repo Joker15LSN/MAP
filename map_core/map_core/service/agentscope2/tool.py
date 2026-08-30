@@ -12,10 +12,10 @@ from agentscope.permission import (
 )
 from agentscope.tool import ToolBase, ToolChunk
 
+from ...utils.serialization import safe_serialize
 from ..agent.base import ExecutionResult
 from ..agent.tool_executor import classify_tool_result
 from ..agent.tool_runtime import Tool
-from ..state_store import safe_serialize
 
 
 def extract_result_for_llm_context(result: Any) -> Any:
