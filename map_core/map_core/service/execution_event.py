@@ -266,6 +266,35 @@ class InMemoryExecutionEventSink:
         return None
 
 
+class NdjsonExecutionEventSink:
+    """Per-request NDJSON line sink for the typed run stream.
+
+    The emitter's worker calls ``emit`` sequentially, so line order in the
+    unbounded queue is exactly emitter seq order.  ``aclose`` appends one
+    ``None`` sentinel; consumers read with :meth:`readline` until it returns
+    ``None``.
+    """
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._closed = False
+
+    async def emit(self, event: CoreExecutionEvent) -> None:
+        if self._closed:
+            return
+        await self._queue.put(event.model_dump_json() + "\n")
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self._queue.put(None)
+
+    async def readline(self) -> str | None:
+        """Return the next NDJSON line (without trailing newline) or None at EOF."""
+        return await self._queue.get()
+
+
 class NullExecutionEventSink:
     """No-op sink used as the emitter default until K3/K4 wire real sinks."""
 

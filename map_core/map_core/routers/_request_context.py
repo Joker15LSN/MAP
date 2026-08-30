@@ -4,6 +4,10 @@ The three chat routers install a ``RunContext`` around the request-handling
 block (route body for non-stream endpoints, stream-iteration body for SSE
 endpoints) and attach the production legacy Mongo sink to the request-level
 emitter.  Sandbox routes are intentionally not touched.
+
+Internal service routes (execution_router) use
+:func:`build_service_run_context` instead: they freeze run_id/attempt from
+the validated path parameters and never attach the legacy Mongo sink.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from __future__ import annotations
 import re
 from contextlib import contextmanager
 from typing import Any, Iterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import Request
 
@@ -56,6 +60,30 @@ def build_run_context(
         attempt=_parse_attempt(getattr(state, "attempt_id", None)),
         request_id=request_id,
         session_id=getattr(state, "session_id", None),
+        staff_code=staff_code,
+    )
+
+
+def build_service_run_context(
+    *,
+    run_id: UUID,
+    attempt: int,
+    workspace_id: UUID | None = None,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    staff_code: str | None = None,
+) -> RunContext:
+    """Freeze a RunContext for an internal service boundary.
+
+    Unlike :func:`build_run_context`, the durable identity comes from the
+    validated path parameters (never minted from caller-chosen headers).
+    """
+    return RunContext(
+        run_id=run_id,
+        workspace_id=workspace_id,
+        attempt=attempt,
+        request_id=request_id,
+        session_id=session_id,
         staff_code=staff_code,
     )
 

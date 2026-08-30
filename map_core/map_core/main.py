@@ -239,6 +239,7 @@ async def lifespan(app: FastAPI):
     app.state.logger = init_logger(path=LOG_DIR)
     logger.info(f"[PID: {os.getpid()}] application start. ENV='{env}'")
 
+    from .routers.execution_router import execution_router
     from .routers.flow_domain_router import flow_domain_router
     from .routers.global_domain_router import global_domain_router
     from .routers.master_pipeline_router import master_pipeline_router
@@ -254,6 +255,7 @@ async def lifespan(app: FastAPI):
     app.include_router(master_pipeline_router)
     app.include_router(openapi_router)
     app.include_router(sandbox_router)
+    app.include_router(execution_router)
 
     GlobalAgentStateStore.instance().start()
     logger.info("[PID: {}] EventDispatcher started.", os.getpid())
