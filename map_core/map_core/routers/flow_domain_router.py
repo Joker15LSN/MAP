@@ -13,7 +13,9 @@ from ..schema.flow_domain_schema import (
     FlowDomainStreamEvent,
 )
 from ..service.flow_domain import FlowDomain
+from ..service.run_identity import resolve_run_identity
 from ..utils.content_review.content_reviewer import build_stream_content_reviewer
+from ._request_context import request_run_context
 
 flow_domain_router = APIRouter(prefix="/flow_domain")
 
@@ -99,6 +101,14 @@ def _apply_runtime_headers(
     http_request.state.workspace_id = _validated_id_header(
         http_request.headers.get("X-Workspace-ID")
     )
+    _run_identity = resolve_run_identity(
+        http_request,
+        request_id=http_request.state.request_id,
+        workspace_id=http_request.state.workspace_id,
+    )
+    http_request.state.run_id = _run_identity["run_id"]
+    http_request.state.attempt_id = _run_identity["attempt_id"]
+    http_request.state.client_request_id = _run_identity["client_request_id"]
     # J6: pinned runtime snapshot identity comes from the BFF. Malformed or
     # missing headers keep None here; the provider fails closed at the call
     # site, never by fabricating a current-pointer fallback.
@@ -135,12 +145,16 @@ async def chat_stream_v1(
 
     async def iter_events():
         try:
-            async for event in reviewer.moderate_event_stream(
-                event_stream,
-                request_id=flow_domain.request_id,
-                state_id=flow_domain.state_id,
+            with request_run_context(
+                http_request,
+                staff_code=getattr(request, "staff_code", None),
             ):
-                yield _format_sse_event(event)
+                async for event in reviewer.moderate_event_stream(
+                    event_stream,
+                    request_id=flow_domain.request_id,
+                    state_id=flow_domain.state_id,
+                ):
+                    yield _format_sse_event(event)
             http_request.state._stream_logically_completed = True
         finally:
             await reviewer.aclose()
@@ -160,7 +174,11 @@ async def chat_v1(
 ) -> FlowDomainChatResponse:
     _apply_runtime_headers(http_request, request_token=request_token)
     flow_domain = FlowDomain(request=request, http_request=http_request)
-    response_payload = await flow_domain.consume_event_stream(request)
+    with request_run_context(
+        http_request,
+        staff_code=getattr(request, "staff_code", None),
+    ):
+        response_payload = await flow_domain.consume_event_stream(request)
     return FlowDomainChatResponse(
         content=str(response_payload.get("content", "")),
         attachment_results=response_payload.get("attachment_results"),

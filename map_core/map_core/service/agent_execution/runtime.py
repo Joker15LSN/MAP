@@ -82,9 +82,6 @@ class AgentRuntime:
     def agent_memory_store(self) -> Any:
         return self._legacy_runtime.agent_memory_store
 
-    def set_execution_context(self, state_store: Any, state_id: str) -> None:
-        self._legacy_runtime.set_execution_context(state_store, state_id)
-
     # -- engine selection ---------------------------------------------------
 
     def _resolve_engine(

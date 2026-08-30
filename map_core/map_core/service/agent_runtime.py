@@ -16,6 +16,7 @@ from .. import config as app_config
 from ..config.config_schema import LLMConfig
 from ..schema.scene_agent_config_schema import ScenePostSummaryConfig
 from ..utils.model_invocation import ModelInvocation
+from ..utils.serialization import safe_serialize
 from .agent.base import (
     AgentActionEvent,
     AgentExecutionCancelled,
@@ -31,7 +32,6 @@ from .agent.tool_call_agent import (
     ToolSet,
 )
 from .agent_memory_store import AgentMemoryStore
-from .state_store import safe_serialize
 
 
 class AgentExecutionSpec(BaseModel):
@@ -67,8 +67,6 @@ class RuntimeAgent(Protocol):
     timeout: float
 
     def set_action_handler(self, handler: Any) -> None: ...
-
-    def set_execution_context(self, state_store: Any, state_id: str) -> None: ...
 
     async def execute(self, request: AgentRequest) -> Any: ...
 
@@ -117,13 +115,7 @@ class AgentRuntime:
             if agent_memory_store is not None
             else AgentMemoryStore(logger_=logger_)
         )
-        self.state_store: Any | None = None
-        self.state_id: str | None = None
         self._logger = logger_ or logger
-
-    def set_execution_context(self, state_store: Any, state_id: str) -> None:
-        self.state_store = state_store
-        self.state_id = state_id
 
     def _now(self) -> datetime:
         return datetime.now(self.DEFAULT_TIMEZONE)
@@ -185,8 +177,6 @@ class AgentRuntime:
                 force_tool_call=spec.force_tool_call,
                 scene_post_summary=self._build_scene_post_summary(spec),
             )
-        if self.state_store and self.state_id:
-            agent.set_execution_context(self.state_store, self.state_id)
         if isinstance(spec.agent_name, str) and spec.agent_name.strip():
             agent.agent_display_name = spec.agent_name.strip()
         return agent

@@ -8,7 +8,6 @@ in-memory ledger.
 
 from __future__ import annotations
 
-import asyncio
 from unittest import mock
 
 import httpx
@@ -26,6 +25,7 @@ from map_core.service.opensandbox_client import IDEMPOTENCY_HEADER, OpenSandboxC
 from map_core.service.run_identity import resolve_run_identity
 from map_core.service.sandbox_ledger import InMemorySandboxInvocationLedger
 from map_core.service.sandbox_tools import build_sandbox_tools, set_sandbox_ledger
+from tests.run_context_utils import run_with_run_context
 
 
 def _make_http_request(headers: dict[str, str]) -> Request:
@@ -182,8 +182,8 @@ def test_tool_executor_invokes_sandbox_tool_with_full_identity() -> None:
         },
     )
     with mock.patch.object(OpenSandboxClient, "from_env", lambda: _client(server)):
-        result = asyncio.run(
-            executor.execute_tool(
+        result = run_with_run_context(
+            lambda: executor.execute_tool(
                 tool_name="sandbox_exec_tool",
                 parid="p-1",
                 args={"command": "echo hi"},

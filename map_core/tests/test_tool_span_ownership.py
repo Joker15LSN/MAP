@@ -23,6 +23,8 @@ from map_core.service.agent.tool_executor import classify_tool_result
 from map_core.service.agent.tool_runtime import Tool
 from map_core.service.agentscope2.agent import AgentScopeSceneAgent
 from map_core.service.agentscope2.tool import MapToolAdapter
+from map_core.service.execution_event import set_run_context
+from tests.run_context_utils import make_run_context_sink
 
 
 class _FakeLLMConfig:
@@ -69,7 +71,6 @@ def _build_adapter(
         force_tool_call=False,
         scene_post_summary=None,
     )
-    agent.set_execution_context(FakeStateStore(), "state-1")
     request = AgentRequest(
         query="run demo",
         staff_code="tester",
@@ -103,10 +104,13 @@ def test_single_tool_span_per_invocation(monkeypatch) -> None:
 
     adapter, _request, exporter = _build_adapter(monkeypatch, handler, allowed=True)
 
+    run_context, _sink = make_run_context_sink()
+
     async def run():
-        chunk = await adapter.call()
-        await asyncio.sleep(0)
-        return chunk
+        with set_run_context(run_id=run_context.run_id):
+            chunk = await adapter.call()
+            await asyncio.sleep(0)
+            return chunk
 
     chunk = asyncio.run(run())
     assert chunk.state == ToolResultState.SUCCESS
@@ -125,10 +129,13 @@ def test_policy_denial_marks_error_state(monkeypatch) -> None:
 
     adapter, _request, exporter = _build_adapter(monkeypatch, handler, allowed=False)
 
+    run_context, _sink = make_run_context_sink()
+
     async def run():
-        chunk = await adapter.call()
-        await asyncio.sleep(0)
-        return chunk
+        with set_run_context(run_id=run_context.run_id):
+            chunk = await adapter.call()
+            await asyncio.sleep(0)
+            return chunk
 
     chunk = asyncio.run(run())
     assert chunk.state == ToolResultState.ERROR
@@ -147,10 +154,13 @@ def test_business_failure_marks_error_state(monkeypatch) -> None:
 
     adapter, _request, exporter = _build_adapter(monkeypatch, handler, allowed=True)
 
+    run_context, _sink = make_run_context_sink()
+
     async def run():
-        chunk = await adapter.call()
-        await asyncio.sleep(0)
-        return chunk
+        with set_run_context(run_id=run_context.run_id):
+            chunk = await adapter.call()
+            await asyncio.sleep(0)
+            return chunk
 
     chunk = asyncio.run(run())
     assert chunk.state == ToolResultState.ERROR

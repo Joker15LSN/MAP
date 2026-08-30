@@ -27,9 +27,11 @@ from ..schema.global_domain_schema import (
     GlobalDomainChatSchema,
     GlobalDomainStreamEvent,
 )
+from ..utils.serialization import safe_serialize
 from .agent.agent_mapping import SCENE_AGENT_CONFIGS
 from .agent.base import AgentRequest, AgentResult
 from .agent_case_miner import AgentCaseMiner
+from .execution_event import ExecutionEventEmitter
 from .flow_config_provider import FlowConfigProvider
 from .global_domain import GlobalDomain
 from .global_domain_helpers import (
@@ -53,7 +55,6 @@ from .runtime_snapshot_transport import (
 from .scenario_hub import ScenarioHub
 from .scenario_resolver import ScenarioResolver
 from .skill_hub import SkillHub, SkillMountPlan
-from .state_store import fire_and_forget, safe_serialize
 
 _flow_tracer = get_tracer(__name__)
 
@@ -137,10 +138,6 @@ class FlowDomain:
         return self.global_domain.state_id
 
     @property
-    def state_store(self):
-        return self.global_domain.state_store
-
-    @property
     def attachment_collector(self):
         return self.global_domain.attachment_collector
 
@@ -195,30 +192,26 @@ class FlowDomain:
         reason: str,
         message: str,
     ) -> AsyncGenerator[FlowDomainStreamEvent, None]:
-        fire_and_forget(
-            self.state_store.record_event(
-                state_id=self.state_id,
-                event_type="flow.hard_fail",
-                payload={
-                    "request_id": self.request_id,
-                    "state_id": self.state_id,
-                    "reason": reason,
-                    "message": message,
-                },
-            )
+        ExecutionEventEmitter.current().emit(
+            "checkpoint.written",
+            data={
+                "phase": "flow.hard_fail",
+                "request_id": self.request_id,
+                "state_id": self.state_id,
+                "reason": reason,
+                "message": message,
+            },
         )
-        fire_and_forget(
-            self.state_store.record_event(
-                state_id=self.state_id,
-                event_type="request.end",
-                payload={
-                    "request_id": self.request_id,
-                    "session_id": self.global_domain.session_id,
-                    "workspace_id": self.global_domain.workspace_id,
-                    "status": "failed",
-                    "error": message,
-                },
-            )
+        ExecutionEventEmitter.current().emit(
+            "checkpoint.written",
+            data={
+                "phase": "request.end",
+                "request_id": self.request_id,
+                "session_id": self.global_domain.session_id,
+                "workspace_id": self.global_domain.workspace_id,
+                "status": "failed",
+                "error": message,
+            },
         )
         yield FlowDomainStreamEvent(
             event="error",
@@ -404,8 +397,6 @@ class FlowDomain:
             scene_result=None,
             history=request.history,
             extra=extra,
-            state_store=self.state_store,
-            state_id=self.state_id,
         )
 
     async def _run_graph_node(
@@ -442,8 +433,6 @@ class FlowDomain:
             node.agent_code,
             agent_request,
             config=runtime_config,
-            state_store=self.state_store,
-            state_id=self.state_id,
             tool_context=mount_plan.tool_context_overlay,
             engine=getattr(getattr(request, "dispatch_config", None), "engine", None),
         )
@@ -509,17 +498,15 @@ class FlowDomain:
         request_start_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
         request = self.global_domain._prepare_runtime_request(request)
 
-        fire_and_forget(
-            self.state_store.record_event(
-                state_id=self.state_id,
-                event_type="request.start",
-                payload={
-                    "request_id": self.request_id,
-                    "state_id": self.state_id,
-                    "mode": "flow",
-                    "query": request.query,
-                },
-            )
+        ExecutionEventEmitter.current().emit(
+            "checkpoint.written",
+            data={
+                "phase": "request.start",
+                "request_id": self.request_id,
+                "state_id": self.state_id,
+                "mode": "flow",
+                "query": request.query,
+            },
         )
 
         yield FlowDomainStreamEvent(
@@ -589,16 +576,14 @@ class FlowDomain:
                 != snapshot.flow_policy.model_dump(),
                 "effective_policy": safe_serialize(request.flow_config.model_dump()),
             }
-            fire_and_forget(
-                self.state_store.record_event(
-                    state_id=self.state_id,
-                    event_type="flow.policy_hit",
-                    payload={
-                        "request_id": self.request_id,
-                        "state_id": self.state_id,
-                        **policy_hit,
-                    },
-                )
+            ExecutionEventEmitter.current().emit(
+                "checkpoint.written",
+                data={
+                    "phase": "flow.policy_hit",
+                    "request_id": self.request_id,
+                    "state_id": self.state_id,
+                    **policy_hit,
+                },
             )
             yield FlowDomainStreamEvent(
                 event="meta",
@@ -724,21 +709,19 @@ class FlowDomain:
                         tenant=self.global_domain.x_username,
                     )
                     node.allowed_capabilities = list(mount_plan.allowed_tools)
-                    fire_and_forget(
-                        self.state_store.record_event(
-                            state_id=self.state_id,
-                            event_type="flow.skill_authorization",
-                            payload={
-                                "request_id": self.request_id,
-                                "state_id": self.state_id,
-                                "node_id": node.node_id,
-                                "agent_code": node.agent_code,
-                                "authorized_skills": safe_serialize(
-                                    mount_plan.authorized_skills
-                                ),
-                                "denied_skills": safe_serialize(mount_plan.denied_skills),
-                            },
-                        )
+                    ExecutionEventEmitter.current().emit(
+                        "checkpoint.written",
+                        data={
+                            "phase": "flow.skill_authorization",
+                            "request_id": self.request_id,
+                            "state_id": self.state_id,
+                            "node_id": node.node_id,
+                            "agent_code": node.agent_code,
+                            "authorized_skills": safe_serialize(
+                                mount_plan.authorized_skills
+                            ),
+                            "denied_skills": safe_serialize(mount_plan.denied_skills),
+                        },
                     )
 
                     yield FlowDomainStreamEvent(
@@ -914,46 +897,42 @@ class FlowDomain:
             )
             meta["flow"]["agent_case"] = agent_case
             meta["flow"]["repair_policy_candidates"] = repair_policy_candidates
-            fire_and_forget(
-                self.state_store.record_event(
-                    state_id=self.state_id,
-                    event_type="flow.agent_case_candidate",
-                    payload={
-                        "request_id": self.request_id,
-                        "state_id": self.state_id,
-                        "agent_case": safe_serialize(agent_case),
-                        "repair_policy_candidates": safe_serialize(
-                            repair_policy_candidates
-                        ),
-                    },
-                )
+            ExecutionEventEmitter.current().emit(
+                "checkpoint.written",
+                data={
+                    "phase": "flow.agent_case_candidate",
+                    "request_id": self.request_id,
+                    "state_id": self.state_id,
+                    "agent_case": safe_serialize(agent_case),
+                    "repair_policy_candidates": safe_serialize(
+                        repair_policy_candidates
+                    ),
+                },
             )
 
             end_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
-            fire_and_forget(
-                self.state_store.record_event(
-                    state_id=self.state_id,
-                    event_type="request.end",
-                    payload={
-                        "request_id": self.request_id,
-                        "session_id": self.global_domain.session_id,
-                        "workspace_id": self.global_domain.workspace_id,
-                        "status": "success",
-                        "duration_s": (end_ts - request_start_ts).total_seconds(),
-                        "scene_result": {
-                            "flow_scenarios": [
-                                scenario.scenario_id for scenario in scenarios
-                            ]
-                        },
-                        "agents_called": [
-                            result.name
-                            for result in dispatch_results
-                            if hasattr(result, "name")
-                        ],
-                        "token_usage_total": meta.get("token_usage"),
-                        "error": None,
+            ExecutionEventEmitter.current().emit(
+                "checkpoint.written",
+                data={
+                    "phase": "request.end",
+                    "request_id": self.request_id,
+                    "session_id": self.global_domain.session_id,
+                    "workspace_id": self.global_domain.workspace_id,
+                    "status": "success",
+                    "duration_s": (end_ts - request_start_ts).total_seconds(),
+                    "scene_result": {
+                        "flow_scenarios": [
+                            scenario.scenario_id for scenario in scenarios
+                        ]
                     },
-                )
+                    "agents_called": [
+                        result.name
+                        for result in dispatch_results
+                        if hasattr(result, "name")
+                    ],
+                    "token_usage_total": meta.get("token_usage"),
+                    "error": None,
+                },
             )
 
             yield FlowDomainStreamEvent(

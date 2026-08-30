@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +13,7 @@ from map_core.schema.flow_domain_schema import (
 )
 from map_core.schema.global_domain_schema import GlobalDomainStreamEvent
 from map_core.service.agent.base import AgentResult
+from map_core.service.execution_event import set_run_context
 from map_core.service.flow_domain import FlowDomain
 from map_core.service.skill_hub import SkillMountPlan
 
@@ -23,8 +25,9 @@ class _DummyStateStore:
 
 async def _collect_events(stream: AsyncGenerator[Any, None]) -> list[Any]:
     items: list[Any] = []
-    async for item in stream:
-        items.append(item)
+    with set_run_context(run_id=uuid.uuid4()):
+        async for item in stream:
+            items.append(item)
     return items
 
 

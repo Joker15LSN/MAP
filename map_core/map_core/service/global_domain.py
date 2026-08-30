@@ -29,7 +29,6 @@ from ..schema.global_domain_schema import (
 from ..schema.scene_classification_schema import (
     SceneClassificationResult,
 )
-from ..schema.state_event_schema import AgentEventSchema
 from ..schema.tool_extra_result_schema import ToolExtraResultSchema
 from ..service.agent.base import AgentActionEvent, AgentRequest, AgentResult
 from ..service.agent.summarize_agent import SummarizeAgent
@@ -39,6 +38,7 @@ from ..service.scene_selector import SceneSelector
 from ..utils.llm_trace_context import llm_trace_context
 from ..utils.model_invocation import ModelInvocation
 from ..utils.query_rewriter import QueryRewriter
+from ..utils.serialization import safe_serialize
 from ..utils.term_replacer import replace_request_query_for_global_domain
 from .agent.agent_mapping import SceneAgentConfig
 from .agent_dispatcher import AgentDispatchConfig, AgentDispatcher
@@ -48,6 +48,7 @@ from .chart_plotting import (
     collect_chart_plotting_meta,
     generate_and_persist_chart_plotting,
 )
+from .execution_event import ExecutionEventEmitter
 from .global_domain_helpers import (
     build_dispatch_token_meta,
     normalize_attachment_results,
@@ -61,12 +62,6 @@ from .global_domain_helpers import (
 )
 from .run_identity import resolve_run_identity
 from .scene_agent_config_provider import SceneAgentConfigProvider
-from .state_store import (
-    GlobalAgentStateStore,
-    fire_and_forget,
-    record_agent_call,
-    safe_serialize,
-)
 from .tool_extra_result_collector import ToolExtraResultCollector
 
 GlobalDomainRequest = GlobalDomainChatSchema | GlobalDomainChatV3Schema
@@ -76,30 +71,23 @@ class _GlobalDomainSceneSelectionObserver:
     def __init__(
         self,
         *,
-        state_store: GlobalAgentStateStore,
         state_id: str,
         base_state: dict[str, Any],
     ) -> None:
-        self.state_store = state_store
         self.state_id = state_id
         self.base_state = base_state
 
     def on_stage_start(self, stage: str, data: dict[str, Any]) -> None:
-        record_kwargs: dict[str, Any] = {}
-        if stage in {"big_scene", "direct_sub_agent_route"}:
-            record_kwargs["base_state"] = self.base_state
-        fire_and_forget(
-            self.state_store.record_event(
-                state_id=self.state_id,
-                event_type="scene_selector",
-                payload=AgentEventSchema(
-                    category="workflow",
-                    component=stage,
-                    stage="start",
-                    data=data,
-                ).model_dump(),
-                **record_kwargs,
-            )
+        ExecutionEventEmitter.current().emit(
+            "checkpoint.written",
+            data={
+                "phase": "scene_selector",
+                "category": "workflow",
+                "component": stage,
+                "stage": "start",
+                "status": None,
+                "data": data,
+            },
         )
 
     def on_stage_end(
@@ -108,18 +96,16 @@ class _GlobalDomainSceneSelectionObserver:
         status: Literal["success", "failed"],
         data: dict[str, Any],
     ) -> None:
-        fire_and_forget(
-            self.state_store.record_event(
-                state_id=self.state_id,
-                event_type="scene_selector",
-                payload=AgentEventSchema(
-                    category="workflow",
-                    component=stage,
-                    stage="end",
-                    status=status,
-                    data=data,
-                ).model_dump(),
-            )
+        ExecutionEventEmitter.current().emit(
+            "checkpoint.written",
+            data={
+                "phase": "scene_selector",
+                "category": "workflow",
+                "component": stage,
+                "stage": "end",
+                "status": status,
+                "data": data,
+            },
         )
 
 
@@ -208,7 +194,6 @@ class GlobalDomain:
         self.attachment_collector = AttachmentCollector()
         self.tool_extra_result_collector = ToolExtraResultCollector()
         self.state_id = str(uuid4())
-        self.state_store = GlobalAgentStateStore.instance()
         self._scene_token_usage: dict[str, int] = {}
         self.base_state = {
             "_id": self.state_id,
@@ -239,12 +224,10 @@ class GlobalDomain:
         """Run two-level scene classification while keeping decision logic in SceneSelector."""
         observer = None
         if (
-            getattr(self, "state_store", None) is not None
-            and getattr(self, "state_id", None) is not None
+            getattr(self, "state_id", None) is not None
             and getattr(self, "base_state", None) is not None
         ):
             observer = _GlobalDomainSceneSelectionObserver(
-                state_store=self.state_store,
                 state_id=self.state_id,
                 base_state=self.base_state,
             )
@@ -258,19 +241,22 @@ class GlobalDomain:
             self._scene_token_usage[k] = self._scene_token_usage.get(k, 0) + v
         return outcome.result
 
-    @record_agent_call(
-        component="agent_dispatcher",
-        category="workflow",
-        meta_extractor=build_dispatch_token_meta,
-    )
     async def dispatch_agents(
         self,
         request: GlobalDomainRequest,
         scene_result: SceneClassificationResult,
-        state_id: str | None = None,
-        state_store: GlobalAgentStateStore | None = None,
         dispatch_config: AgentDispatchConfig | None = None,
     ):
+        ExecutionEventEmitter.current().emit(
+            "step.started",
+            data={
+                "component": "agent_dispatcher",
+                "category": "workflow",
+                "stage": "start",
+                "agent_code": "agent_dispatcher",
+                "input": {"query": request.query},
+            },
+        )
         agent_request = AgentRequest(
             query=request.query,
             original_query=self._resolve_original_query(request),
@@ -279,20 +265,43 @@ class GlobalDomain:
             history=request.history,
             extra=self._build_agent_extra(request),
         )
-        return await self.agent_dispatcher.dispatch(
-            agent_request,
-            config=dispatch_config,
-            state_store=state_store,
-            state_id=state_id,
-            tool_context=getattr(request, "tool_context", None),
+        try:
+            result = await self.agent_dispatcher.dispatch(
+                agent_request,
+                config=dispatch_config,
+                tool_context=getattr(request, "tool_context", None),
+            )
+        except Exception as exc:
+            ExecutionEventEmitter.current().emit(
+                "step.failed",
+                data={
+                    "component": "agent_dispatcher",
+                    "category": "error",
+                    "stage": "end",
+                    "status": "failed",
+                    "agent_code": "agent_dispatcher",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+        ExecutionEventEmitter.current().emit(
+            "step.completed",
+            data={
+                "component": "agent_dispatcher",
+                "category": "workflow",
+                "stage": "end",
+                "status": "success",
+                "agent_code": "agent_dispatcher",
+                "meta": build_dispatch_token_meta(result),
+            },
         )
+        return result
 
     async def dispatch_agents_stream(
         self,
         request: GlobalDomainRequest,
         scene_result: SceneClassificationResult,
-        state_id: str | None = None,
-        state_store: GlobalAgentStateStore | None = None,
         dispatch_config: AgentDispatchConfig | None = None,
     ) -> AsyncGenerator[Any, None]:
         agent_request = AgentRequest(
@@ -306,8 +315,6 @@ class GlobalDomain:
         async for result in self.agent_dispatcher.dispatch_stream(
             agent_request,
             config=dispatch_config,
-            state_store=state_store,
-            state_id=state_id,
             tool_context=getattr(request, "tool_context", None),
         ):
             yield result
@@ -507,18 +514,11 @@ class GlobalDomain:
             **summarize_debug_payload,
         }
 
-        record_summarize_start(
-            state_store=self.state_store,
-            state_id=self.state_id,
-            base_state=self.base_state,
-            summarize_input=summarize_input,
-        )
+        record_summarize_start(summarize_input=summarize_input)
 
         if stream:
             try:
                 with llm_trace_context(
-                    state_store=self.state_store,
-                    state_id=self.state_id,
                     request_id=self.request_id,
                     session_id=self.session_id,
                     staff_code=self.staff_code,
@@ -534,8 +534,6 @@ class GlobalDomain:
                     )
             except Exception as exc:
                 record_summarize_failure(
-                    state_store=self.state_store,
-                    state_id=self.state_id,
                     summarize_input=summarize_input,
                     start_ts=start_ts,
                     error=exc,
@@ -549,8 +547,6 @@ class GlobalDomain:
                 summary_parts: list[str] = []
                 try:
                     with llm_trace_context(
-                        state_store=self.state_store,
-                        state_id=self.state_id,
                         request_id=self.request_id,
                         session_id=self.session_id,
                         staff_code=self.staff_code,
@@ -577,8 +573,6 @@ class GlobalDomain:
                             yield text
                 except Exception as exc:
                     record_summarize_failure(
-                        state_store=self.state_store,
-                        state_id=self.state_id,
                         summarize_input=summarize_input,
                         start_ts=start_ts,
                         error=exc,
@@ -587,8 +581,6 @@ class GlobalDomain:
                     raise
 
                 record_summarize_success(
-                    state_store=self.state_store,
-                    state_id=self.state_id,
                     output="".join(summary_parts),
                     start_ts=start_ts,
                     stream=True,
@@ -598,8 +590,6 @@ class GlobalDomain:
 
         try:
             with llm_trace_context(
-                state_store=self.state_store,
-                state_id=self.state_id,
                 request_id=self.request_id,
                 session_id=self.session_id,
                 staff_code=self.staff_code,
@@ -612,8 +602,6 @@ class GlobalDomain:
                 result = await self.summarize_agent.execute(summarize_request)
         except Exception as exc:
             record_summarize_failure(
-                state_store=self.state_store,
-                state_id=self.state_id,
                 summarize_input=summarize_input,
                 start_ts=start_ts,
                 error=exc,
@@ -622,19 +610,17 @@ class GlobalDomain:
             raise
         token_usage = self.summarize_agent.token_usage
         if token_usage:
-            fire_and_forget(
-                self.state_store.record_event(
-                    state_id=self.state_id,
-                    event_type="token_usage",
-                    payload=AgentEventSchema(
-                        category="llm",
-                        component="summarize_agent",
-                        data={
-                            "agent": "summarize_agent",
-                            "token_usage": token_usage,
-                        },
-                    ).model_dump(),
-                )
+            ExecutionEventEmitter.current().emit(
+                "checkpoint.written",
+                data={
+                    "phase": "token_usage",
+                    "category": "llm",
+                    "component": "summarize_agent",
+                    "data": {
+                        "agent": "summarize_agent",
+                        "token_usage": token_usage,
+                    },
+                },
             )
         if not isinstance(result, AgentResult):
             error = (
@@ -642,8 +628,6 @@ class GlobalDomain:
                 f"{type(result).__name__}"
             )
             record_summarize_failure(
-                state_store=self.state_store,
-                state_id=self.state_id,
                 summarize_input=summarize_input,
                 start_ts=start_ts,
                 error=error,
@@ -652,8 +636,6 @@ class GlobalDomain:
             raise RuntimeError(error)
         if not result.success:
             record_summarize_failure(
-                state_store=self.state_store,
-                state_id=self.state_id,
                 summarize_input=summarize_input,
                 start_ts=start_ts,
                 error=result.error or "Summarize agent returned unsuccessful result",
@@ -661,8 +643,6 @@ class GlobalDomain:
             )
             return ""
         record_summarize_success(
-            state_store=self.state_store,
-            state_id=self.state_id,
             output=result.content,
             start_ts=start_ts,
             stream=False,
@@ -1061,20 +1041,18 @@ class GlobalDomain:
         )
         chart_task: asyncio.Task[dict[str, Any] | None] | None = None
 
-        fire_and_forget(
-            self.state_store.record_event(
-                state_id=self.state_id,
-                event_type="request.start",
-                payload={
-                    "request_id": self.request_id,
-                    "session_id": self.session_id,
-                    "workspace_id": self.workspace_id,
-                    "staff_code": self.staff_code,
-                    "query": request.query,
-                    "original_query": self._resolve_original_query(request),
-                    "start_ts": request_start_ts,
-                },
-            )
+        ExecutionEventEmitter.current().emit(
+            "checkpoint.written",
+            data={
+                "phase": "request.start",
+                "request_id": self.request_id,
+                "session_id": self.session_id,
+                "workspace_id": self.workspace_id,
+                "staff_code": self.staff_code,
+                "query": request.query,
+                "original_query": self._resolve_original_query(request),
+                "start_ts": request_start_ts,
+            },
         )
 
         yield GlobalDomainStreamEvent(
@@ -1136,8 +1114,6 @@ class GlobalDomain:
                     request=request,
                     scene_result=scene_result,
                     dispatch_config=resolved_dispatch_config,
-                    state_id=self.state_id,
-                    state_store=self.state_store,
                 ):
                     if isinstance(result, AgentActionEvent):
                         yield GlobalDomainStreamEvent(
@@ -1282,19 +1258,17 @@ class GlobalDomain:
 
             summarize_usage = self.summarize_agent.token_usage
             if summarize_usage:
-                fire_and_forget(
-                    self.state_store.record_event(
-                        state_id=self.state_id,
-                        event_type="token_usage",
-                        payload=AgentEventSchema(
-                            category="llm",
-                            component="summarize_agent",
-                            data={
-                                "agent": "summarize_agent",
-                                "token_usage": summarize_usage,
-                            },
-                        ).model_dump(),
-                    )
+                ExecutionEventEmitter.current().emit(
+                    "checkpoint.written",
+                    data={
+                        "phase": "token_usage",
+                        "category": "llm",
+                        "component": "summarize_agent",
+                        "data": {
+                            "agent": "summarize_agent",
+                            "token_usage": summarize_usage,
+                        },
+                    },
                 )
                 token_meta = stream_context.meta.setdefault(
                     "token_usage", {"total": {}, "by_agent": {}}
@@ -1323,22 +1297,20 @@ class GlobalDomain:
             final_content = "".join(summary_parts)
             end_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
             agents_called = [r.name for r in dispatch_results if hasattr(r, "name")]
-            fire_and_forget(
-                self.state_store.record_event(
-                    state_id=self.state_id,
-                    event_type="request.end",
-                    payload={
-                        "request_id": self.request_id,
-                        "session_id": self.session_id,
-                        "workspace_id": self.workspace_id,
-                        "status": "success",
-                        "duration_s": (end_ts - request_start_ts).total_seconds(),
-                        "scene_result": safe_serialize(scene_result),
-                        "agents_called": agents_called,
-                        "token_usage_total": stream_context.meta.get("token_usage"),
-                        "error": None,
-                    },
-                )
+            ExecutionEventEmitter.current().emit(
+                "checkpoint.written",
+                data={
+                    "phase": "request.end",
+                    "request_id": self.request_id,
+                    "session_id": self.session_id,
+                    "workspace_id": self.workspace_id,
+                    "status": "success",
+                    "duration_s": (end_ts - request_start_ts).total_seconds(),
+                    "scene_result": safe_serialize(scene_result),
+                    "agents_called": agents_called,
+                    "token_usage_total": stream_context.meta.get("token_usage"),
+                    "error": None,
+                },
             )
 
             yield GlobalDomainStreamEvent(
@@ -1365,19 +1337,17 @@ class GlobalDomain:
                     await chart_task
             logger.exception("Global domain event stream failed")
             end_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
-            fire_and_forget(
-                self.state_store.record_event(
-                    state_id=self.state_id,
-                    event_type="request.end",
-                    payload={
-                        "request_id": self.request_id,
-                        "session_id": self.session_id,
-                        "workspace_id": self.workspace_id,
-                        "status": "failed",
-                        "duration_s": (end_ts - request_start_ts).total_seconds(),
-                        "error": str(exc),
-                    },
-                )
+            ExecutionEventEmitter.current().emit(
+                "checkpoint.written",
+                data={
+                    "phase": "request.end",
+                    "request_id": self.request_id,
+                    "session_id": self.session_id,
+                    "workspace_id": self.workspace_id,
+                    "status": "failed",
+                    "duration_s": (end_ts - request_start_ts).total_seconds(),
+                    "error": str(exc),
+                },
             )
             yield GlobalDomainStreamEvent(
                 event="error",
@@ -1404,8 +1374,6 @@ class GlobalDomain:
             request.agent_code,
             agent_request,
             config=self._resolve_scene_agent_config(request),
-            state_store=self.state_store,
-            state_id=self.state_id,
             tool_context=getattr(request, "tool_context", None),
         )
         logger.debug(
@@ -1448,7 +1416,6 @@ class GlobalDomain:
             request=agent_request,
             caller_agent_name=request.caller_agent_name,
         )
-        agent.set_execution_context(self.state_store, self.state_id)
         result = await agent.execute(tool_request, parid="-")
         if not isinstance(result, AgentResult):
             raise RuntimeError(
@@ -1491,8 +1458,6 @@ class GlobalDomain:
                 request=request,
                 scene_result=scene_result,
                 dispatch_config=resolved_dispatch_config,
-                state_id=self.state_id,
-                state_store=self.state_store,
             )
         except Exception:
             dispatch_results = []

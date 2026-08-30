@@ -9,6 +9,7 @@ must reach the provider with the validated values.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -18,6 +19,7 @@ from starlette.datastructures import Headers
 
 from map_core.routers import flow_domain_router
 from map_core.schema.flow_domain_schema import FlowChatRequest
+from map_core.service.execution_event import set_run_context
 from map_core.service.flow_domain import FlowDomain
 from map_core.service.runtime_snapshot_transport import (
     RuntimeSnapshotAuthError,
@@ -52,8 +54,9 @@ class _RaisingProvider:
 
 async def _collect_events(stream: AsyncGenerator[Any, None]) -> list[Any]:
     items: list[Any] = []
-    async for item in stream:
-        items.append(item)
+    with set_run_context(run_id=uuid.uuid4()):
+        async for item in stream:
+            items.append(item)
     return items
 
 

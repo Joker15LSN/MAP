@@ -15,6 +15,8 @@ from map_core.service.agent.skill_policy_checker import SkillPolicyChecker
 from map_core.service.agent.tool_runtime import Tool
 from map_core.service.agentscope2.agent import AgentScopeSceneAgent
 from map_core.service.agentscope2.tool import MapToolAdapter
+from map_core.service.execution_event import set_run_context
+from tests.run_context_utils import make_run_context_sink
 
 
 class _FakeLLMConfig:
@@ -63,7 +65,7 @@ def _build_agent(action_events: list[Any], store: FakeStateStore):
         scene_post_summary=None,
     )
     agent.set_action_handler(lambda event: action_events.append(event))
-    agent.set_execution_context(store, "state-1")
+    del store  # typed events are captured via the run-context sink in each test
     return agent, tool, handler_called
 
 
@@ -87,12 +89,15 @@ def test_denied_tool_not_executed_and_events_recorded() -> None:
         request=request,
     )
 
+    run_context, sink = make_run_context_sink()
+
     async def run():
-        chunk = await adapter.call()
-        # allow fire_and_forget tasks to settle
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        return chunk
+        with set_run_context(run_id=run_context.run_id):
+            chunk = await adapter.call()
+            # allow emitter worker tasks to settle
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return chunk
 
     chunk = asyncio.run(run())
 
@@ -110,9 +115,13 @@ def test_denied_tool_not_executed_and_events_recorded() -> None:
     assert payload["policy"]["allowed"] is False
     assert payload["policy"]["reason"] == "tool_not_in_allowed_tools"
 
-    # state store receives a tool_result runtime event
-    recorded_types = [event_type for event_type, _ in store.events]
-    assert "tool_result" in recorded_types
+    # typed emitter receives the failed tool invocation runtime event
+    recorded_types = [event.type for event in sink.events]
+    assert "tool.invocation_failed" in recorded_types
+    failed_tool = next(
+        event for event in sink.events if event.type == "tool.invocation_failed"
+    )
+    assert failed_tool.data["tool"] == "secret_tool"
 
 
 def test_allowed_tool_executes_through_adapter() -> None:
@@ -135,11 +144,14 @@ def test_allowed_tool_executes_through_adapter() -> None:
         request=request,
     )
 
+    run_context, sink = make_run_context_sink()
+
     async def run():
-        chunk = await adapter.call()
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        return chunk
+        with set_run_context(run_id=run_context.run_id):
+            chunk = await adapter.call()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return chunk
 
     chunk = asyncio.run(run())
 

@@ -29,6 +29,7 @@ from map_core.utils.model_invocation import (
     ModelInvocationRequest,
 )
 from tests.model_invocation.scripted_provider import tool_outcome
+from tests.run_context_utils import run_with_run_context
 
 
 def _messages_to_dicts(messages: Any) -> list[dict[str, Any]]:
@@ -140,8 +141,8 @@ def test_execute_emits_ordered_actions_and_normalized_result() -> None:
     async def collect(event: AgentActionEvent) -> None:
         action_events.append(event)
 
-    result = asyncio.run(
-        runtime.execute(
+    result = run_with_run_context(
+        lambda: runtime.execute(
             _spec(),
             _request(),
             action_handler=collect,
@@ -202,7 +203,7 @@ def test_stream_yields_actions_and_result() -> None:
                 results.append(item)
         return events, results
 
-    events, results = asyncio.run(run())
+    events, results = run_with_run_context(run)
     assert events and events[0].action == "step_start"
     assert results and results[0].success is True
     assert results[0].content == "直接回答"
@@ -260,8 +261,8 @@ def test_memory_injection_and_writeback_via_public_module(monkeypatch) -> None:
         tool_registry={"search": _search_tool(lambda args, request, parid: "unused")},
         agent_memory_store=memory,
     )
-    result = asyncio.run(
-        runtime.execute(
+    result = run_with_run_context(
+        lambda: runtime.execute(
             _spec(),
             _request(extra={"session_id": "sess-1", "request_id": "req-1"}),
         )
@@ -310,8 +311,8 @@ def test_hooks_keep_existing_lifecycle_contract() -> None:
     def on_end(agent, status, data):
         lifecycle.append(("end", status, data))
 
-    result = asyncio.run(
-        runtime.execute(
+    result = run_with_run_context(
+        lambda: runtime.execute(
             _spec(),
             _request(),
             hooks=AgentExecutionHooks(
@@ -361,8 +362,8 @@ def test_tool_policy_denial_via_public_module() -> None:
     async def collect(event: AgentActionEvent) -> None:
         events.append(event)
 
-    result = asyncio.run(
-        runtime.execute(
+    result = run_with_run_context(
+        lambda: runtime.execute(
             _spec(),
             _request(
                 extra={
@@ -392,8 +393,8 @@ def test_cancel_preset_returns_cancelled_without_llm_call() -> None:
     cancel = asyncio.Event()
     cancel.set()
 
-    result = asyncio.run(
-        runtime.execute(
+    result = run_with_run_context(
+        lambda: runtime.execute(
             _spec(tool_names=[]),
             _request(),
             cancel=cancel,
@@ -433,8 +434,8 @@ def test_cancel_after_step_start_stops_before_model_call() -> None:
         if event.action == "step_start":
             cancel.set()
 
-    result = asyncio.run(
-        runtime.execute(
+    result = run_with_run_context(
+        lambda: runtime.execute(
             _spec(),
             _request(),
             action_handler=collect,
@@ -480,8 +481,8 @@ def test_max_steps_exit_contract_via_public_module() -> None:
     async def collect(event: AgentActionEvent) -> None:
         events.append(event)
 
-    result = asyncio.run(
-        runtime.execute(
+    result = run_with_run_context(
+        lambda: runtime.execute(
             _spec(max_steps=2),
             _request(),
             action_handler=collect,

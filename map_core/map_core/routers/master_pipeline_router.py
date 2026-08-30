@@ -13,6 +13,8 @@ from ..schema.master_pipeline_schema import (
     MasterPipelineStreamEvent,
 )
 from ..service.master_pipeline import MasterPipeline
+from ..service.run_identity import resolve_run_identity
+from ._request_context import request_run_context
 
 master_pipeline_router = APIRouter(prefix="/master_pipeline")
 
@@ -70,6 +72,14 @@ def _apply_runtime_headers(
     http_request.state.workspace_id = _validated_id_header(
         http_request.headers.get("X-Workspace-ID")
     )
+    _run_identity = resolve_run_identity(
+        http_request,
+        request_id=http_request.state.request_id,
+        workspace_id=http_request.state.workspace_id,
+    )
+    http_request.state.run_id = _run_identity["run_id"]
+    http_request.state.attempt_id = _run_identity["attempt_id"]
+    http_request.state.client_request_id = _run_identity["client_request_id"]
 
 
 def _format_sse_event(event: MasterPipelineStreamEvent) -> str:
@@ -93,8 +103,12 @@ async def master_chat_stream(
     master_pipeline = MasterPipeline(request=request, http_request=http_request)
 
     async def iter_events():
-        async for event in master_pipeline.pipeline_stream(request):
-            yield _format_sse_event(event)
+        with request_run_context(
+            http_request,
+            staff_code=getattr(request, "staff_code", None),
+        ):
+            async for event in master_pipeline.pipeline_stream(request):
+                yield _format_sse_event(event)
         http_request.state._stream_logically_completed = True
 
     return StreamingResponse(
@@ -112,7 +126,11 @@ async def master_chat(
 ) -> MasterPipelineChatResponse:
     _apply_runtime_headers(http_request, request_token=request_token)
     master_pipeline = MasterPipeline(request=request, http_request=http_request)
-    response_payload = await master_pipeline.consume_event_stream(request)
+    with request_run_context(
+        http_request,
+        staff_code=getattr(request, "staff_code", None),
+    ):
+        response_payload = await master_pipeline.consume_event_stream(request)
     return MasterPipelineChatResponse(
         content=str(response_payload.get("content", "")),
         result=response_payload["result"],

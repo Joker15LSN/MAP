@@ -8,7 +8,6 @@ contract for both the terminate and direct-final-answer exits.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from map_core.schema.agent_schema import Function, ToolCall
@@ -20,6 +19,7 @@ from map_core.utils.model_invocation import (
     ModelInvocationRequest,
 )
 from tests.model_invocation.scripted_provider import tool_outcome
+from tests.run_context_utils import run_with_run_context
 
 
 class _FakeLLMConfig:
@@ -121,7 +121,7 @@ def test_run_tool_call_then_terminate_matches_sse_contract() -> None:
         extra={"request_id": "req-e2e"},
     )
 
-    result = asyncio.run(agent.run(request))
+    result = run_with_run_context(lambda: agent.run(request))
 
     # tool was executed exactly once through the MAP governance path
     assert len(executed) == 1
@@ -169,7 +169,7 @@ def test_run_direct_final_answer_exit() -> None:
     agent, executed = _build_agent(llm, action_events)
     request = AgentRequest(query="just answer me", staff_code="tester")
 
-    result = asyncio.run(agent.run(request))
+    result = run_with_run_context(lambda: agent.run(request))
 
     assert not executed
     assert result.success is True
@@ -214,7 +214,7 @@ def test_run_max_steps_exit_marks_failure_without_tool_success() -> None:
         )
         return await agent._finalize_result(prepared)
 
-    result = asyncio.run(run_with_event())
+    result = run_with_run_context(run_with_event)
 
     actions = [event.action for event in action_events]
     assert "max_steps" in actions

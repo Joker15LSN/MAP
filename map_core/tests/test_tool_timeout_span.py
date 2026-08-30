@@ -23,6 +23,8 @@ from map_core.service.agent.tool_executor import ToolExecutor
 from map_core.service.agent.tool_runtime import Tool, ToolSet
 from map_core.service.agentscope2.agent import AgentScopeSceneAgent
 from map_core.service.agentscope2.tool import MapToolAdapter
+from map_core.service.execution_event import set_run_context
+from tests.run_context_utils import make_run_context_sink
 
 
 class _FakeLLMConfig:
@@ -81,7 +83,6 @@ def test_agentscope_adapter_timeout_marks_span_error(monkeypatch) -> None:
         scene_post_summary=None,
         tools_timeout=0.05,
     )
-    agent.set_execution_context(FakeStateStore(), "state-1")
     request = AgentRequest(query="run slow tool", staff_code="tester")
     adapter = MapToolAdapter(
         tool=tool,
@@ -90,10 +91,13 @@ def test_agentscope_adapter_timeout_marks_span_error(monkeypatch) -> None:
         request=request,
     )
 
+    run_context, _sink = make_run_context_sink()
+
     async def run():
-        chunk = await adapter.call()
-        await asyncio.sleep(0)
-        return chunk
+        with set_run_context(run_id=run_context.run_id):
+            chunk = await adapter.call()
+            await asyncio.sleep(0)
+            return chunk
 
     chunk = asyncio.run(run())
     assert chunk.state == ToolResultState.ERROR

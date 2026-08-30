@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from ..schema.agent_schema import Message
 from ..schema.attachment_schema import UploadedKBFileSchema
 from ..schema.scene_classification_schema import SceneClassificationResult
-from ..schema.state_event_schema import AgentEventSchema
 from ..utils.model_invocation import ModelInvocation
 from ..utils.query_rewriter import QueryRewriter
 from .agent.agent_mapping import (
@@ -22,10 +21,7 @@ from .agent.tool_call_agent import Tool, ToolCallAgent
 from .agent_execution import AgentExecutionHooks, AgentExecutionSpec, AgentRuntime
 from .agent_runtime import AgentExecutionSpec as LegacyAgentExecutionSpec
 from .agent_runtime import AgentRuntime as LegacyAgentRuntime
-from .state_store import (
-    GlobalAgentStateStore,
-    fire_and_forget,
-)
+from .execution_event import ExecutionEventEmitter
 
 
 class AgentDispatchConfig(BaseModel):
@@ -63,8 +59,6 @@ class AgentDispatcher:
             scene_agent_configs or SCENE_AGENT_CONFIGS
         )
         self.scene_agent_config_fetcher = scene_agent_config_fetcher
-        self.state_store: GlobalAgentStateStore | None = None
-        self.state_id = None
         self.query_rewrite_enabled = query_rewrite_enabled
         self._logger = logger_ or logger
         self.query_rewriter = QueryRewriter(llm=self.llm, logger_=self._logger)
@@ -326,16 +320,6 @@ class AgentDispatcher:
             self._logger.warning("No agents matched the current request config")
         return resolved
 
-    def set_execution_context(self, state_store: GlobalAgentStateStore, state_id: str):
-        """
-        Inject global agent state for all registered agents.
-        Take care of your agents.
-        """
-        self.state_store = state_store
-        self.state_id = state_id
-        self.agent_runtime.set_execution_context(state_store, state_id)
-        self._legacy_agent_runtime.set_execution_context(state_store, state_id)
-
     def _emit_agent_event(
         self,
         agent: ToolCallAgent,
@@ -344,25 +328,25 @@ class AgentDispatcher:
         status: Literal["success", "failed"] | None = None,
         data: dict[str, Any] | None = None,
     ) -> None:
-        if not self.state_store or not self.state_id:
-            return
-        event = AgentEventSchema(
-            category=self.AGENT_EVENT_CATEGORY,
-            component=agent.name,
-            stage=stage,
-            status=status,
+        if stage == "start":
+            event_type = "step.started"
+        else:
+            event_type = "step.completed" if status == "success" else "step.failed"
+        ExecutionEventEmitter.current().emit(
+            event_type,
             data={
+                "component": "agent_execution",
+                "category": self.AGENT_EVENT_CATEGORY,
                 "agent_code": agent.name,
                 "agent_name": agent.agent_display_name,
-                **(data or {}),
+                "stage": stage,
+                "status": status,
+                "data": {
+                    "agent_code": agent.name,
+                    "agent_name": agent.agent_display_name,
+                    **(data or {}),
+                },
             },
-        )
-        fire_and_forget(
-            self.state_store.record_event(
-                state_id=self.state_id,
-                event_type="agent_execution",
-                payload=event.model_dump(),
-            )
         )
 
     @staticmethod
@@ -524,16 +508,12 @@ class AgentDispatcher:
         self,
         request: AgentRequest,
         config: AgentDispatchConfig | None = None,
-        state_store: GlobalAgentStateStore | None = None,
-        state_id: str | None = None,
         tool_context: dict[str, Any] | None = None,
     ) -> list[AgentResult]:
         results: list[AgentResult] = []
         async for result in self.dispatch_stream(
             request=request,
             config=config,
-            state_store=state_store,
-            state_id=state_id,
             tool_context=tool_context,
         ):
             if isinstance(result, AgentResult):
@@ -544,8 +524,6 @@ class AgentDispatcher:
         self,
         request: AgentRequest,
         config: AgentDispatchConfig | None = None,
-        state_store: GlobalAgentStateStore | None = None,
-        state_id: str | None = None,
         tool_context: dict[str, Any] | None = None,
     ) -> AsyncGenerator[AgentResult | AgentActionEvent, None]:
         request, config, tool_context = await self._materialize_scene_configs(
@@ -559,8 +537,6 @@ class AgentDispatcher:
         )
         agent_name_map = self._resolve_agent_name_map(updated_request)
 
-        if state_store and state_id:
-            self.set_execution_context(state_store, state_id)
 
         scene_result = request.scene_result
         if scene_result is not None:
@@ -603,14 +579,9 @@ class AgentDispatcher:
         request: AgentRequest,
         *,
         config: SceneAgentConfig | None = None,
-        state_store: GlobalAgentStateStore | None = None,
-        state_id: str | None = None,
         tool_context: dict[str, Any] | None = None,
         engine: Literal["legacy", "agentscope"] | None = None,
     ) -> AgentResult:
-        if state_store and state_id:
-            self.set_execution_context(state_store, state_id)
-
         updated_request = await self._prepare_request(
             request,
             tool_context=tool_context,

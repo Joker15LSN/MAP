@@ -753,19 +753,9 @@ _R = TypeVar("_R")
 
 
 
-def safe_serialize(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool, datetime)):
-        return value
-    if hasattr(value, "model_dump") and callable(value.model_dump):
-        try:
-            return safe_serialize(value.model_dump())
-        except Exception:
-            return str(value)
-    if isinstance(value, (list, tuple)):
-        return [safe_serialize(item) for item in value]
-    if isinstance(value, dict):
-        return {str(k): safe_serialize(v) for k, v in value.items()}
-    return str(value)
+# Kept as a re-export for tests and legacy callers; new code imports
+# ``map_core.utils.serialization.safe_serialize`` directly.
+from ..utils.serialization import safe_serialize  # noqa: F401
 
 
 def fire_and_forget(coro: Coroutine[Any, Any, Any]) -> None:

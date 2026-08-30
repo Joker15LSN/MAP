@@ -8,7 +8,6 @@ directions.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from map_core import config as app_config
@@ -21,6 +20,7 @@ from map_core.utils.model_invocation import (
     ModelInvocationRequest,
     ModelUsage,
 )
+from tests.run_context_utils import run_with_run_context
 
 MEMORY_HISTORY = [
     {"role": "user", "content": "上一轮问题"},
@@ -140,7 +140,9 @@ def test_memory_bridge_inject_and_writeback(monkeypatch) -> None:
         extra={"session_id": "sess-1", "request_id": "req-1"},
     )
 
-    result = asyncio.run(runtime.run_agent(agent, request, action_handler=None))
+    result = run_with_run_context(
+        lambda: runtime.run_agent(agent, request, action_handler=None)
+    )
 
     # injection: the LLM saw the memory history ahead of the current query
     assert memory.get_calls == [
@@ -187,7 +189,9 @@ def test_memory_disabled_by_config_skips_store(monkeypatch) -> None:
         extra={"session_id": "sess-1"},
     )
 
-    asyncio.run(runtime.run_agent(agent, request, action_handler=None))
+    run_with_run_context(
+        lambda: runtime.run_agent(agent, request, action_handler=None)
+    )
 
     assert not memory.get_calls
     assert not memory.upsert_calls

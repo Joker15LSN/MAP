@@ -6,9 +6,8 @@ from pydantic import BaseModel, ValidationError
 
 from ..schema.attachment_schema import AttachmentSchema
 from ..schema.global_domain_schema import GlobalDomainStreamEvent
-from ..schema.state_event_schema import AgentEventSchema
 from ..schema.tool_extra_result_schema import ToolExtraResultSchema
-from .state_store import fire_and_forget
+from .execution_event import ExecutionEventEmitter
 
 
 def build_dispatch_token_meta(results: list[Any]) -> dict[str, Any]:
@@ -97,61 +96,50 @@ def stream_event_data_as_dict(event: GlobalDomainStreamEvent) -> dict[str, Any]:
 
 def record_summarize_start(
     *,
-    state_store: Any,
-    state_id: str,
-    base_state: dict[str, Any],
     summarize_input: dict[str, Any],
 ) -> None:
-    fire_and_forget(
-        state_store.record_event(
-            state_id=state_id,
-            event_type="summarize_agent",
-            payload=AgentEventSchema(
-                category="workflow",
-                component="summarize_agent",
-                stage="start",
-                data={"input": summarize_input},
-            ).model_dump(),
-            base_state=base_state,
-        )
+    ExecutionEventEmitter.current().emit(
+        "checkpoint.written",
+        data={
+            "phase": "summarize_agent",
+            "category": "workflow",
+            "component": "summarize_agent",
+            "stage": "start",
+            "status": None,
+            "data": {"input": summarize_input},
+        },
     )
 
 
 def record_summarize_success(
     *,
-    state_store: Any,
-    state_id: str,
     output: str,
     start_ts: datetime,
     stream: bool,
 ) -> None:
     end_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
-    fire_and_forget(
-        state_store.record_event(
-            state_id=state_id,
-            event_type="summarize_agent",
-            payload=AgentEventSchema(
-                timestamp=end_ts,
-                category="workflow",
-                component="summarize_agent",
-                stage="end",
-                status="success",
-                data={
-                    "output": output,
-                    "meta": {
-                        "duration_s": (end_ts - start_ts).total_seconds(),
-                        "stream": stream,
-                    },
+    ExecutionEventEmitter.current().emit(
+        "checkpoint.written",
+        data={
+            "phase": "summarize_agent",
+            "timestamp": end_ts,
+            "category": "workflow",
+            "component": "summarize_agent",
+            "stage": "end",
+            "status": "success",
+            "data": {
+                "output": output,
+                "meta": {
+                    "duration_s": (end_ts - start_ts).total_seconds(),
+                    "stream": stream,
                 },
-            ).model_dump(),
-        )
+            },
+        },
     )
 
 
 def record_summarize_failure(
     *,
-    state_store: Any,
-    state_id: str,
     summarize_input: dict[str, Any],
     start_ts: datetime,
     error: Exception | str,
@@ -160,25 +148,23 @@ def record_summarize_failure(
     end_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
     error_message = str(error)
     error_type = type(error).__name__ if isinstance(error, Exception) else "Error"
-    fire_and_forget(
-        state_store.record_event(
-            state_id=state_id,
-            event_type="summarize_agent",
-            payload=AgentEventSchema(
-                timestamp=end_ts,
-                category="error",
-                component="summarize_agent",
-                stage="end",
-                status="failed",
-                data={
-                    "input": summarize_input,
-                    "error": error_message,
-                    "error_type": error_type,
-                    "meta": {
-                        "duration_s": (end_ts - start_ts).total_seconds(),
-                        "stream": stream,
-                    },
+    ExecutionEventEmitter.current().emit(
+        "checkpoint.written",
+        data={
+            "phase": "summarize_agent",
+            "timestamp": end_ts,
+            "category": "error",
+            "component": "summarize_agent",
+            "stage": "end",
+            "status": "failed",
+            "data": {
+                "input": summarize_input,
+                "error": error_message,
+                "error_type": error_type,
+                "meta": {
+                    "duration_s": (end_ts - start_ts).total_seconds(),
+                    "stream": stream,
                 },
-            ).model_dump(),
-        )
+            },
+        },
     )

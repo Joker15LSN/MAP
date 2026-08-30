@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from map_core.config.config_schema import LLMConfig
 from map_core.service.agent.agent_mapping import SceneAgentConfig
 from map_core.service.agent.tool_call_agent import ToolCallAgent
@@ -16,6 +14,7 @@ from map_core.service.agent_runtime import (
 )
 from map_core.service.agentscope2.agent import AgentScopeSceneAgent
 from map_core.utils.model_invocation import ModelInvocation
+from tests.run_context_utils import run_with_run_context
 
 
 def _runtime() -> AgentRuntime:
@@ -168,8 +167,8 @@ def test_two_engines_same_request_same_contract() -> None:
         )
         agent = runtime.build_agent(_spec(engine=engine, force_tool_call=False))
         request = AgentRequest(query="请回答", staff_code="t")
-        result = asyncio.run(
-            runtime.run_agent(agent, request, action_handler=None)
+        result = run_with_run_context(
+            lambda: runtime.run_agent(agent, request, action_handler=None)
         )
         results.append(result)
 

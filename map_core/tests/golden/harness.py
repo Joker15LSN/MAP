@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import re
+import uuid
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,6 +22,13 @@ from map_core.schema.master_pipeline_schema import MasterAgentChatSchema
 from map_core.service.agent.base import AgentRequest
 from map_core.service.agent.tool_runtime import Tool
 from map_core.service.agent_dispatcher import AgentDispatcher
+from map_core.service.execution_event import (
+    CoreExecutionEvent,
+    ExecutionEventEmitter,
+    InMemoryExecutionEventSink,
+    RunContext,
+    set_run_context,
+)
 from map_core.service.flow_domain import FlowDomain
 from map_core.service.global_domain import GlobalDomain
 from map_core.service.master_pipeline import MasterPipeline
@@ -66,6 +74,54 @@ class RecordingStateStore:
         return [item for item in self.events if item["event_type"] == event_type]
 
 
+def _typed_to_state_event(event: CoreExecutionEvent, state_id: str) -> dict[str, Any]:
+    """Bridge one typed CoreExecutionEvent back to the legacy state_event shape.
+
+    The bridge is intentionally conservative: it restores the legacy
+    ``event_type`` (from ``data.phase`` / ``data.component``) and keeps the
+    remaining typed ``data`` as the payload.  Golden fixtures only assert
+    event-type presence and request.end status, which this shape preserves.
+    """
+    data = dict(event.data)
+    if event.type == "checkpoint.written":
+        legacy_type = data.pop("phase", None) or "checkpoint.written"
+        payload = data
+    elif event.type in {"step.started", "step.completed", "step.failed"}:
+        legacy_type = data.pop("component", None) or "agent_execution"
+        payload = data
+    elif event.type == "message.delta":
+        legacy_type = data.pop("component", None) or "agent_message"
+        payload = data
+    elif event.type == "tool.invocation_created":
+        legacy_type = "tool_call"
+        payload = data
+    elif event.type in {"tool.invocation_completed", "tool.invocation_failed"}:
+        legacy_type = "tool_result"
+        payload = data
+    elif event.type.startswith("model.invocation_"):
+        legacy_type = "llm_call"
+        payload = data
+    else:
+        legacy_type = event.type
+        payload = data
+    return {
+        "state_id": state_id,
+        "event_type": legacy_type,
+        "payload": payload,
+        "base_state": None,
+    }
+
+
+def merge_typed_events(
+    recording: RecordingStateStore,
+    typed_events: list[CoreExecutionEvent],
+    state_id: str,
+) -> None:
+    """Append bridged typed events to the recording store."""
+    for event in typed_events:
+        recording.events.append(_typed_to_state_event(event, state_id))
+
+
 # ---------------------------------------------------------------------------
 # fire_and_forget interceptor: turns async background writes into deterministic
 # coroutines the runner awaits after the pipeline stream is exhausted.
@@ -86,12 +142,9 @@ class PendingCoroutines:
             await asyncio.gather(*pending, return_exceptions=True)
 
 
+# K3/K4: only legacy paths inside state_store still use fire_and_forget;
+# migrated modules emit typed events through ExecutionEventEmitter instead.
 _FIRE_AND_FORGET_MODULES = (
-    "map_core.service.agent_dispatcher",
-    "map_core.service.flow_domain",
-    "map_core.service.global_domain",
-    "map_core.service.global_domain_helpers",
-    "map_core.service.master_pipeline",
     "map_core.service.state_store",
 )
 
@@ -370,6 +423,14 @@ class FakeToolHarness:
 # ---------------------------------------------------------------------------
 
 
+def _make_typed_recording() -> tuple[RunContext, InMemoryExecutionEventSink]:
+    """Create a request-level typed emitter with an in-memory sink."""
+    run_context = RunContext(run_id=uuid.uuid4())
+    sink = InMemoryExecutionEventSink()
+    ExecutionEventEmitter.for_context(run_context, sinks=[sink])
+    return run_context, sink
+
+
 def _install_global_components(
     gd: GlobalDomain,
     fake_llm: FakeLLM,
@@ -412,14 +473,18 @@ def run_global(fixture: dict[str, Any]) -> dict[str, Any]:
         gd = GlobalDomain(llm=fake_llm, request=request, staff_code=request.staff_code)
         _install_global_components(gd, fake_llm, tools, recording)
 
+        run_context, typed_sink = _make_typed_recording()
         restore = _patch_fire_and_forget(pending)
         try:
             events = []
-            async for event in gd.pipeline_stream(request):
-                events.append(event)
-            await pending.drain()
+            with set_run_context(run_id=run_context.run_id):
+                async for event in gd.pipeline_stream(request):
+                    events.append(event)
+                await pending.drain()
+                await ExecutionEventEmitter.current().drain()
         finally:
             restore()
+        merge_typed_events(recording, typed_sink.events, gd.state_id)
         return _assemble_result(fixture, events, tools, recording, fake_llm)
 
     return asyncio.run(_run())
@@ -439,6 +504,7 @@ def run_flow(fixture: dict[str, Any]) -> dict[str, Any]:
         _install_global_components(fd.global_domain, fake_llm, tools, recording)
         fd.global_domain.llm = fake_llm
 
+        run_context, typed_sink = _make_typed_recording()
         restore = _patch_fire_and_forget(pending)
         try:
             if flow_config is not None:
@@ -451,14 +517,17 @@ def run_flow(fixture: dict[str, Any]) -> dict[str, Any]:
                 provider = None
             try:
                 events = []
-                async for event in fd.pipeline_stream(request):
-                    events.append(event)
-                await pending.drain()
+                with set_run_context(run_id=run_context.run_id):
+                    async for event in fd.pipeline_stream(request):
+                        events.append(event)
+                    await pending.drain()
+                    await ExecutionEventEmitter.current().drain()
             finally:
                 if original is not None:
                     provider.get_snapshot = original
         finally:
             restore()
+        merge_typed_events(recording, typed_sink.events, fd.state_id)
         return _assemble_result(fixture, events, tools, recording, fake_llm)
 
     return asyncio.run(_run())
@@ -519,14 +588,18 @@ def run_master(fixture: dict[str, Any]) -> dict[str, Any]:
         mp.agent_runtime.tool_registry = tools.registry
         mp.state_store = recording
 
+        run_context, typed_sink = _make_typed_recording()
         restore = _patch_fire_and_forget(pending)
         try:
             events = []
-            async for event in mp.pipeline_stream(request):
-                events.append(event)
-            await pending.drain()
+            with set_run_context(run_id=run_context.run_id):
+                async for event in mp.pipeline_stream(request):
+                    events.append(event)
+                await pending.drain()
+                await ExecutionEventEmitter.current().drain()
         finally:
             restore()
+        merge_typed_events(recording, typed_sink.events, mp.state_id)
         return _assemble_result(fixture, events, tools, recording, fake_llm)
 
     return asyncio.run(_run())

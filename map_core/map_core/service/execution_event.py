@@ -11,7 +11,7 @@ Design A, frozen by the run.md contract work:
 - The emitter owns one bounded asyncio.Queue + one worker task per run
   context.  ``emit`` is synchronous (it only enqueues); ``drain``/``close``
   await delivery.  When the queue is full the event is dropped with a
-  warning, matching the old ``fire_and_forget`` queue-full semantics.
+  warning, matching the legacy async dispatcher queue-full semantics.
 
 This module is core plumbing only.  K3/K4 will register real sinks and
 replace the legacy ``GlobalAgentStateStore`` callers; nothing in this
@@ -36,6 +36,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..observability import current_trace_context
+from ..utils.serialization import safe_serialize
 
 INLINE_PAYLOAD_MAX_BYTES: int = 65536
 
@@ -195,6 +196,26 @@ current_run_context: ContextVar[RunContext | None] = ContextVar(
 )
 
 
+def coerce_uuid(value: str | None, *, namespace: str = "map") -> uuid.UUID | None:
+    """Coerce an F-04 identity header value to a stable UUID.
+
+    Standard UUID strings (with or without hyphens) keep their value;
+    arbitrary header strings are namespaced into a deterministic UUID so
+    RunContext identities remain typed without losing traceability.
+    """
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(value)
+    except (ValueError, AttributeError):
+        pass
+    try:
+        return uuid.UUID(hex=value)
+    except (ValueError, AttributeError):
+        pass
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"{namespace}:{value}")
+
+
 @contextmanager
 def set_run_context(
     *,
@@ -263,7 +284,7 @@ class ExecutionEventEmitter:
     snapshot trace context, enqueue); the worker awaits every sink with
     per-sink exception isolation.  A full queue drops the event with a
     warning — the same degradation semantics as the legacy
-    ``fire_and_forget`` dispatcher.
+    async dispatcher.
     """
 
     _registry: dict[RunContext, "ExecutionEventEmitter"] = {}
@@ -286,12 +307,23 @@ class ExecutionEventEmitter:
         self._closed = False
 
     @classmethod
-    def for_context(cls, run_context: RunContext) -> ExecutionEventEmitter:
-        """Return the shared emitter registered for ``run_context``."""
+    def for_context(
+        cls,
+        run_context: RunContext,
+        sinks: Iterable[ExecutionEventSink] | None = None,
+    ) -> ExecutionEventEmitter:
+        """Return the shared emitter registered for ``run_context``.
+
+        ``sinks`` is only honoured when the emitter is first created; later
+        calls return the existing emitter unchanged.
+        """
         with cls._registry_lock:
             emitter = cls._registry.get(run_context)
             if emitter is None or emitter._closed:
-                emitter = cls(run_context)
+                emitter = cls(
+                    run_context,
+                    sinks=sinks if sinks is not None else (),
+                )
                 cls._registry[run_context] = emitter
             return emitter
 
@@ -310,6 +342,12 @@ class ExecutionEventEmitter:
             )
         return cls.for_context(run_context)
 
+    def attach_sink(self, sink: ExecutionEventSink) -> None:
+        """Register an additional sink; duplicate object references are ignored."""
+        if any(existing is sink for existing in self._sinks):
+            return
+        self._sinks.append(sink)
+
     def emit(
         self,
         type: str,
@@ -325,6 +363,7 @@ class ExecutionEventEmitter:
         if self._closed:
             raise RuntimeError("ExecutionEventEmitter is closed")
         trace_ctx = current_trace_context()
+        json_safe_data = safe_serialize(data) if data is not None else {}
         event = CoreExecutionEvent(
             event_id=uuid.uuid4(),
             run_id=self._run_context.run_id,
@@ -336,7 +375,7 @@ class ExecutionEventEmitter:
             request_id=self._run_context.request_id,
             trace_id=trace_ctx.get("trace_id"),
             span_id=trace_ctx.get("span_id"),
-            data=data if data is not None else {},
+            data=json_safe_data,
         )
         self._enqueue(event)
         return event

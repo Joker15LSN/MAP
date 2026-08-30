@@ -21,6 +21,7 @@ from .agent.tool_call_agent import Tool
 from .agent.tool_registry import build_tool_registry
 from .agent_execution import AgentExecutionSpec, AgentRuntime
 from .attachment_collector import AttachmentCollector
+from .execution_event import ExecutionEventEmitter
 from .global_domain_helpers import (
     normalize_attachment_results,
     normalize_tool_extra_results,
@@ -29,7 +30,6 @@ from .global_domain_helpers import (
     stream_event_data_as_dict,
 )
 from .run_identity import resolve_run_identity
-from .state_store import GlobalAgentStateStore, fire_and_forget
 from .tool_extra_result_collector import ToolExtraResultCollector
 
 
@@ -98,8 +98,6 @@ class MasterPipeline:
         self.attachment_collector = AttachmentCollector()
         self.tool_extra_result_collector = ToolExtraResultCollector()
         self.state_id = str(uuid4())
-        self.state_store = GlobalAgentStateStore.instance()
-        self.agent_runtime.set_execution_context(self.state_store, self.state_id)
         self.base_state = {
             "_id": self.state_id,
             "request_id": self.request_id,
@@ -171,8 +169,6 @@ class MasterPipeline:
             staff_code=self.staff_code,
             history=request.history,
             extra=self._build_agent_extra(request),
-            state_store=self.state_store,
-            state_id=self.state_id,
         )
 
     @staticmethod
@@ -202,20 +198,17 @@ class MasterPipeline:
         self,
         request: MasterAgentChatSchema,
     ) -> AsyncGenerator[MasterPipelineStreamEvent, None]:
-        fire_and_forget(
-            self.state_store.record_event(
-                state_id=self.state_id,
-                event_type="request.start",
-                payload={
-                    "request_id": self.request_id,
-                    "session_id": self.session_id,
-                    "workspace_id": self.workspace_id,
-                    "staff_code": self.staff_code,
-                    "query": request.query,
-                    "original_query": self._resolve_original_query(request),
-                },
-                base_state=self.base_state,
-            )
+        ExecutionEventEmitter.current().emit(
+            "checkpoint.written",
+            data={
+                "phase": "request.start",
+                "request_id": self.request_id,
+                "session_id": self.session_id,
+                "workspace_id": self.workspace_id,
+                "staff_code": self.staff_code,
+                "query": request.query,
+                "original_query": self._resolve_original_query(request),
+            },
         )
 
         yield MasterPipelineStreamEvent(
@@ -291,34 +284,28 @@ class MasterPipeline:
                     "meta": done_meta,
                 },
             )
-            fire_and_forget(
-                self.state_store.record_event(
-                    state_id=self.state_id,
-                    event_type="request.end",
-                    payload={
-                        "request_id": self.request_id,
-                        "state_id": self.state_id,
-                        "content": result.content,
-                        "success": result.success,
-                        "error": result.error,
-                    },
-                    base_state=self.base_state,
-                )
+            ExecutionEventEmitter.current().emit(
+                "checkpoint.written",
+                data={
+                    "phase": "request.end",
+                    "request_id": self.request_id,
+                    "state_id": self.state_id,
+                    "content": result.content,
+                    "success": result.success,
+                    "error": result.error,
+                },
             )
         except Exception as exc:
             logger.exception("Master pipeline failed: {}", exc)
-            fire_and_forget(
-                self.state_store.record_event(
-                    state_id=self.state_id,
-                    event_type="request.end",
-                    payload={
-                        "request_id": self.request_id,
-                        "state_id": self.state_id,
-                        "success": False,
-                        "error": str(exc),
-                    },
-                    base_state=self.base_state,
-                )
+            ExecutionEventEmitter.current().emit(
+                "checkpoint.written",
+                data={
+                    "phase": "request.end",
+                    "request_id": self.request_id,
+                    "state_id": self.state_id,
+                    "success": False,
+                    "error": str(exc),
+                },
             )
             yield MasterPipelineStreamEvent(
                 event="error",

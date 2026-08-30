@@ -20,7 +20,9 @@ from ..schema.global_domain_schema import (
 )
 from ..schema.scene_classification_schema import SceneClassificationResult
 from ..service.global_domain import GlobalDomain
+from ..service.run_identity import resolve_run_identity
 from ..utils.content_review.content_reviewer import build_stream_content_reviewer
+from ._request_context import request_run_context
 
 global_domain_router = APIRouter(prefix="/global_domain")
 
@@ -79,6 +81,14 @@ def _apply_runtime_headers(
     http_request.state.workspace_id = _validated_id_header(
         http_request.headers.get("X-Workspace-ID")
     )
+    _run_identity = resolve_run_identity(
+        http_request,
+        request_id=http_request.state.request_id,
+        workspace_id=http_request.state.workspace_id,
+    )
+    http_request.state.run_id = _run_identity["run_id"]
+    http_request.state.attempt_id = _run_identity["attempt_id"]
+    http_request.state.client_request_id = _run_identity["client_request_id"]
 
 
 def _format_sse_event(event: GlobalDomainStreamEvent) -> str:
@@ -134,12 +144,16 @@ async def chat_stream_v2(
 
     async def iter_events():
         try:
-            async for event in reviewer.moderate_event_stream(
-                event_stream,
-                request_id=global_domain.request_id,
-                state_id=global_domain.state_id,
+            with request_run_context(
+                http_request,
+                staff_code=getattr(request, "staff_code", None),
             ):
-                yield _format_sse_event(event)
+                async for event in reviewer.moderate_event_stream(
+                    event_stream,
+                    request_id=global_domain.request_id,
+                    state_id=global_domain.state_id,
+                ):
+                    yield _format_sse_event(event)
             http_request.state._stream_logically_completed = True
         finally:
             await reviewer.aclose()
@@ -173,12 +187,16 @@ async def chat_stream_v3(
 
     async def iter_events():
         try:
-            async for event in reviewer.moderate_event_stream(
-                event_stream,
-                request_id=global_domain.request_id,
-                state_id=global_domain.state_id,
+            with request_run_context(
+                http_request,
+                staff_code=getattr(request, "staff_code", None),
             ):
-                yield _format_sse_event(event)
+                async for event in reviewer.moderate_event_stream(
+                    event_stream,
+                    request_id=global_domain.request_id,
+                    state_id=global_domain.state_id,
+                ):
+                    yield _format_sse_event(event)
             http_request.state._stream_logically_completed = True
         finally:
             await reviewer.aclose()
@@ -201,7 +219,11 @@ async def chat(
         request_token=request_token,
     )
     global_domain = GlobalDomain(request=request, http_request=http_request)
-    response_payload = await global_domain.consume_event_stream(request)
+    with request_run_context(
+        http_request,
+        staff_code=getattr(request, "staff_code", None),
+    ):
+        response_payload = await global_domain.consume_event_stream(request)
     return GlobalDomainChatResponse(
         content=str(response_payload.get("content", "")),
         attachment_results=response_payload.get("attachment_results"),
@@ -220,7 +242,11 @@ async def debug_select_scene(
     _apply_runtime_headers(http_request, request_token=request_token)
     chat_request = request.to_chat_request()
     global_domain = GlobalDomain(request=chat_request, http_request=http_request)
-    result = await global_domain.select_scene(request=chat_request)
+    with request_run_context(
+        http_request,
+        staff_code=getattr(chat_request, "staff_code", None),
+    ):
+        result = await global_domain.select_scene(request=chat_request)
     agent_name_map = global_domain._resolve_scene_selection_agent_name_map(chat_request)
     return _format_debug_scene_agents(result, agent_name_map)
 
@@ -236,7 +262,11 @@ async def debug_run_scene_agent(
 ) -> SceneAgentDebugResponse:
     _apply_runtime_headers(http_request, request_token=request_token)
     global_domain = GlobalDomain(request=request, http_request=http_request)
-    return await global_domain.debug_scene_agent(request)
+    with request_run_context(
+        http_request,
+        staff_code=getattr(request, "staff_code", None),
+    ):
+        return await global_domain.debug_scene_agent(request)
 
 
 @global_domain_router.post(
@@ -250,4 +280,8 @@ async def debug_run_tool_agent(
 ) -> ToolAgentDebugResponse:
     _apply_runtime_headers(http_request, request_token=request_token)
     global_domain = GlobalDomain(request=request, http_request=http_request)
-    return await global_domain.debug_tool_agent(request)
+    with request_run_context(
+        http_request,
+        staff_code=getattr(request, "staff_code", None),
+    ):
+        return await global_domain.debug_tool_agent(request)

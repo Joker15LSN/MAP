@@ -30,6 +30,7 @@ from map_core.service.agent.tool_registry import (
 )
 from map_core.service.agent.tool_runtime import ToolSet
 from map_core.service.agentscope2.agent import AgentScopeSceneAgent
+from tests.run_context_utils import run_with_run_context
 
 DISABLED_TOOLS = [
     "python_exec_tool",
@@ -116,7 +117,7 @@ def test_execution_returns_stable_capability_disabled() -> None:
         )
 
     for name in DISABLED_TOOLS:
-        result = asyncio.run(run(name))
+        result = run_with_run_context(lambda: run(name))
         assert result == build_capability_disabled_result(name)
         assert result["error"] == CAPABILITY_DISABLED_ERROR
         assert result["code"] == CAPABILITY_DISABLED_CODE

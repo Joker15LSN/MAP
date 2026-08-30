@@ -164,6 +164,34 @@ def load_config():
     return cfg
 
 
+_legacy_execution_sink: object | None = None
+
+
+def attach_legacy_event_sink(emitter: object) -> None:
+    """Attach the production legacy Mongo sink to a request-level emitter.
+
+    The sink is created lazily on first use: without a usable Mongo config
+    the emitter gets a Null sink (fail-closed for the legacy projection, the
+    typed stream is unaffected).  The legacy handler is a process-wide
+    singleton so every request emitter shares one connection pool.
+    """
+    global _legacy_execution_sink
+    if _legacy_execution_sink is None:
+        from . import config as app_config
+        from .service.execution_event import NullExecutionEventSink
+        from .service.legacy_event_sink import LegacyMongoEventSink
+        from .service.state_store import MongoAgentStateHandler
+
+        mongo_cfg = getattr(app_config, "MONGODB_CONFIG", None)
+        if not mongo_cfg or "uri" not in mongo_cfg:
+            _legacy_execution_sink = NullExecutionEventSink()
+        else:
+            _legacy_execution_sink = LegacyMongoEventSink(MongoAgentStateHandler())
+    attach = getattr(emitter, "attach_sink", None)
+    if attach is not None:
+        attach(_legacy_execution_sink)
+
+
 
 def _resolve_default_workers() -> int:
     env = _ensure_env()
